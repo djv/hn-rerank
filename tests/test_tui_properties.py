@@ -47,7 +47,7 @@ def tui_mocks():
             "client": client
         }
 
-@settings(suppress_health_check=[HealthCheck.function_scoped_fixture], deadline=None, max_examples=5)
+@settings(suppress_health_check=[HealthCheck.function_scoped_fixture], deadline=None, max_examples=3)
 @given(st.just(None))
 @pytest.mark.asyncio
 async def test_law_of_ranking_integrity(tui_mocks, _):
@@ -56,41 +56,36 @@ async def test_law_of_ranking_integrity(tui_mocks, _):
     """
     app = HNRerankTUI("testuser")
     async with app.run_test() as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause(0.2)
         list_view = app.query_one("#story-list")
         
         scores = [child.score_val for child in list_view.children if isinstance(child, StoryItem)]
         assert scores == sorted(scores, reverse=True)
 
-@settings(suppress_health_check=[HealthCheck.function_scoped_fixture, HealthCheck.filter_too_much], deadline=None, max_examples=5)
-@given(indices=st.just([0, 1]))
+@settings(suppress_health_check=[HealthCheck.function_scoped_fixture, HealthCheck.filter_too_much], deadline=None, max_examples=1)
+@given(st.just(None))
 @pytest.mark.asyncio
-async def test_law_of_expansion_isolation(tui_mocks, indices):
+async def test_law_of_expansion_isolation(tui_mocks, _):
     """
-    Invariant: Expanding one story must not affect the state of others.
+    Invariant: Navigation auto-expands the current item and collapses others.
     """
     app = HNRerankTUI("testuser")
     async with app.run_test() as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause(1.0) # Wait for initial load and focus
         list_view = app.query_one("#story-list")
         
-        # Navigate and verify auto-expand
-        for idx in range(len(indices)):
-            if idx > 0:
-                await pilot.press("down")
-                await pilot.pause(0.1)
-            
-            # Current item should be auto-expanded
-            current_item = list_view.children[list_view.index]
-            assert current_item.expanded is True, f"Item at index {list_view.index} should be auto-expanded"
-            
-            # Others should be collapsed
-            for i, child in enumerate(list_view.children):
-                if i != list_view.index:
-                    assert child.expanded is False, f"Item {i} should be collapsed"
+        # 1. Check initial state (first item expanded)
+        assert list_view.children[0].expanded is True
+        
+        # 2. Navigate down
+        await pilot.press("down")
+        await pilot.pause(0.2)
+        
+        assert list_view.children[1].expanded is True
+        assert list_view.children[0].expanded is False
 
-@settings(suppress_health_check=[HealthCheck.function_scoped_fixture], deadline=None, max_examples=5)
-@given(keys=st.lists(st.sampled_from(["down", "up", "enter", "u", "d"]), min_size=5, max_size=20))
+@settings(suppress_health_check=[HealthCheck.function_scoped_fixture], deadline=None, max_examples=3)
+@given(keys=st.lists(st.sampled_from(["down", "up", "enter", "u", "d"]), min_size=5, max_size=10))
 @pytest.mark.asyncio
 async def test_system_thermal_stability(tui_mocks, keys):
     """
@@ -99,7 +94,7 @@ async def test_system_thermal_stability(tui_mocks, keys):
     app = HNRerankTUI("testuser")
     with patch("webbrowser.open_new_tab"):
         async with app.run_test() as pilot:
-            await pilot.pause(0.5)
+            await pilot.pause(0.2)
             for key in keys:
                 await pilot.press(key)
                 

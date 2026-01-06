@@ -299,6 +299,12 @@ class HNRerankTUI(App):
             if list_view.children:
                 list_view.index = 0
                 list_view.focus()
+                
+                # Use a small delay to ensure reactivity is ready
+                def expand_first():
+                    if list_view.children:
+                        list_view.children[0].expanded = True
+                self.set_timer(0.2, expand_first)
 
             self.notify("Feed Ready")
         except Exception as e:
