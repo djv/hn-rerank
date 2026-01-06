@@ -22,9 +22,9 @@ from api.client import HNClient
 from api.config import save_config, get_username
 from sklearn.metrics.pairwise import cosine_similarity
 
-# --- HARDCODED CREDS (Prefer Env Vars) ---
-HN_USER = os.getenv("HN_USERNAME", "your_username")
-HN_PASS = os.getenv("HN_PASSWORD", "your_password")
+# --- CREDENTIALS (Env Vars) ---
+HN_USER = os.getenv("HN_USERNAME")
+HN_PASS = os.getenv("HN_PASSWORD")
 
 
 def get_relative_time(timestamp: int) -> str:
@@ -210,7 +210,7 @@ class HNRerankTUI(App):
 
     async def on_mount(self):
         # Auto-login if creds available
-        if HN_USER != "your_username" and HN_PASS != "your_password":
+        if HN_USER and HN_PASS:
             self.notify(f"Authenticating as {HN_USER}...")
             client = HNClient()
             success, msg = await client.login(HN_USER, HN_PASS)
