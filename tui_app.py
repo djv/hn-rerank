@@ -72,13 +72,10 @@ class StoryItem(ListItem):
                 yield Label("", id="vote-icon")
 
             with Vertical(id="details"):
-                if self.rel_title:
-                    yield Label(
-                        f"[bold blue]INSIGHT FROM:[/]{self.rel_title}", classes="meta"
-                    )
-                if self.reason:
-                    yield Label(f'[italic] "{self.reason}"[/]', classes="reason")
-
+                if self.story.get("article_snippet"):
+                    yield Label("[bold blue]ARTICLE CONTENT[/]", classes="section-title")
+                    yield Static(self.story["article_snippet"], classes="reason")
+                
                 if self.story.get("comments"):
                     yield Label(
                         "[bold underline]TOP DISCUSSION[/]", classes="section-title"
@@ -257,8 +254,7 @@ class HNRerankTUI(App):
         self.notify(f"Syncing Intelligence for {self.username}...")
 
         try:
-            rerank.init_model()
-            # ... existing code logic ...
+            rerank.init_model("onnx_model")
             self.notify("Model Loaded. Fetching user data...")
             pos_data, neg_data, exclude_ids = await get_user_data(self.username)
             
@@ -298,21 +294,7 @@ class HNRerankTUI(App):
 
             for idx, score, fav_idx in ranked[:50]:
                 story = candidates[idx]
-                rel_obj = pos_data[fav_idx] if 0 <= fav_idx < len(pos_data) else None
-                reason_text, rel_title = "", ""
-                if rel_obj:
-                    rel_title = rel_obj.get("title")
-                    sens = [
-                        s.strip()
-                        for s in re.split(r"(?<=[.!?]) +", rel_obj["text_content"])
-                        if len(s.strip()) > 20
-                    ]
-                    if sens:
-                        s_embs = rerank.get_embeddings(sens, is_query=False)
-                        q_emb = rerank.get_embeddings([story["title"]], is_query=True)
-                        reason_text = sens[cosine_similarity(q_emb, s_embs)[0].argmax()]
-
-                await list_view.append(StoryItem(story, score, reason_text, rel_title))
+                await list_view.append(StoryItem(story, score, "", ""))
 
             if list_view.children:
                 list_view.index = 0

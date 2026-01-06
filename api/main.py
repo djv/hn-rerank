@@ -75,9 +75,24 @@ CACHE_TTL = 86400
 EXTERNAL_SEM = asyncio.Semaphore(50)
 
 
+import trafilatura
+
 async def fetch_article_text(url: str) -> str:
-    # Skip Body fetching for bulk ranking to improve speed by 10x
-    return ""
+    """Fetch and extract main text from a URL using trafilatura."""
+    if not url or "news.ycombinator.com" in url:
+        return ""
+    try:
+        def _download_and_extract():
+            downloaded = trafilatura.fetch_url(url)
+            if downloaded:
+                # Extract text, favoring clean and concise output
+                return trafilatura.extract(downloaded, include_comments=False, include_tables=False)
+            return ""
+        
+        content = await asyncio.to_thread(_download_and_extract)
+        return content or ""
+    except Exception:
+        return ""
 
 
 async def fetch_story_with_comments(
@@ -113,7 +128,14 @@ async def fetch_story_with_comments(
 
             text_parts = [story["title"]]
 
-            # Extract top 10 comments
+            # Try to fetch article text for deeper semantic matching
+            article_text = await fetch_article_text(story["url"])
+            if article_text:
+                # Use first 2000 chars of article for ranking
+                text_parts.append(article_text[:2000])
+                story["article_snippet"] = article_text[:1000] # Store snippet for UI
+
+            # Extract top comments
             all_comments = []
 
             def collect(nodes):
@@ -129,13 +151,13 @@ async def fetch_story_with_comments(
             collect(data.get("children", []))
             all_comments.sort(key=lambda x: x[0], reverse=True)
 
-            # Use top 5 for ranking text
+            # Use top 5 for ranking text if article text is short or missing
             for _, t in all_comments[:5]:
                 text_parts.append(t)
 
             # Store top 10 for UI
             story["comments"] = [t for _, t in all_comments[:10]]
-            story["text_content"] = " ".join(text_parts)[:3000]
+            story["text_content"] = " ".join(text_parts)[:5000]
 
             with open(cache_path, "w") as f:
                 json.dump({"retrieved_at": time.time(), "data": story}, f)

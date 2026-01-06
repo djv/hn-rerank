@@ -105,13 +105,16 @@ def get_embeddings(texts: list[str], is_query: bool = False) -> np.ndarray:
         return np.array([])
 
     model = get_model()
-    model_id = "onnx-bge-base-1.5"
-
-    # BGE does not require the "search_document:" prefix, only a query prefix
-    if is_query:
-        prefix = "Represent this sentence for searching relevant passages: "
+    # Check if we are using Nomic (onnx_model) or BGE
+    is_nomic = "nomic" in model.tokenizer.name_or_path.lower() or "onnx_model" in model.tokenizer.name_or_path.lower()
+    
+    if is_nomic:
+        prefix = "search_query: " if is_query else "search_document: "
     else:
-        prefix = ""
+        # BGE style
+        prefix = "Represent this sentence for searching relevant passages: " if is_query else ""
+
+    model_id = "nomic-1.5" if is_nomic else "bge-1.5"
 
     processed_texts = [f"{prefix}{t}" for t in texts]
 

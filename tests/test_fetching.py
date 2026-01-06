@@ -22,9 +22,9 @@ async def test_get_user_data():
 
 @pytest.mark.asyncio
 async def test_fetch_article_text():
-    # Currently it's a stub returning ""
+    # Now it uses trafilatura
     res = await fetch_article_text("http://example.com")
-    assert res == ""
+    assert "domain" in res.lower()
 
 @pytest.mark.asyncio
 async def test_get_top_stories():
