@@ -172,7 +172,10 @@ async def get_user_data(username: str) -> tuple[list[dict], list[dict], set[int]
 
 
 async def get_best_stories(
-    limit: int, days: int = ALGOLIA_DEFAULT_DAYS, exclude_ids: set[int] | None = None
+    limit: int,
+    days: int = ALGOLIA_DEFAULT_DAYS,
+    exclude_ids: set[int] | None = None,
+    progress_callback: callable = None,
 ) -> list[dict]:
     if exclude_ids is None:
         exclude_ids = set()
@@ -194,7 +197,16 @@ async def get_best_stories(
             for h in resp.json().get("hits", [])
             if int(h["objectID"]) not in exclude_ids
         ]
-        res = await asyncio.gather(
-            *[fetch_story_with_comments(client, sid) for sid in hit_ids]
-        )
-        return [s for s in res if s]
+        
+        results = []
+        batch_size = 50
+        for i in range(0, len(hit_ids), batch_size):
+            batch = hit_ids[i : i + batch_size]
+            batch_res = await asyncio.gather(
+                *[fetch_story_with_comments(client, sid) for sid in batch]
+            )
+            results.extend([s for s in batch_res if s])
+            if progress_callback:
+                progress_callback(len(results), len(hit_ids))
+                
+        return results

@@ -452,8 +452,8 @@ def rank_stories(
     negative_embeddings: NDArray[np.float32] | None = None,
     positive_weights: NDArray[np.float32] | None = None,
     diversity_lambda: float = 0.0,
-    hn_weight: float = 0.15,
-    neg_weight: float = 0.5,
+    hn_weight: float = 0.25,
+    neg_weight: float = 0.6,
 ) -> list[tuple[int, float, int]]:
     """
     Rank stories using hybrid semantic + temporal scoring.

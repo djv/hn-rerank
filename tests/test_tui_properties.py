@@ -61,7 +61,7 @@ async def test_law_of_ranking_integrity(tui_mocks, _):
     """
     app = HNRerankTUI("testuser")
     async with app.run_test() as pilot:
-        await pilot.pause(1.5)
+        await pilot.pause(0.5)
         list_view = app.query_one("#story-list", ListView)
 
         scores = [child.score_val for child in list_view.children if isinstance(child, StoryItem)]
@@ -76,7 +76,7 @@ async def test_law_of_expansion_isolation(tui_mocks, _):
     """
     app = HNRerankTUI("testuser")
     async with app.run_test() as pilot:
-        await pilot.pause(1.5) # Wait for initial load, focus, and timer expansion
+        await pilot.pause(1.0) # Wait for initial load, focus, and timer expansion
         list_view = app.query_one("#story-list", ListView)
 
         # 1. Check initial state (first item expanded)

@@ -118,7 +118,7 @@ async def test_auto_login_with_username(comprehensive_tui_mocks):
     """Test app behavior when username is provided"""
     app = HNRerankTUI("testuser")
     async with app.run_test() as pilot:
-        await pilot.pause(1.5)
+        await pilot.pause(0.5)
 
         # App should be running with provided username
         assert app.is_running
@@ -131,7 +131,7 @@ async def test_no_username_warning(comprehensive_tui_mocks):
     with patch.dict("os.environ", {}, clear=True):
         app = HNRerankTUI(None)
         async with app.run_test() as pilot:
-            await pilot.pause(1.5)
+            await pilot.pause(0.5)
             # App should still work with a default username
             assert app.is_running
 
@@ -150,14 +150,14 @@ async def test_open_article_action(comprehensive_tui_mocks):
     with patch("tui_app.webbrowser.open_new_tab") as mock_browser, \
          patch.dict("os.environ", env, clear=True):
         async with app.run_test() as pilot:
-            await pilot.pause(1.5)
+            await pilot.pause(0.5)
 
             list_view = app.query_one("#story-list", ListView)
             assert len(list_view.children) > 0
 
             # Directly call the action to test it
             app.action_open_article()
-            await pilot.pause(0.2)
+            await pilot.pause(0.5)
 
             # The action should have been called (even if the key binding doesn't work)
             mock_browser.assert_called()
@@ -175,14 +175,14 @@ async def test_open_comments_action(comprehensive_tui_mocks):
     with patch("tui_app.webbrowser.open_new_tab") as mock_browser, \
          patch.dict("os.environ", env, clear=True):
         async with app.run_test() as pilot:
-            await pilot.pause(1.5)
+            await pilot.pause(0.5)
 
             list_view = app.query_one("#story-list", ListView)
             assert len(list_view.children) > 0
 
             # Directly call the action to test it
             app.action_open_hn()
-            await pilot.pause(0.2)
+            await pilot.pause(0.5)
 
             # The action should have been called
             mock_browser.assert_called()
@@ -199,7 +199,7 @@ async def test_ssh_clipboard_copy(comprehensive_tui_mocks):
          patch.object(app, "copy_to_clipboard") as mock_clipboard:
 
         async with app.run_test() as pilot:
-            await pilot.pause(1.5)
+            await pilot.pause(0.5)
 
             # Press 'v' to open article
             await pilot.press("v")
@@ -211,7 +211,7 @@ async def test_ssh_clipboard_copy(comprehensive_tui_mocks):
 
 # --- Button click tests ---
 
-@pytest.mark.skip(reason="Textual button click on hidden elements unreliable in tests")
+# @pytest.mark.skip(reason="Textual button click on hidden elements unreliable in tests")
 @pytest.mark.asyncio
 async def test_button_click_open_article(comprehensive_tui_mocks, mock_story):
     """Test clicking the 'open article' button"""
@@ -219,7 +219,7 @@ async def test_button_click_open_article(comprehensive_tui_mocks, mock_story):
 
     with patch("tui_app.webbrowser.open_new_tab") as mock_browser:
         async with app.run_test() as pilot:
-            await pilot.pause(1.5)
+            await pilot.pause(0.5)
 
             list_view = app.query_one("#story-list", ListView)
             item = cast(StoryItem, list_view.children[0])
@@ -236,7 +236,7 @@ async def test_button_click_open_article(comprehensive_tui_mocks, mock_story):
             mock_browser.assert_called()
 
 
-@pytest.mark.skip(reason="Textual button click on hidden elements unreliable in tests")
+# @pytest.mark.skip(reason="Textual button click on hidden elements unreliable in tests")
 @pytest.mark.asyncio
 async def test_button_click_open_comments(comprehensive_tui_mocks):
     """Test clicking the 'comments' button"""
@@ -244,7 +244,7 @@ async def test_button_click_open_comments(comprehensive_tui_mocks):
 
     with patch("tui_app.webbrowser.open_new_tab") as mock_browser:
         async with app.run_test() as pilot:
-            await pilot.pause(1.5)
+            await pilot.pause(0.5)
 
             list_view = app.query_one("#story-list", ListView)
             item = cast(StoryItem, list_view.children[0])
@@ -261,7 +261,7 @@ async def test_button_click_open_comments(comprehensive_tui_mocks):
             mock_browser.assert_called()
 
 
-@pytest.mark.skip(reason="Textual button click on hidden elements unreliable in tests")
+# @pytest.mark.skip(reason="Textual button click on hidden elements unreliable in tests")
 @pytest.mark.asyncio
 async def test_button_click_upvote(comprehensive_tui_mocks):
     """Test clicking the upvote button"""
@@ -269,7 +269,7 @@ async def test_button_click_upvote(comprehensive_tui_mocks):
     app = HNRerankTUI("testuser")
 
     async with app.run_test() as pilot:
-        await pilot.pause(1.5)
+        await pilot.pause(0.5)
 
         list_view = app.query_one("#story-list", ListView)
         item = cast(StoryItem, list_view.children[0])
@@ -286,7 +286,7 @@ async def test_button_click_upvote(comprehensive_tui_mocks):
         mocks["client"].vote.assert_called_with(999, "up")
 
 
-@pytest.mark.skip(reason="Textual button click on hidden elements unreliable in tests")
+# @pytest.mark.skip(reason="Textual button click on hidden elements unreliable in tests")
 @pytest.mark.asyncio
 async def test_button_click_hide(comprehensive_tui_mocks):
     """Test clicking the hide button"""
@@ -294,7 +294,7 @@ async def test_button_click_hide(comprehensive_tui_mocks):
     app = HNRerankTUI("testuser")
 
     async with app.run_test() as pilot:
-        await pilot.pause(1.5)
+        await pilot.pause(0.5)
 
         list_view = app.query_one("#story-list", ListView)
         item = cast(StoryItem, list_view.children[0])
@@ -320,7 +320,7 @@ async def test_refresh_feed_action(comprehensive_tui_mocks):
     app = HNRerankTUI("testuser")
 
     async with app.run_test() as pilot:
-        await pilot.pause(1.5)
+        await pilot.pause(0.5)
 
         # Reset mock call counts
         mocks["user"].reset_mock()
@@ -328,7 +328,7 @@ async def test_refresh_feed_action(comprehensive_tui_mocks):
 
         # Press 'r' to refresh
         await pilot.press("r")
-        await pilot.pause(1.5)
+        await pilot.pause(0.5)
 
         # Verify API calls were made again
         mocks["user"].assert_called()
@@ -346,7 +346,7 @@ async def test_empty_candidates_handling(comprehensive_tui_mocks):
     app = HNRerankTUI("testuser")
 
     async with app.run_test() as pilot:
-        await pilot.pause(1.5)
+        await pilot.pause(0.5)
 
         # App should still be running
         assert app.is_running
@@ -365,7 +365,7 @@ async def test_refresh_feed_error_handling(comprehensive_tui_mocks):
     app = HNRerankTUI("testuser")
 
     async with app.run_test() as pilot:
-        await pilot.pause(1.5)
+        await pilot.pause(0.5)
 
         # App should still be running despite error
         assert app.is_running
@@ -380,7 +380,7 @@ async def test_vote_status_update(comprehensive_tui_mocks):
     app = HNRerankTUI("testuser")
 
     async with app.run_test() as pilot:
-        await pilot.pause(1.5)
+        await pilot.pause(0.5)
 
         list_view = app.query_one("#story-list", ListView)
         item = cast(StoryItem, list_view.children[0])
@@ -404,7 +404,7 @@ async def test_pending_actions_deduplication(comprehensive_tui_mocks):
     # Make vote take some time
     async def slow_vote(*args, **kwargs):
         import asyncio
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.1)
         return (True, "OK")
 
     mocks["client"].vote = AsyncMock(side_effect=slow_vote)
@@ -412,14 +412,14 @@ async def test_pending_actions_deduplication(comprehensive_tui_mocks):
     app = HNRerankTUI("testuser")
 
     async with app.run_test() as pilot:
-        await pilot.pause(1.5)
+        await pilot.pause(0.5)
 
         # Rapidly press 'u' multiple times
         await pilot.press("u")
         await pilot.press("u")
         await pilot.press("u")
 
-        await pilot.pause(1.0)
+        await pilot.pause(0.3)
 
         # Vote should only be called once due to deduplication
         assert mocks["client"].vote.call_count == 1
@@ -472,7 +472,7 @@ async def test_story_item_with_article_snippet(comprehensive_tui_mocks):
     app = HNRerankTUI("testuser")
 
     async with app.run_test() as pilot:
-        await pilot.pause(1.5)
+        await pilot.pause(0.5)
 
         list_view = app.query_one("#story-list", ListView)
         item = cast(StoryItem, list_view.children[0])
@@ -504,7 +504,7 @@ async def test_story_item_with_comments(comprehensive_tui_mocks):
     app = HNRerankTUI("testuser")
 
     async with app.run_test() as pilot:
-        await pilot.pause(1.5)
+        await pilot.pause(0.5)
 
         list_view = app.query_one("#story-list", ListView)
         item = cast(StoryItem, list_view.children[0])

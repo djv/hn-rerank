@@ -8,7 +8,6 @@ import traceback
 import webbrowser
 from typing import ClassVar, cast
 
-import numpy as np
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -29,6 +28,7 @@ from textual.widgets import (
 from api import rerank
 from api.client import HNClient
 from api.config import get_username, save_config
+from api.constants import CANDIDATE_FETCH_COUNT
 from api.fetching import get_best_stories, get_user_data
 
 # --- CREDENTIALS (Env Vars) ---
@@ -69,18 +69,15 @@ class StoryItem(ListItem):
                     f"[@click=app.open_article]{self.story['title']}[/]",
                     id="story-title",
                 )
-                host = (
-                    self.story.get("url", "hn").split("/")[2]
-                    if self.story.get("url") and "//" in self.story["url"]
-                    else "hn"
-                )
-                yield Label(host, id="hostname")
+                yield Label(f"{self.story.get('score', 0)}p", id="hn-score")
                 yield Label(
                     get_relative_time(self.story.get("time", 0)), id="time"
                 )
                 yield Label("", id="vote-icon")
 
             with Vertical(id="details"):
+                if self.reason:
+                    yield Label(f"[bold]{self.reason}[/]", classes="reason")
                 hn_url = f"https://news.ycombinator.com/item?id={self.story['id']}"
                 yield Label(f"[dim]{hn_url}[/dim]", id="hn-link")
 
@@ -181,7 +178,7 @@ class HNRerankTUI(App):
     StoryItem #row { height: 1; }
     StoryItem #match-score { width: 5; text-style: bold; color: $accent; }
     StoryItem #story-title { width: 1fr; text-style: bold; }
-    StoryItem #hostname { width: 15; color: $text-muted; text-align: right; }
+    StoryItem #hn-score { width: 7; color: $text-muted; text-align: right; }
     StoryItem #time { width: 6; color: $text-muted; text-align: right; }
     StoryItem #vote-icon { width: 2; }
     
@@ -217,6 +214,7 @@ class HNRerankTUI(App):
         super().__init__()
         self.username = username
         self._pending_actions = set()
+        self.session_excluded_ids = set()
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -291,7 +289,16 @@ class HNRerankTUI(App):
             progress.progress = 30
 
             self.notify("Fetching stories...")
-            candidates = await get_best_stories(200, 30, exclude_ids)
+            all_exclude = exclude_ids | self.session_excluded_ids
+            
+            def fetch_progress(fetched: int, total: int):
+                # Map 0-100% of fetching to 30-70% of total progress
+                percent = 30 + int((fetched / total) * 40)
+                progress.update(progress=percent)
+
+            candidates = await get_best_stories(
+                CANDIDATE_FETCH_COUNT, 30, all_exclude, progress_callback=fetch_progress
+            )
             progress.progress = 70
 
             if not candidates:
@@ -325,7 +332,6 @@ class HNRerankTUI(App):
                     positive_embeddings=p_emb,
                     negative_embeddings=n_emb,
                     positive_weights=p_weights,
-                    hn_weight=0.15,
                 )
 
             progress.progress = 90
@@ -334,9 +340,12 @@ class HNRerankTUI(App):
             list_view = self.query_one("#story-list", ListView)
             list_view.clear()
 
-            for idx, score, _ in ranked[:50]:
+            for idx, score, fav_idx in ranked[:50]:
                 story = candidates[idx]
-                await list_view.append(StoryItem(story, score, "", ""))
+                reason = ""
+                if fav_idx != -1 and fav_idx < len(pos_data):
+                    reason = f"Matches your interest in: {pos_data[fav_idx]['title']}"
+                await list_view.append(StoryItem(story, score, reason, ""))
 
             if list_view.children:
                 list_view.index = 0
@@ -398,6 +407,9 @@ class HNRerankTUI(App):
                     success, _ = await client.vote(sid, "up")
                 if success:
                     item.vote_status = "up"
+                    self.session_excluded_ids.add(sid)
+                    self.notify("Upvoted")
+                    item.remove()
             finally:
                 self._pending_actions.remove(sid)
 
@@ -413,7 +425,9 @@ class HNRerankTUI(App):
                     success, _ = await client.hide(sid)
                 if success:
                     item.vote_status = "down"
+                    self.session_excluded_ids.add(sid)
                     self.notify("Story hidden")
+                    item.remove()
             finally:
                 self._pending_actions.remove(sid)
 
@@ -436,7 +450,7 @@ async def run_batch(username: str, count: int, fmt: str) -> None:
     pos_data, neg_data, exclude_ids = await get_user_data(username)
 
     print("Fetching candidates...", file=sys.stderr)
-    candidates = await get_best_stories(200, 30, exclude_ids)
+    candidates = await get_best_stories(CANDIDATE_FETCH_COUNT, 30, exclude_ids)
 
     if not candidates:
         print("No stories found", file=sys.stderr)
@@ -466,14 +480,17 @@ async def run_batch(username: str, count: int, fmt: str) -> None:
             positive_embeddings=p_emb,
             negative_embeddings=n_emb,
             positive_weights=p_weights,
-            hn_weight=0.15,
         )
 
     ranked = await asyncio.to_thread(do_rank)
 
     results = []
-    for idx, score, _ in ranked[:count]:
+    for idx, score, fav_idx in ranked[:count]:
         story = candidates[idx]
+        reason = ""
+        if fav_idx != -1 and fav_idx < len(pos_data):
+            reason = f"Matches: {pos_data[fav_idx]['title']}"
+            
         results.append({
             "id": story["id"],
             "title": story["title"],
@@ -482,6 +499,7 @@ async def run_batch(username: str, count: int, fmt: str) -> None:
             "score": round(score * 100),
             "points": story.get("score", 0),
             "comments": story.get("descendants", 0),
+            "reason": reason,
         })
 
     if fmt == "json":
@@ -492,6 +510,8 @@ async def run_batch(username: str, count: int, fmt: str) -> None:
     else:  # text
         for i, r in enumerate(results, 1):
             print(f"{i:2}. [{r['score']:3}%] {r['title']}")
+            if r["reason"]:
+                print(f"    {r['reason']}")
             print(f"    {r['url']}")
             print(f"    {r['hn_url']}")
             print()
