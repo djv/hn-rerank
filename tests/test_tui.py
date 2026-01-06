@@ -42,6 +42,8 @@ def mock_hn_client():
         client.vote = AsyncMock(return_value=(True, "Voted"))
         client.hide = AsyncMock(return_value=(True, "Hidden"))
         client.close = AsyncMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock()
         yield client
 
 

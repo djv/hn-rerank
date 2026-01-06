@@ -38,6 +38,8 @@ def tui_mocks():
         client.hide = AsyncMock(return_value=(True, "OK"))
         client.close = AsyncMock()
         client.login = AsyncMock(return_value=(True, "OK"))
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock()
         
         yield {
             "user": m_user,

@@ -316,6 +316,8 @@ class HNRerankTUI(App):
     def action_toggle_expand(self):
         if item := self._get_current():
             item.expanded = not item.expanded
+            if item.expanded:
+                self.query_one("#story-list").scroll_to_widget(item)
 
     def _open_url(self, url: str):
         if "SSH_CONNECTION" in os.environ:
