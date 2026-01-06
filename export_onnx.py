@@ -1,13 +1,13 @@
 from optimum.exporters.onnx import main_export
 from pathlib import Path
 
-MODEL_ID = "nomic-ai/nomic-embed-text-v1.5"
-OUTPUT_DIR = Path("onnx_model")
+MODEL_ID = "BAAI/bge-small-en-v1.5"
+OUTPUT_DIR = Path("bge_model")
 
 
 def export():
-    if OUTPUT_DIR.exists():
-        print(f"Directory {OUTPUT_DIR} already exists. Skipping export.")
+    if (OUTPUT_DIR / "model.onnx").exists():
+        print(f"Model already exported to {OUTPUT_DIR}. Skipping export.")
         return
 
     print(f"Exporting {MODEL_ID} to ONNX...")

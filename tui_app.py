@@ -212,9 +212,9 @@ class HNRerankTUI(App):
         # Auto-login if creds available
         if HN_USER and HN_PASS:
             self.notify(f"Authenticating as {HN_USER}...")
-            client = HNClient()
-            success, msg = await client.login(HN_USER, HN_PASS)
-            await client.close()
+            async with HNClient() as client:
+                success, msg = await client.login(HN_USER, HN_PASS)
+
             if success:
                 self.username = HN_USER
                 save_config("username", HN_USER)
@@ -346,9 +346,8 @@ class HNRerankTUI(App):
                 return
             self._pending_actions.add(sid)
             try:
-                client = HNClient()
-                success, _ = await client.vote(sid, "up")
-                await client.close()
+                async with HNClient() as client:
+                    success, _ = await client.vote(sid, "up")
                 if success:
                     item.vote_status = "up"
             finally:
@@ -362,9 +361,8 @@ class HNRerankTUI(App):
                 return
             self._pending_actions.add(sid)
             try:
-                client = HNClient()
-                success, _ = await client.hide(sid)
-                await client.close()
+                async with HNClient() as client:
+                    success, _ = await client.hide(sid)
                 if success:
                     item.vote_status = "down"
                     self.notify("Story hidden")

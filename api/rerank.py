@@ -15,6 +15,23 @@ CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 class ONNXEmbeddingModel:
     def __init__(self, model_dir="bge_model"):
+        # Check if model exists, if not, try to setup
+        if not Path(f"{model_dir}/model_quantized.onnx").exists():
+            print(f"Model not found in {model_dir}. Attempting to run setup...")
+            try:
+                import subprocess
+                import sys
+
+                # Check if setup_model.py exists in root
+                setup_script = Path("setup_model.py")
+                if setup_script.exists():
+                     subprocess.check_call([sys.executable, str(setup_script)])
+                else:
+                     print("setup_model.py not found! Please run the setup script manually.")
+            except Exception as e:
+                print(f"Failed to auto-setup model: {e}")
+                print("Please run 'uv run setup_model.py' manually.")
+
         self.tokenizer = AutoTokenizer.from_pretrained(
             model_dir, trust_remote_code=True
         )
