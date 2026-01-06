@@ -2,6 +2,7 @@ import httpx
 from bs4 import BeautifulSoup
 from pathlib import Path
 import json
+from api.logging_config import logger
 
 COOKIES_FILE = Path.home() / ".config" / "hn_rerank" / "cookies.json"
 
@@ -27,8 +28,9 @@ class HNClient:
                     cookies = json.load(f)
                     for k, v in cookies.items():
                         self.client.cookies.set(k, v)
-            except Exception:
-                pass
+                logger.debug(f"Loaded cookies from {COOKIES_FILE}")
+            except Exception as e:
+                logger.warning(f"Failed to load cookies: {e}")
 
     def _save_cookies(self):
         COOKIES_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -67,8 +69,15 @@ class HNClient:
             paged_url = (
                 f"{url_path}&p={page}" if "?" in url_path else f"{url_path}?p={page}"
             )
-            resp = await self.client.get(paged_url)
-            if resp.status_code != 200:
+            try:
+                resp = await self.client.get(paged_url)
+                if resp.status_code != 200:
+                    logger.warning(
+                        f"Failed to fetch {paged_url}: status {resp.status_code}"
+                    )
+                    break
+            except Exception as e:
+                logger.error(f"Error scraping {paged_url}: {e}")
                 break
 
             soup = BeautifulSoup(resp.text, "html.parser")
@@ -174,7 +183,8 @@ class HNClient:
         try:
             resp = await self.client.get("/")
             return "logout" in resp.text
-        except Exception:
+        except Exception as e:
+            logger.error(f"Error checking session: {e}")
             return False
 
     async def close(self):

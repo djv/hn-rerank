@@ -5,6 +5,7 @@ import onnxruntime as ort
 from transformers import AutoTokenizer
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.cluster import KMeans, AgglomerativeClustering
+from api.logging_config import logger
 
 # Global singleton
 _model = None
@@ -17,7 +18,7 @@ class ONNXEmbeddingModel:
     def __init__(self, model_dir="bge_model"):
         # Check if model exists, if not, try to setup
         if not Path(f"{model_dir}/model_quantized.onnx").exists():
-            print(f"Model not found in {model_dir}. Attempting to run setup...")
+            logger.info(f"Model not found in {model_dir}. Attempting to run setup...")
             try:
                 import subprocess
                 import sys
@@ -27,10 +28,10 @@ class ONNXEmbeddingModel:
                 if setup_script.exists():
                      subprocess.check_call([sys.executable, str(setup_script)])
                 else:
-                     print("setup_model.py not found! Please run the setup script manually.")
+                     logger.error("setup_model.py not found! Please run the setup script manually.")
             except Exception as e:
-                print(f"Failed to auto-setup model: {e}")
-                print("Please run 'uv run setup_model.py' manually.")
+                logger.error(f"Failed to auto-setup model: {e}")
+                logger.error("Please run 'uv run setup_model.py' manually.")
 
         self.tokenizer = AutoTokenizer.from_pretrained(
             model_dir, trust_remote_code=True
@@ -123,7 +124,8 @@ def get_embeddings(texts: list[str], is_query: bool = False) -> np.ndarray:
         if cache_path.exists():
             try:
                 vectors.append(np.load(cache_path))
-            except Exception:
+            except Exception as e:
+                logger.warning(f"Failed to load cache for text: {e}")
                 vectors.append(None)
                 indices_to_compute.append(idx)
         else:

@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 from typing import List, Optional, Tuple
 from api.client import HNClient
+from api.logging_config import logger
 from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI, HTTPException
@@ -85,8 +86,8 @@ async def fetch_story_with_comments(
                 cached = json.load(f)
             if time.time() - cached["retrieved_at"] < CACHE_TTL:
                 return cached["data"]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to load story cache: {e}")
 
     # 2. Fetch from Algolia (Fast, includes comments)
     try:
@@ -134,8 +135,8 @@ async def fetch_story_with_comments(
             with open(cache_path, "w") as f:
                 json.dump({"retrieved_at": time.time(), "data": story}, f)
             return story
-    except Exception:
-        pass
+    except Exception as e:
+        logger.error(f"Error fetching story {story_id}: {e}")
     return None
 
 
@@ -181,25 +182,60 @@ async def get_best_stories(
 ) -> List[dict]:
     if exclude_ids is None:
         exclude_ids = set()
+
+    found_stories = []
+
     async with httpx.AsyncClient(timeout=10.0) as client:
         start_time = int(
             (datetime.now(timezone.utc) - timedelta(days=days)).timestamp()
         )
-        params = {
-            "tags": "story",
-            "numericFilters": f"created_at_i>{start_time},points>20",
-            "hitsPerPage": limit,
-        }
-        resp = await client.get(f"{ALGOLIA_API_BASE}/search", params=params)
-        if resp.status_code != 200:
-            return []
 
-        hit_ids = [
-            int(h["objectID"])
-            for h in resp.json().get("hits", [])
-            if int(h["objectID"]) not in exclude_ids
-        ]
-        res = await asyncio.gather(
-            *[fetch_story_with_comments(client, sid) for sid in hit_ids]
-        )
-        return [s for s in res if s]
+        # Pagination Loop
+        page = 0
+        max_pages = 10  # Safety limit to avoid infinite loops
+
+        while len(found_stories) < limit and page < max_pages:
+            params = {
+                "tags": "story",
+                "numericFilters": f"created_at_i>{start_time},points>20",
+                "hitsPerPage": limit, # Fetch 'limit' items per page
+                "page": page
+            }
+
+            try:
+                resp = await client.get(f"{ALGOLIA_API_BASE}/search", params=params)
+                if resp.status_code != 200:
+                    logger.error(f"Algolia search failed: {resp.status_code}")
+                    break
+
+                data = resp.json()
+                hits = data.get("hits", [])
+                if not hits:
+                    break
+
+                # Filter out seen IDs
+                new_ids = []
+                for h in hits:
+                    sid = int(h["objectID"])
+                    if sid not in exclude_ids:
+                        new_ids.append(sid)
+
+                if new_ids:
+                    # Fetch details
+                    tasks = [fetch_story_with_comments(client, sid) for sid in new_ids]
+                    batch_results = await asyncio.gather(*tasks)
+
+                    # Add valid stories to our list
+                    for s in batch_results:
+                        if s:
+                            found_stories.append(s)
+                            if len(found_stories) >= limit:
+                                break
+
+                page += 1
+
+            except Exception as e:
+                logger.error(f"Error in get_best_stories loop: {e}")
+                break
+
+    return found_stories[:limit]
