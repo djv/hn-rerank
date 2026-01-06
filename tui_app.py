@@ -6,6 +6,7 @@ import argparse
 import re
 import traceback
 import os
+import time
 from typing import Optional
 
 from textual.app import App, ComposeResult
@@ -24,6 +25,20 @@ from sklearn.metrics.pairwise import cosine_similarity
 # --- HARDCODED CREDS (Prefer Env Vars) ---
 HN_USER = os.getenv("HN_USERNAME", "your_username")
 HN_PASS = os.getenv("HN_PASSWORD", "your_password")
+
+
+def get_relative_time(timestamp: int) -> str:
+    if not timestamp:
+        return ""
+    diff = int(time.time()) - timestamp
+    if diff < 60:
+        return "now"
+    elif diff < 3600:
+        return f"{diff // 60}m"
+    elif diff < 86400:
+        return f"{diff // 3600}h"
+    else:
+        return f"{diff // 86400}d"
 
 
 class StoryItem(ListItem):
@@ -51,6 +66,9 @@ class StoryItem(ListItem):
                     else "hn"
                 )
                 yield Label(host, id="hostname")
+                yield Label(
+                    get_relative_time(self.story.get("time", 0)), id="time"
+                )
                 yield Label("", id="vote-icon")
 
             with Vertical(id="details"):
@@ -150,6 +168,7 @@ class HNRerankTUI(App):
     StoryItem #match-score { width: 5; text-style: bold; color: $accent; }
     StoryItem #story-title { width: 1fr; text-style: bold; }
     StoryItem #hostname { width: 15; color: $text-muted; text-align: right; }
+    StoryItem #time { width: 6; color: $text-muted; text-align: right; }
     StoryItem #vote-icon { width: 2; }
     
     StoryItem #details { display: none; padding: 1 2; }
