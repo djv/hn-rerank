@@ -364,12 +364,19 @@ def rank_stories(
     import time
 
     now = time.time()
-    hn_scores = np.array(
-        [
-            calculate_hn_score(s.get("score", 0), s.get("time", now), now)
-            for s in stories
-        ]
-    )
+
+    scores = np.array([s.get("score", 0) for s in stories])
+    times = np.array([s.get("time", now) for s in stories])
+
+    hours_age = (now - times) / 3600
+    hours_age = np.maximum(hours_age, 0)
+
+    # Vectorized calculate_hn_score logic
+    # Score = (P - 1)^0.8 / (T + 2)^1.8
+    numerator = np.power(np.maximum(scores - 1, 0), 0.8)
+    denominator = np.power(hours_age + 2, 1.8)
+
+    hn_scores = numerator / denominator
 
     # Normalize HN scores to 0-1 range
     if hn_scores.max() > 0:
