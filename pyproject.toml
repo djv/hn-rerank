@@ -16,20 +16,32 @@ dependencies = [
     "scikit-learn>=1.4.0",
     "onnxruntime>=1.16.0",
     "transformers>=4.36.0",
-    # Testing (dev dependencies)
+]
+
+[project.scripts]
+hn-rerank = "tui_app:main"
+
+[dependency-groups]
+dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
     "pytest-cov>=7.0.0",
     "pytest-timeout>=2.2.0",
     "hypothesis>=6.92.0",
     "respx>=0.22.0",
+    "ruff>=0.14.10",
 ]
-
-[project.scripts]
-hn-rerank = "tui_app:main"
 
 [tool.pytest.ini_options]
 pythonpath = "."
 timeout = 30
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "B", "UP", "PL", "RUF"]
+ignore = []

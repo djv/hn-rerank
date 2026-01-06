@@ -1,15 +1,20 @@
+import json
+import time
+from pathlib import Path
+
 import httpx
 from bs4 import BeautifulSoup
-from pathlib import Path
-import json
 
 COOKIES_FILE = Path.home() / ".config" / "hn_rerank" / "cookies.json"
+USER_CACHE_DIR = Path(".cache/user")
+USER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+USER_CACHE_TTL = 300  # 5 minutes
 
 
 class HNClient:
     BASE_URL = "https://news.ycombinator.com"
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.client = httpx.AsyncClient(
             base_url=self.BASE_URL,
             follow_redirects=True,
@@ -17,27 +22,27 @@ class HNClient:
                 "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             },
         )
-        self.username = None
+        self.username: str | None = None
         self._load_cookies()
 
-    def _load_cookies(self):
+    def _load_cookies(self) -> None:
         if COOKIES_FILE.exists():
             try:
-                with open(COOKIES_FILE, "r") as f:
+                with open(COOKIES_FILE) as f:
                     cookies = json.load(f)
                     for k, v in cookies.items():
                         self.client.cookies.set(k, v)
             except Exception:
                 pass
 
-    def _save_cookies(self):
+    def _save_cookies(self) -> None:
         COOKIES_FILE.parent.mkdir(parents=True, exist_ok=True)
         with open(COOKIES_FILE, "w") as f:
             # simple dict conversion
             cookies = {c.name: c.value for c in self.client.cookies.jar}
             json.dump(cookies, f)
 
-    async def login(self, username, password):
+    async def login(self, username: str, password: str) -> tuple[bool, str]:
         # 1. Get fnid (if present)
         resp = await self.client.get("/login")
         if resp.status_code != 200:
@@ -85,17 +90,52 @@ class HNClient:
                 break
         return ids
 
+    def _get_user_cache(self, username: str, cache_type: str) -> set[int] | None:
+        """Get cached user data if fresh."""
+        cache_path = USER_CACHE_DIR / f"{username}_{cache_type}.json"
+        if cache_path.exists():
+            try:
+                with open(cache_path) as f:
+                    data = json.load(f)
+                if time.time() - data["ts"] < USER_CACHE_TTL:
+                    return set(data["ids"])
+            except Exception:
+                pass
+        return None
+
+    def _set_user_cache(self, username: str, cache_type: str, ids: set[int]) -> None:
+        """Save user data to cache."""
+        cache_path = USER_CACHE_DIR / f"{username}_{cache_type}.json"
+        with open(cache_path, "w") as f:
+            json.dump({"ts": time.time(), "ids": list(ids)}, f)
+
     async def fetch_favorites(self, username: str) -> set[int]:
-        return await self._scrape_list(f"/favorites?id={username}")
+        if cached := self._get_user_cache(username, "favorites"):
+            return cached
+        ids = await self._scrape_list(f"/favorites?id={username}")
+        self._set_user_cache(username, "favorites", ids)
+        return ids
 
     async def fetch_upvoted(self, username: str) -> set[int]:
-        return await self._scrape_list(f"/upvoted?id={username}")
+        if cached := self._get_user_cache(username, "upvoted"):
+            return cached
+        ids = await self._scrape_list(f"/upvoted?id={username}")
+        self._set_user_cache(username, "upvoted", ids)
+        return ids
 
     async def fetch_hidden(self, username: str) -> set[int]:
-        return await self._scrape_list(f"/hidden?id={username}")
+        if cached := self._get_user_cache(username, "hidden"):
+            return cached
+        ids = await self._scrape_list(f"/hidden?id={username}")
+        self._set_user_cache(username, "hidden", ids)
+        return ids
 
     async def fetch_submitted(self, username: str) -> set[int]:
-        return await self._scrape_list(f"/submitted?id={username}")
+        if cached := self._get_user_cache(username, "submitted"):
+            return cached
+        ids = await self._scrape_list(f"/submitted?id={username}")
+        self._set_user_cache(username, "submitted", ids)
+        return ids
 
     async def vote(self, item_id: int, direction: str = "up") -> tuple[bool, str]:
         """
@@ -170,7 +210,7 @@ class HNClient:
 
         return False, f"Hide failed: {hide_resp.status_code}"
 
-    async def check_session(self):
+    async def check_session(self) -> bool:
         """Verify if cookies are valid."""
         try:
             resp = await self.client.get("/")
@@ -178,11 +218,16 @@ class HNClient:
         except Exception:
             return False
 
-    async def close(self):
+    async def close(self) -> None:
         await self.client.aclose()
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> "HNClient":
         return self
 
-    async def __aexit__(self, exc_type, exc_value, traceback):
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: object | None,
+    ) -> None:
         await self.close()

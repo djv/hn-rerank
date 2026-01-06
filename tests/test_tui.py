@@ -1,8 +1,10 @@
-import pytest
 from unittest.mock import AsyncMock, patch
-from tui_app import HNRerankTUI, StoryItem
+
 import numpy as np
+import pytest
 from textual.widgets import ListView
+
+from tui_app import HNRerankTUI, StoryItem
 
 # Mock Data
 MOCK_STORY = {
@@ -18,9 +20,10 @@ MOCK_STORY = {
 @pytest.fixture
 def mock_rerank():
     with (
-        patch("api.rerank.init_model"),
-        patch("api.rerank.get_embeddings", return_value=np.zeros((1, 768))),
-        patch("api.rerank.rank_stories", return_value=[(0, 0.9, 0)]),
+        patch("tui_app.rerank.init_model"),
+        patch("tui_app.rerank.get_embeddings", return_value=np.zeros((1, 768))),
+        patch("tui_app.rerank.rank_stories", return_value=[(0, 0.9, 0)]),
+        patch("tui_app.rerank.compute_recency_weights", return_value=np.array([1.0])),
     ):
         yield
 
@@ -66,7 +69,7 @@ async def test_tui_loading_and_expand(mock_rerank, mock_api, mock_hn_client):
         # Press Enter to toggle (collapse)
         await pilot.press("enter")
         assert not item.expanded
-        
+
 @pytest.mark.asyncio
 async def test_tui_shortcuts(mock_rerank, mock_api, mock_hn_client):
     """Test shortcuts like upvote and hide."""

@@ -1,5 +1,7 @@
 import numpy as np
+
 from api import rerank
+
 
 def test_calculate_hn_score():
     # Fresh story (0 hours old)
@@ -7,7 +9,7 @@ def test_calculate_hn_score():
     # Older story (10 hours old)
     s2 = rerank.calculate_hn_score(100, 1000 - 36000, current_time=1000)
     assert s1 > s2
-    
+
     # Low points
     s3 = rerank.calculate_hn_score(1, 1000, current_time=1000)
     assert s3 == 0
@@ -15,7 +17,7 @@ def test_calculate_hn_score():
 def test_rank_mmr_edge_cases():
     # Empty inputs
     assert rerank.rank_mmr(np.array([]), np.array([]), 0.5) == []
-    
+
     # Single candidate
     cand = np.array([[1.0, 0.0]])
     fav = np.array([[1.0, 0.0]])
@@ -37,7 +39,7 @@ def test_rank_stories_diversity():
     ]
     cand_emb = np.array([[1.0, 0.0], [0.99, 0.01]]) # Very similar
     pos_emb = np.array([[1.0, 0.0]])
-    
+
     # High diversity penalty should favor different items (though here they are both similar to pos)
     res = rerank.rank_stories(stories, cand_embeddings=cand_emb, positive_embeddings=pos_emb, diversity_lambda=0.8)
     assert len(res) == 2

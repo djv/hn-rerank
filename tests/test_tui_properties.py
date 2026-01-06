@@ -1,10 +1,14 @@
-import pytest
-from hypothesis import given, strategies as st, settings, HealthCheck
-from unittest.mock import AsyncMock, patch
-from tui_app import HNRerankTUI, StoryItem
-import numpy as np
 from typing import cast
+from unittest.mock import AsyncMock, patch
+
+import numpy as np
+import pytest
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
 from textual.widgets import ListView
+
+from tui_app import HNRerankTUI, StoryItem
+
 
 # Mock Data Generator
 def create_mock_story(sid, score=100):
@@ -33,7 +37,7 @@ def tui_mocks():
 
         m_user.return_value = ([create_mock_story(999)], [], {999})
         m_cand.return_value = [create_mock_story(i) for i in range(20)]
-        
+
         client = MockClient.return_value
         client.vote = AsyncMock(return_value=(True, "OK"))
         client.hide = AsyncMock(return_value=(True, "OK"))
@@ -41,7 +45,7 @@ def tui_mocks():
         client.login = AsyncMock(return_value=(True, "OK"))
         client.__aenter__ = AsyncMock(return_value=client)
         client.__aexit__ = AsyncMock()
-        
+
         yield {
             "user": m_user,
             "cand": m_cand,
@@ -57,9 +61,9 @@ async def test_law_of_ranking_integrity(tui_mocks, _):
     """
     app = HNRerankTUI("testuser")
     async with app.run_test() as pilot:
-        await pilot.pause(0.2)
+        await pilot.pause(1.5)
         list_view = app.query_one("#story-list", ListView)
-        
+
         scores = [child.score_val for child in list_view.children if isinstance(child, StoryItem)]
         assert scores == sorted(scores, reverse=True)
 
@@ -99,6 +103,6 @@ async def test_system_thermal_stability(tui_mocks, keys):
             await pilot.pause(0.2)
             for key in keys:
                 await pilot.press(key)
-                
+
             assert app.is_running
             assert app.query_one("#story-list", ListView).index is not None

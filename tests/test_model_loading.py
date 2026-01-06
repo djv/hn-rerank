@@ -1,6 +1,8 @@
 from unittest.mock import MagicMock, patch
-from api import rerank
+
 import numpy as np
+
+from api import rerank
 
 
 def test_model_singleton():

@@ -2,17 +2,19 @@
 """Sanity check for HN rerank app."""
 import asyncio
 import time
+
 import numpy as np
+
+from api.fetching import fetch_article_text
 from api.rerank import (
-    init_model,
+    cluster_and_reduce_auto,
+    compute_recency_weights,
     get_embeddings,
+    init_model,
     rank_embeddings_maxsim,
     rank_mmr,
     rank_stories,
-    compute_recency_weights,
-    cluster_and_reduce_auto,
 )
-from api.fetching import fetch_article_text
 
 
 def test_model_loading():
@@ -22,7 +24,7 @@ def test_model_loading():
     assert model is not None
     assert hasattr(model, "encode")
     assert hasattr(model, "model_id")
-    print(f"   ✓ Model loaded: {model.model_id}")
+    print(f"   OK Model loaded: {model.model_id}")
 
 
 def test_embeddings():
@@ -41,7 +43,7 @@ def test_embeddings():
     t1 = time.time() - start
 
     assert embeddings1.shape == (3, 768), f"Expected (3, 768), got {embeddings1.shape}"
-    print(f"   ✓ Generated embeddings: {embeddings1.shape} in {t1:.3f}s")
+    print(f"   OK Generated embeddings: {embeddings1.shape} in {t1:.3f}s")
 
     # Second call (cached)
     start = time.time()
@@ -49,7 +51,7 @@ def test_embeddings():
     t2 = time.time() - start
 
     assert (embeddings1 == embeddings2).all(), "Cached embeddings mismatch"
-    print(f"   ✓ Cache hit: {t2:.3f}s ({t1/t2:.1f}x speedup)")
+    print(f"   OK Cache hit: {t2:.3f}s ({t1/t2:.1f}x speedup)")
 
 
 def test_maxsim_ranking():
@@ -79,7 +81,7 @@ def test_maxsim_ranking():
     top_idx = results[0][0]
     assert top_idx in [0, 2], f"Expected Rust or Type theory top, got: {candidates[top_idx]}"
 
-    print(f"   ✓ Ranked {len(results)} candidates")
+    print(f"   OK Ranked {len(results)} candidates")
     print(f"     Top: {candidates[results[0][0]]} (score: {results[0][1]:.3f})")
 
 
@@ -109,7 +111,7 @@ def test_mmr_ranking():
     indices = [idx for idx, _, _ in results]
     assert len(set(indices)) == 4, "Duplicate indices in results"
 
-    print(f"   ✓ MMR ranking works ({len(results)} candidates)")
+    print(f"   OK MMR ranking works ({len(results)} candidates)")
     for i, (idx, score, _) in enumerate(results[:2]):
         print(f"     #{i+1}: {candidates[idx][:40]}... (score: {score:.3f})")
 
@@ -144,7 +146,7 @@ def test_clustering():
     norms = np.linalg.norm(centroids, axis=1)
     assert np.allclose(norms, 1.0, atol=0.01), "Centroids not normalized"
 
-    print(f"   ✓ Clustered {len(stories)} items → {n_clusters} cluster(s)")
+    print(f"   OK Clustered {len(stories)} items -> {n_clusters} cluster(s)")
     if n_clusters > 1:
         print(f"     Found {n_clusters} clusters")
         rep_indices = [np.where(labels == i)[0][0] for i in range(n_clusters)]
@@ -172,7 +174,7 @@ def test_recency_weights():
     assert 0.99 <= weights[0] <= 1.0, f"Recent weight should be ~1.0, got {weights[0]}"
     assert 0.35 <= weights[3] <= 0.40, f"100-day weight should be ~0.37, got {weights[3]}"
 
-    print(f"   ✓ Recency weights: {weights}")
+    print(f"   OK Recency weights: {weights}")
 
 
 def test_hybrid_ranking():
@@ -219,8 +221,8 @@ def test_hybrid_ranking():
     )
     # With HN weight, fresh high-scoring Rust might compete with Python
 
-    print(f"   ✓ Semantic-only top: story #{stories[results_semantic[0][0]]['id']}")
-    print(f"   ✓ Hybrid top: story #{stories[results_hybrid[0][0]]['id']}")
+    print(f"   OK Semantic-only top: story #{stories[results_semantic[0][0]]['id']}")
+    print(f"   OK Hybrid top: story #{stories[results_hybrid[0][0]]['id']}")
 
 
 async def test_article_fetching():
@@ -233,7 +235,7 @@ async def test_article_fetching():
 
     # example.com should return some text
     assert isinstance(text, str)
-    print(f"   ✓ Fetched {len(text)} chars from {url}")
+    print(f"   OK Fetched {len(text)} chars from {url}")
 
 
 def main():
@@ -253,17 +255,18 @@ def main():
         asyncio.run(test_article_fetching())
 
         print("\n" + "=" * 60)
-        print("✅ ALL CHECKS PASSED")
+        print("ALL CHECKS PASSED")
         print("=" * 60)
+        return 0
 
     except Exception as e:
-        print(f"\n❌ FAILED: {e}")
-        import traceback
+        print(f"\nFAILED: {e}")
+        import traceback  # noqa: PLC0415
+
         traceback.print_exc()
         return 1
 
-    return 0
-
 
 if __name__ == "__main__":
-    exit(main())
+    import sys
+    sys.exit(main())

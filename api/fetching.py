@@ -2,28 +2,28 @@
 Data fetching module for HN stories and user data.
 """
 import asyncio
-import httpx
 import json
-import time
 import re
+import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Optional
-from api.client import HNClient
-from datetime import datetime, timedelta, timezone
+
+import httpx
 import trafilatura
 
+from api.client import HNClient
 from api.constants import (
-    STORY_CACHE_TTL,
-    EXTERNAL_REQUEST_SEMAPHORE,
+    ALGOLIA_DEFAULT_DAYS,
+    ALGOLIA_MIN_POINTS,
     ARTICLE_RANKING_LENGTH,
     ARTICLE_SNIPPET_LENGTH,
-    TEXT_CONTENT_MAX_LENGTH,
+    EXTERNAL_REQUEST_SEMAPHORE,
     MAX_COMMENTS_COLLECTED,
+    MAX_USER_STORIES,
+    STORY_CACHE_TTL,
+    TEXT_CONTENT_MAX_LENGTH,
     TOP_COMMENTS_FOR_RANKING,
     TOP_COMMENTS_FOR_UI,
-    MAX_USER_STORIES,
-    ALGOLIA_MIN_POINTS,
-    ALGOLIA_DEFAULT_DAYS,
 )
 
 HN_API_BASE = "https://hacker-news.firebaseio.com/v0"
@@ -53,21 +53,17 @@ async def fetch_article_text(url: str) -> str:
 
 
 async def fetch_story_with_comments(
-    client: httpx.AsyncClient, story_id: int
-) -> Optional[dict]:
+    client: httpx.AsyncClient, story_id: int, fetch_article: bool = False
+) -> dict | None:
     # 1. Check Cache
     cache_path = STORY_CACHE_DIR / f"{story_id}.json"
     if cache_path.exists():
         try:
-            with open(cache_path, "r") as f:
+            with open(cache_path) as f:
                 cached = json.load(f)
 
-            # Check if cache is recent and has the new fields
-            # We want article_snippet if it's an external link
             data = cached["data"]
-            has_snippet = "article_snippet" in data or not data.get("url") or "news.ycombinator.com" in data.get("url", "")
-
-            if time.time() - cached["retrieved_at"] < STORY_CACHE_TTL and has_snippet:
+            if time.time() - cached["retrieved_at"] < STORY_CACHE_TTL:
                 return data
         except Exception:
             pass
@@ -93,19 +89,20 @@ async def fetch_story_with_comments(
 
             text_parts: list[str] = [str(story["title"])]
 
-            # Try to fetch article text for deeper semantic matching
-            url = story.get("url")
-            if isinstance(url, str) and "news.ycombinator.com" not in url:
-                async with EXTERNAL_SEM:
-                    article_text = await fetch_article_text(url)
-                if article_text:
-                    # Use first N chars of article for ranking
-                    text_parts.append(article_text[:ARTICLE_RANKING_LENGTH])
-                    story["article_snippet"] = article_text[:ARTICLE_SNIPPET_LENGTH]  # Store snippet for UI
+            # Optionally fetch article text for deeper semantic matching
+            if fetch_article:
+                url = story.get("url")
+                if isinstance(url, str) and "news.ycombinator.com" not in url:
+                    async with EXTERNAL_SEM:
+                        article_text = await fetch_article_text(url)
+                    if article_text:
+                        text_parts.append(article_text[:ARTICLE_RANKING_LENGTH])
+                        story["article_snippet"] = article_text[:ARTICLE_SNIPPET_LENGTH]
 
             # Extract top comments
-            all_comments = []
-            def collect(nodes):
+            all_comments: list[tuple[int, str]] = []
+
+            def collect(nodes: list[dict]) -> None:
                 for node in nodes:
                     if node.get("text"):
                         # Basic HTML cleanup
@@ -158,7 +155,7 @@ async def get_user_data(username: str) -> tuple[list[dict], list[dict], set[int]
         # All IDs to exclude from candidates
         exclude_ids = pos_ids.union(hidden_ids).union(submitted_ids)
 
-        async def fetch_batch(ids):
+        async def fetch_batch(ids: set[int]) -> list[dict]:
             subset = sorted(list(ids), reverse=True)[:MAX_USER_STORIES]
             async with httpx.AsyncClient(timeout=5.0) as ac:
                 res = await asyncio.gather(
@@ -175,13 +172,13 @@ async def get_user_data(username: str) -> tuple[list[dict], list[dict], set[int]
 
 
 async def get_best_stories(
-    limit: int, days: int = ALGOLIA_DEFAULT_DAYS, exclude_ids: Optional[set[int]] = None
+    limit: int, days: int = ALGOLIA_DEFAULT_DAYS, exclude_ids: set[int] | None = None
 ) -> list[dict]:
     if exclude_ids is None:
         exclude_ids = set()
     async with httpx.AsyncClient(timeout=10.0) as client:
         start_time = int(
-            (datetime.now(timezone.utc) - timedelta(days=days)).timestamp()
+            (datetime.now(UTC) - timedelta(days=days)).timestamp()
         )
         params = {
             "tags": "story",

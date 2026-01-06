@@ -1,7 +1,7 @@
-import os
+import subprocess
 import sys
 from pathlib import Path
-import subprocess
+
 
 def setup():
     model_dir = Path("bge_model")

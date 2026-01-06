@@ -1,19 +1,27 @@
-from api.fetching import fetch_story_with_comments, get_top_stories, fetch_article_text, get_user_data
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
+
+from api.fetching import (
+    fetch_article_text,
+    fetch_story_with_comments,
+    get_top_stories,
+    get_user_data,
+)
+
 
 @pytest.mark.asyncio
 async def test_get_user_data():
     username = "testuser"
     mock_ids = {101, 102}
     mock_story = {"id": 101, "title": "Fav"}
-    
+
     with patch("api.fetching.HNClient") as MockClass:
         client = MockClass.return_value
         client.fetch_favorites = AsyncMock(return_value=mock_ids)
         client.check_session = AsyncMock(return_value=False)
         client.close = AsyncMock()
-        
+
         with patch("api.fetching.fetch_story_with_comments", return_value=mock_story):
             pos, neg, exclude = await get_user_data(username)
             assert len(pos) > 0
@@ -29,10 +37,10 @@ async def test_fetch_article_text():
 async def test_get_top_stories():
     mock_ids = [1, 2, 3]
     mock_story = {"id": 1, "title": "Test"}
-    
+
     with patch("httpx.AsyncClient.get") as m_get:
         m_get.return_value = AsyncMock(status_code=200, json=lambda: mock_ids)
-        
+
         with patch("api.fetching.fetch_story_with_comments", return_value=mock_story):
             res = await get_top_stories(limit=2)
             assert len(res) == 2

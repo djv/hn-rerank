@@ -1,6 +1,5 @@
 import json
 from pathlib import Path
-from typing import Optional
 
 CONFIG_DIR = Path.home() / ".config" / "hn_rerank"
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -10,7 +9,7 @@ def load_config() -> dict:
     if not CONFIG_FILE.exists():
         return {}
     try:
-        with open(CONFIG_FILE, "r") as f:
+        with open(CONFIG_FILE) as f:
             return json.load(f)
     except Exception:
         return {}
@@ -24,5 +23,5 @@ def save_config(key: str, value: str):
         json.dump(config, f, indent=2)
 
 
-def get_username() -> Optional[str]:
+def get_username() -> str | None:
     return load_config().get("username")

@@ -1,31 +1,42 @@
 from __future__ import annotations
-import numpy as np
-import asyncio
-import webbrowser
+
 import argparse
-import traceback
+import asyncio
 import os
 import time
-from typing import Optional, cast
+import traceback
+import webbrowser
+from typing import ClassVar, cast
 
+import numpy as np
+from textual import on, work
 from textual.app import App, ComposeResult
-from textual.containers import Vertical, Horizontal
-from textual.widgets import Header, Footer, ListView, ListItem, Label, Static, Button, LoadingIndicator
-from textual.reactive import reactive
 from textual.binding import Binding
-from textual import work, on
+from textual.containers import Horizontal, Vertical
+from textual.reactive import reactive
+from textual.widgets import (
+    Button,
+    Footer,
+    Header,
+    Label,
+    ListItem,
+    ListView,
+    LoadingIndicator,
+    ProgressBar,
+    Static,
+)
 
-from api.fetching import get_user_data, get_best_stories
 from api import rerank
 from api.client import HNClient
-from api.config import save_config, get_username
+from api.config import get_username, save_config
+from api.fetching import get_best_stories, get_user_data
 
 # --- CREDENTIALS (Env Vars) ---
 HN_USER = os.getenv("HN_USERNAME")
 HN_PASS = os.getenv("HN_PASSWORD")
 
 
-def get_relative_time(timestamp: Optional[int]) -> str:
+def get_relative_time(timestamp: int | None) -> str:
     if not timestamp:
         return ""
     diff = int(time.time()) - timestamp
@@ -41,7 +52,7 @@ def get_relative_time(timestamp: Optional[int]) -> str:
 
 class StoryItem(ListItem):
     expanded = reactive(False)
-    vote_status: reactive[Optional[str]] = reactive(None)  # 'up', 'down', None
+    vote_status: reactive[str | None] = reactive(None)  # 'up', 'down', None
 
     def __init__(self, story: dict, score: float, reason: str, rel_title: str):
         super().__init__()
@@ -70,16 +81,14 @@ class StoryItem(ListItem):
                 yield Label("", id="vote-icon")
 
             with Vertical(id="details"):
-                if self.story.get("article_snippet"):
-                    yield Label("[bold blue]ARTICLE CONTENT[/]", classes="section-title")
-                    yield Static(self.story["article_snippet"], classes="reason")
-                
+                hn_url = f"https://news.ycombinator.com/item?id={self.story['id']}"
+                yield Label(f"[dim]{hn_url}[/dim]", id="hn-link")
+
                 if self.story.get("comments"):
-                    yield Label(
-                        "[bold underline]TOP DISCUSSION[/]", classes="section-title"
-                    )
-                    for c in self.story["comments"][:5]:
-                        yield Static(f"💬 {c}\n", classes="comment")
+                    for c in self.story["comments"][:8]:
+                        # Truncate long comments
+                        text = c[:300] + "..." if len(c) > 300 else c
+                        yield Static(text, classes="comment")
 
                 with Horizontal(classes="actions"):
                     yield Button("Article (v)", id="open-art", variant="primary")
@@ -132,7 +141,16 @@ class HNRerankTUI(App):
         height: 1fr;
         content-align: center middle;
     }
+    #progress {
+        display: none;
+        dock: bottom;
+        height: 1;
+        margin: 0 0 1 0;
+    }
     App.loading #loading {
+        display: block;
+    }
+    App.loading #progress {
         display: block;
     }
     App.loading #story-list {
@@ -153,11 +171,12 @@ class HNRerankTUI(App):
     StoryItem:focus {
         background: $accent-muted;
     }
-    StoryItem.is-expanded { 
-        height: auto; 
-        background: $surface; 
-        border: tall $primary; 
-        margin: 1 0; 
+    StoryItem.is-expanded {
+        height: auto;
+        max-height: 70vh;
+        background: $surface;
+        border: tall $primary;
+        margin: 0;
     }
     StoryItem #row { height: 1; }
     StoryItem #match-score { width: 5; text-style: bold; color: $accent; }
@@ -167,7 +186,7 @@ class HNRerankTUI(App):
     StoryItem #vote-icon { width: 2; }
     
     StoryItem #details { display: none; padding: 1 2; }
-    StoryItem.is-expanded #details { display: block; }
+    StoryItem.is-expanded #details { display: block; height: auto; max-height: 60vh; overflow-y: auto; }
     .meta { color: $text-muted; }
     .reason { background: $primary-muted; padding: 1; border-left: solid $primary; }
     .comment { 
@@ -182,7 +201,7 @@ class HNRerankTUI(App):
     .actions Button { height: 1; border: none; }
     """
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("q", "quit", "Quit"),
         Binding("enter", "toggle_expand", "Expand"),
         Binding("j", "cursor_down", "Down", show=False),
@@ -194,7 +213,7 @@ class HNRerankTUI(App):
         Binding("r", "refresh_feed", "Refresh"),
     ]
 
-    def __init__(self, username: Optional[str]):
+    def __init__(self, username: str | None):
         super().__init__()
         self.username = username
         self._pending_actions = set()
@@ -202,10 +221,11 @@ class HNRerankTUI(App):
     def compose(self) -> ComposeResult:
         yield Header()
         yield LoadingIndicator(id="loading")
+        yield ProgressBar(id="progress", total=100, show_eta=False)
         yield ListView(id="story-list")
         yield Footer()
 
-    async def on_mount(self):
+    async def on_mount(self) -> None:
         # Auto-login if creds available
         if HN_USER and HN_PASS:
             self.notify(f"Authenticating as {HN_USER}...")
@@ -234,43 +254,66 @@ class HNRerankTUI(App):
     def on_highlight_changed(self, event: ListView.Highlighted):
         if event.item and isinstance(event.item, StoryItem):
             # Collapse all others to keep view clean during scroll
-            for child in self.query_one("#story-list", ListView).children:
+            try:
+                list_view = self.query_one("#story-list", ListView)
+            except Exception:
+                return
+            for child in list_view.children:
                 if isinstance(child, StoryItem) and child != event.item:
                     child.expanded = False
-            
+
             # Auto-expand the highlighted one
             event.item.expanded = True
             # Ensure expanded content is visible
             self.query_one("#story-list", ListView).scroll_to_widget(event.item)
 
     @work
-    async def refresh_feed(self):
+    async def refresh_feed(self) -> None:
         if not self.username:
             self.username = "pg"
 
         self.add_class("loading")
-        self.notify(f"Syncing Intelligence for {self.username}...")
+
+        progress = self.query_one("#progress", ProgressBar)
+        progress.display = True
+        progress.update(total=100)
+        progress.progress = 0
+
+        self.notify("Loading...")
 
         try:
-            rerank.init_model("onnx_model")
-            self.notify("Model Loaded. Fetching user data...")
+            # Load model in background thread
+            await asyncio.to_thread(rerank.init_model, "onnx_model")
+            progress.progress = 10
+
+            self.notify(f"Fetching {self.username} preferences...")
             pos_data, neg_data, exclude_ids = await get_user_data(self.username)
-            
-            self.notify(f"Got {len(pos_data)} signals. Fetching candidates...")
+            progress.progress = 30
+
+            self.notify("Fetching stories...")
             candidates = await get_best_stories(200, 30, exclude_ids)
-            
+            progress.progress = 70
+
             if not candidates:
-                self.notify("No new stories found", severity="warning")
+                self.notify("No new stories", severity="warning")
                 self.remove_class("loading")
+                progress.display = False
                 return
 
-            self.notify(f"Ranking {len(candidates)} stories...")
-            def do_rank():
+            self.notify(f"Ranking {len(candidates)}...")
+
+            def do_rank() -> list[tuple[int, float, int]]:
                 p_texts = [s["text_content"] for s in pos_data]
                 n_texts = [s["text_content"] for s in neg_data]
                 c_texts = [s["text_content"] for s in candidates]
 
-                p_weights = np.linspace(1.0, 0.5, len(p_texts)).astype(np.float32) if p_texts else None
+                # Use actual timestamps for recency weighting
+                p_timestamps = [s.get("time", 0) for s in pos_data]
+                p_weights = (
+                    rerank.compute_recency_weights(p_timestamps)
+                    if p_timestamps
+                    else None
+                )
 
                 p_emb = rerank.get_embeddings(p_texts, is_query=True)
                 n_emb = rerank.get_embeddings(n_texts, is_query=True)
@@ -285,23 +328,24 @@ class HNRerankTUI(App):
                     hn_weight=0.15,
                 )
 
+            progress.progress = 90
             ranked = await asyncio.to_thread(do_rank)
 
             list_view = self.query_one("#story-list", ListView)
             list_view.clear()
 
-            for idx, score, fav_idx in ranked[:50]:
+            for idx, score, _ in ranked[:50]:
                 story = candidates[idx]
                 await list_view.append(StoryItem(story, score, "", ""))
 
             if list_view.children:
                 list_view.index = 0
                 list_view.focus()
-                
+
                 # Use a small delay to ensure reactivity is ready
                 def expand_first():
                     if list_view.children:
-                        list_view.children[0].expanded = True
+                        cast(StoryItem, list_view.children[0]).expanded = True
                 self.set_timer(0.2, expand_first)
 
             self.notify("Feed Ready")
@@ -310,17 +354,18 @@ class HNRerankTUI(App):
             self.notify(f"Sync error: {e}", severity="error")
         finally:
             self.remove_class("loading")
+            progress.display = False
 
-    def _get_current(self) -> Optional[StoryItem]:
-        return cast(Optional[StoryItem], self.query_one("#story-list", ListView).highlighted_child)
+    def _get_current(self) -> StoryItem | None:
+        return cast(StoryItem | None, self.query_one("#story-list", ListView).highlighted_child)
 
-    def action_toggle_expand(self):
+    def action_toggle_expand(self) -> None:
         if item := self._get_current():
             item.expanded = not item.expanded
             if item.expanded:
                 self.query_one("#story-list", ListView).scroll_to_widget(item)
 
-    def _open_url(self, url: str):
+    def _open_url(self, url: str) -> None:
         if "SSH_CONNECTION" in os.environ:
             self.app.copy_to_clipboard(url)
             self.notify("Remote session: URL copied to local clipboard")
@@ -328,7 +373,7 @@ class HNRerankTUI(App):
             self.notify("Opening in browser...")
             webbrowser.open_new_tab(url)
 
-    def action_open_article(self):
+    def action_open_article(self) -> None:
         if item := self._get_current():
             url = (
                 item.story.get("url")
@@ -336,13 +381,13 @@ class HNRerankTUI(App):
             )
             self._open_url(url)
 
-    def action_open_hn(self):
+    def action_open_hn(self) -> None:
         if item := self._get_current():
             url = f"https://news.ycombinator.com/item?id={item.story['id']}"
             self._open_url(url)
 
     @work
-    async def action_upvote(self):
+    async def action_upvote(self) -> None:
         if item := self._get_current():
             sid = item.story["id"]
             if sid in self._pending_actions:
@@ -357,7 +402,7 @@ class HNRerankTUI(App):
                 self._pending_actions.remove(sid)
 
     @work
-    async def action_hide(self):
+    async def action_hide(self) -> None:
         if item := self._get_current():
             sid = item.story["id"]
             if sid in self._pending_actions:
@@ -372,17 +417,102 @@ class HNRerankTUI(App):
             finally:
                 self._pending_actions.remove(sid)
 
-    def action_refresh_feed(self):
+    def action_refresh_feed(self) -> None:
         self.refresh_feed()
+
+
+async def run_batch(username: str, count: int, fmt: str) -> None:
+    """Run in batch mode without TUI."""
+    import json
+    import sys
+
+    if not username:
+        username = "pg"
+
+    print("Loading model...", file=sys.stderr)
+    rerank.init_model("onnx_model")
+
+    print(f"Fetching user data for {username}...", file=sys.stderr)
+    pos_data, neg_data, exclude_ids = await get_user_data(username)
+
+    print("Fetching candidates...", file=sys.stderr)
+    candidates = await get_best_stories(200, 30, exclude_ids)
+
+    if not candidates:
+        print("No stories found", file=sys.stderr)
+        return
+
+    print(f"Ranking {len(candidates)} stories...", file=sys.stderr)
+
+    def do_rank() -> list[tuple[int, float, int]]:
+        p_texts = [s["text_content"] for s in pos_data]
+        n_texts = [s["text_content"] for s in neg_data]
+        c_texts = [s["text_content"] for s in candidates]
+
+        p_timestamps = [s.get("time", 0) for s in pos_data]
+        p_weights = (
+            rerank.compute_recency_weights(p_timestamps)
+            if p_timestamps
+            else None
+        )
+
+        p_emb = rerank.get_embeddings(p_texts, is_query=True)
+        n_emb = rerank.get_embeddings(n_texts, is_query=True)
+        c_emb = rerank.get_embeddings(c_texts, is_query=False)
+
+        return rerank.rank_stories(
+            candidates,
+            cand_embeddings=c_emb,
+            positive_embeddings=p_emb,
+            negative_embeddings=n_emb,
+            positive_weights=p_weights,
+            hn_weight=0.15,
+        )
+
+    ranked = await asyncio.to_thread(do_rank)
+
+    results = []
+    for idx, score, _ in ranked[:count]:
+        story = candidates[idx]
+        results.append({
+            "id": story["id"],
+            "title": story["title"],
+            "url": story.get("url") or f"https://news.ycombinator.com/item?id={story['id']}",
+            "hn_url": f"https://news.ycombinator.com/item?id={story['id']}",
+            "score": round(score * 100),
+            "points": story.get("score", 0),
+            "comments": story.get("descendants", 0),
+        })
+
+    if fmt == "json":
+        print(json.dumps(results, indent=2))
+    elif fmt == "urls":
+        for r in results:
+            print(r["url"])
+    else:  # text
+        for i, r in enumerate(results, 1):
+            print(f"{i:2}. [{r['score']:3}%] {r['title']}")
+            print(f"    {r['url']}")
+            print(f"    {r['hn_url']}")
+            print()
 
 
 def main():
     """Entry point for hn-rerank CLI."""
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="HN Reranker")
     parser.add_argument("username", nargs="?", default=get_username())
+    parser.add_argument("-b", "--batch", action="store_true", help="Batch mode (no TUI)")
+    parser.add_argument("-n", "--count", type=int, default=20, help="Results count")
+    parser.add_argument(
+        "-f", "--format", choices=["text", "json", "urls"], default="text"
+    )
     args = parser.parse_args()
-    app = HNRerankTUI(args.username)
-    app.run()
+
+    if args.batch:
+        asyncio.run(run_batch(args.username, args.count, args.format))
+    else:
+        app = HNRerankTUI(args.username)
+        app.run()
 
 
 if __name__ == "__main__":

@@ -1,7 +1,9 @@
+from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
+
 from api.fetching import get_best_stories
-from datetime import datetime, timezone, timedelta
 
 
 @pytest.mark.asyncio
@@ -49,7 +51,7 @@ async def test_get_best_stories_logic():
             sent_ts = int(timestamp_part.split(">")[1])
 
             expected_ts = int(
-                (datetime.now(timezone.utc) - timedelta(days=30)).timestamp()
+                (datetime.now(UTC) - timedelta(days=30)).timestamp()
             )
 
             # Allow 5s delta for test execution time

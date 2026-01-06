@@ -1,5 +1,7 @@
-import numpy as np
 from unittest.mock import patch
+
+import numpy as np
+
 from api import rerank
 
 

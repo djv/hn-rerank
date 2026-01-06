@@ -1,25 +1,31 @@
-import numpy as np
 import hashlib
+import time
 from pathlib import Path
-from typing import Optional, Any
-from numpy.typing import NDArray
+from typing import Any, Optional
+
+import numpy as np
 import onnxruntime as ort
+# Suppress transformers backend warning (we use ONNX)
+import os
+os.environ["TRANSFORMERS_NO_ADVISORY_WARNINGS"] = "true"
 from transformers import AutoTokenizer
+
+from numpy.typing import NDArray
+from sklearn.cluster import AgglomerativeClustering, KMeans
 from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.cluster import KMeans, AgglomerativeClustering
 
 from api.constants import (
+    CLUSTER_DISTANCE_THRESHOLD,
+    CLUSTER_MIN_NORM,
+    DEFAULT_EMBEDDING_BATCH_SIZE,
     EMBEDDING_CACHE_DIR,
-    SIMILARITY_MIN,
-    SIMILARITY_MAX,
+    EMBEDDING_MIN_CLIP,
     HN_SCORE_POINTS_EXP,
     HN_SCORE_TIME_EXP,
     HN_SCORE_TIME_OFFSET,
-    CLUSTER_DISTANCE_THRESHOLD,
-    CLUSTER_MIN_NORM,
-    EMBEDDING_MIN_CLIP,
-    DEFAULT_EMBEDDING_BATCH_SIZE,
     RECENCY_DECAY_RATE,
+    SIMILARITY_MAX,
+    SIMILARITY_MIN,
 )
 
 # Global singleton
@@ -41,8 +47,8 @@ class ONNXEmbeddingModel:
         if not Path(f"{model_dir}/model_quantized.onnx").exists():
             print(f"Model not found in {model_dir}. Attempting to run setup...")
             try:
-                import subprocess
-                import sys
+                import subprocess  # noqa: PLC0415
+                import sys  # noqa: PLC0415
 
                 # Check if setup_model.py exists in root
                 setup_script = Path("setup_model.py")
@@ -284,8 +290,6 @@ def rank_mmr(
     cand_embeddings: NDArray[np.float32],
     fav_embeddings: NDArray[np.float32],
     diversity_penalty: float,
-    cand_texts: Optional[list[str]] = None,
-    fav_texts: Optional[list[str]] = None,
 ) -> list[tuple[int, float, int]]:
     """
     Maximal Marginal Relevance ranking with vectorized redundancy computation.
@@ -375,20 +379,19 @@ def rank_candidates(
 
 
 def calculate_hn_score(
-    points: int, time_ts: int, current_time: Optional[float] = None
+    points: int, time_ts: int, current_time: float | None = None
 ) -> float:
     """
     Calculate HN score with gravity decay.
     Score = (P - 1)^POINTS_EXP / (T + TIME_OFFSET)^TIME_EXP
     """
     if current_time is None:
-        import time
-
         current_time = time.time()
 
-    hours_age = (current_time - time_ts) / 3600
-    if hours_age < 0:
+    if time_ts > current_time:
         hours_age = 0
+    else:
+        hours_age = (current_time - time_ts) / 3600
 
     numerator = (points - 1) ** HN_SCORE_POINTS_EXP if points > 1 else 0
     denominator = (hours_age + HN_SCORE_TIME_OFFSET) ** HN_SCORE_TIME_EXP
@@ -397,9 +400,9 @@ def calculate_hn_score(
 
 
 def compute_recency_weights(
-    story_timestamps: list[int],
+    story_timestamps: list[int] | list[float],
     decay_rate: float = RECENCY_DECAY_RATE,
-    current_time: Optional[float] = None,
+    current_time: float | None = None,
 ) -> NDArray[np.float32]:
     """
     Compute exponential recency weights for stories.
@@ -427,11 +430,9 @@ def compute_recency_weights(
         array([1.0, 0.905], dtype=float32)  # Recent story gets full weight
     """
     if current_time is None:
-        import time
-
         current_time = time.time()
 
-    timestamps = np.array(story_timestamps, dtype=np.float32)
+    timestamps = np.array(story_timestamps)
     age_seconds = current_time - timestamps
     age_days = age_seconds / 86400  # Convert to days
 
@@ -446,10 +447,10 @@ def compute_recency_weights(
 
 def rank_stories(
     stories: list[dict],
-    cand_embeddings: Optional[NDArray[np.float32]] = None,
-    positive_embeddings: Optional[NDArray[np.float32]] = None,
-    negative_embeddings: Optional[NDArray[np.float32]] = None,
-    positive_weights: Optional[NDArray[np.float32]] = None,
+    cand_embeddings: NDArray[np.float32] | None = None,
+    positive_embeddings: NDArray[np.float32] | None = None,
+    negative_embeddings: NDArray[np.float32] | None = None,
+    positive_weights: NDArray[np.float32] | None = None,
     diversity_lambda: float = 0.0,
     hn_weight: float = 0.15,
     neg_weight: float = 0.5,
@@ -520,8 +521,6 @@ def rank_stories(
         semantic_scores -= neg_weight * neg_scores
 
     # 3. HN Scores (Decay)
-    import time
-
     now = time.time()
 
     scores = np.array([s.get("score", 0) for s in stories])
