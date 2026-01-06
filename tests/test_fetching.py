@@ -9,8 +9,8 @@ async def test_get_user_data():
     mock_ids = {101, 102}
     mock_story = {"id": 101, "title": "Fav"}
     
-    with patch("api.main.HNClient") as MockClient:
-        client = MockClient.return_value
+    with patch("api.main.HNClient") as MockClass:
+        client = MockClass.return_value
         client.fetch_favorites = AsyncMock(return_value=mock_ids)
         client.check_session = AsyncMock(return_value=False)
         client.close = AsyncMock()

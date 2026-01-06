@@ -190,6 +190,8 @@ class HNRerankTUI(App):
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("enter", "toggle_expand", "Expand"),
+        Binding("j", "cursor_down", "Down", show=False),
+        Binding("k", "cursor_up", "Up", show=False),
         Binding("v", "open_article", "View"),
         Binding("c", "open_hn", "Comments"),
         Binding("u", "upvote", "Up"),
@@ -232,6 +234,19 @@ class HNRerankTUI(App):
     @on(ListView.Selected)
     def on_item_selected(self):
         self.action_toggle_expand()
+
+    @on(ListView.Highlighted)
+    def on_highlight_changed(self, event: ListView.Highlighted):
+        if event.item and isinstance(event.item, StoryItem):
+            # Collapse all others to keep view clean during scroll
+            for child in self.query_one("#story-list").children:
+                if isinstance(child, StoryItem) and child != event.item:
+                    child.expanded = False
+            
+            # Auto-expand the highlighted one
+            event.item.expanded = True
+            # Ensure expanded content is visible
+            self.query_one("#story-list").scroll_to_widget(event.item)
 
     @work
     async def refresh_feed(self):

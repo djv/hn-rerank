@@ -74,18 +74,20 @@ async def test_law_of_expansion_isolation(tui_mocks, indices):
         await pilot.pause(0.5)
         list_view = app.query_one("#story-list")
         
-        # Expand target indices
-        for idx in indices:
-            list_view.index = idx
-            await pilot.press("enter")
-            await pilot.pause(0.1) # Wait for animation/reactivity
+        # Navigate and verify auto-expand
+        for idx in range(len(indices)):
+            if idx > 0:
+                await pilot.press("down")
+                await pilot.pause(0.1)
             
-        # Verify only chosen indices are expanded
-        for i, child in enumerate(list_view.children):
-            if i in indices:
-                assert child.expanded is True, f"Item {i} should be expanded"
-            else:
-                assert child.expanded is False, f"Item {i} should not be expanded"
+            # Current item should be auto-expanded
+            current_item = list_view.children[list_view.index]
+            assert current_item.expanded is True, f"Item at index {list_view.index} should be auto-expanded"
+            
+            # Others should be collapsed
+            for i, child in enumerate(list_view.children):
+                if i != list_view.index:
+                    assert child.expanded is False, f"Item {i} should be collapsed"
 
 @settings(suppress_health_check=[HealthCheck.function_scoped_fixture], deadline=None, max_examples=5)
 @given(keys=st.lists(st.sampled_from(["down", "up", "enter", "u", "d"]), min_size=5, max_size=20))

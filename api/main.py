@@ -41,16 +41,20 @@ def health():
 
 @app.post("/login")
 async def login_route(req: LoginRequest):
-    async with HNClient() as client:
+    client = HNClient()
+    try:
         success, msg = await client.login(req.username, req.password)
         if not success:
             raise HTTPException(status_code=401, detail=msg)
         return {"status": "success", "username": req.username}
+    finally:
+        await client.close()
 
 
 @app.post("/vote")
 async def vote_route(req: VoteRequest):
-    async with HNClient() as client:
+    client = HNClient()
+    try:
         if req.direction == "up":
             success, msg = await client.vote(req.story_id, "up")
         else:
@@ -58,6 +62,8 @@ async def vote_route(req: VoteRequest):
         if not success:
             raise HTTPException(status_code=400, detail=msg)
         return {"status": "success"}
+    finally:
+        await client.close()
 
 
 HN_API_BASE = "https://hacker-news.firebaseio.com/v0"
@@ -149,7 +155,8 @@ async def get_top_stories(limit: int) -> List[dict]:
 
 
 async def get_user_data(username: str) -> Tuple[List[dict], List[dict], set]:
-    async with HNClient() as client:
+    client = HNClient()
+    try:
         fav_ids = await client.fetch_favorites(username)
         upvoted_ids, hidden_ids, submitted_ids = set(), set(), set()
 
@@ -174,6 +181,8 @@ async def get_user_data(username: str) -> Tuple[List[dict], List[dict], set]:
             fetch_batch(pos_ids), fetch_batch(hidden_ids)
         )
         return pos_data, neg_data, exclude_ids
+    finally:
+        await client.close()
 
 
 async def get_best_stories(

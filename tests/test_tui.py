@@ -59,16 +59,13 @@ async def test_tui_loading_and_expand(mock_rerank, mock_api, mock_hn_client):
 
         item = list_view.children[0]
         assert isinstance(item, StoryItem)
-        assert not item.expanded
-
-        # Press Enter to expand
-        await pilot.press("enter")
+        # Should be auto-expanded now
         assert item.expanded
 
-        # Check details visible
-        assert item.query_one("#details").display
-
-
+        # Press Enter to toggle (collapse)
+        await pilot.press("enter")
+        assert not item.expanded
+        
 @pytest.mark.asyncio
 async def test_tui_shortcuts(mock_rerank, mock_api, mock_hn_client):
     """Test shortcuts like upvote and hide."""
