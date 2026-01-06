@@ -190,6 +190,7 @@ def rank_embeddings_maxsim(
     if len(candidate_embeddings) == 0 or len(fav_embeddings) == 0:
         return []
     sim_matrix = cosine_similarity(fav_embeddings, candidate_embeddings)
+    sim_matrix = np.clip(sim_matrix, -1.0, 1.0)
     max_scores = np.max(sim_matrix, axis=0)
     best_fav_indices = np.argmax(sim_matrix, axis=0)
     results = []
@@ -209,6 +210,7 @@ def rank_mmr(
     if len(cand_embeddings) == 0 or len(fav_embeddings) == 0:
         return []
     sim_matrix = cosine_similarity(fav_embeddings, cand_embeddings)
+    sim_matrix = np.clip(sim_matrix, -1.0, 1.0)
     relevance_scores = np.max(sim_matrix, axis=0)
     results = []
     selected_indices = []
@@ -323,7 +325,7 @@ def rank_stories(
     best_fav_indices = np.zeros(len(cand_embeddings), dtype=int) - 1
 
     if positive_embeddings is not None and len(positive_embeddings) > 0:
-        sim_pos = cosine_similarity(positive_embeddings, cand_embeddings)
+        sim_pos = np.clip(cosine_similarity(positive_embeddings, cand_embeddings), -1.0, 1.0)
 
         if positive_weights is not None:
             # Apply recency weights to similarities before taking max

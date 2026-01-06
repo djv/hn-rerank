@@ -47,8 +47,8 @@ def test_maxsim_property_correctness(data):
     for idx, score, best_fav_idx in results:
         cand_vec = candidates[idx]
 
-        # Manually calculate dot products against all favorites
-        dots = [np.dot(cand_vec, f_vec) for f_vec in favorites]
+        # Manually calculate dot products against all favorites and clip to match implementation
+        dots = [np.clip(np.dot(cand_vec, f_vec), -1.0, 1.0) for f_vec in favorites]
         expected_max_score = max(dots)
 
         # Floating point tolerance
