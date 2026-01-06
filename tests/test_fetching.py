@@ -1,0 +1,60 @@
+import pytest
+from unittest.mock import MagicMock, AsyncMock, patch
+from api.main import fetch_story_with_comments
+
+
+@pytest.mark.asyncio
+async def test_fetch_story_aggregates_comments():
+    """
+    Test that fetch_story_with_comments correctly fetches the story
+    and combines title and comments.
+    """
+    mock_client = AsyncMock()
+
+    # Mock Algolia Item response
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "id": 100,
+        "title": "Main Story",
+        "url": "http://example.com",
+        "points": 100,
+        "children": [
+            {"text": "Comment 1", "points": 10},
+            {"text": "Comment 2", "points": 5},
+        ],
+    }
+    mock_client.get.return_value = mock_response
+
+    # Run
+    result = await fetch_story_with_comments(mock_client, 100)
+
+    assert result is not None
+    assert result["title"] == "Main Story"
+    assert "Comment 1" in result["text_content"]
+
+
+@pytest.mark.asyncio
+async def test_get_top_stories_resilience():
+    """
+    Test that get_top_stories continues even if individual story fetches fail.
+    """
+    from api.main import get_top_stories
+
+    mock_client = AsyncMock()
+    mock_response_ids = MagicMock()
+    mock_response_ids.json.return_value = [1, 2, 3]
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.get.return_value = mock_response_ids
+
+        with patch("api.main.fetch_story_with_comments") as mock_fetch:
+            mock_fetch.side_effect = [
+                {"id": 1, "title": "Good Story", "text_content": "Good Story"},
+                None,
+                {"id": 3, "title": "Another Story", "text_content": "Another Story"},
+            ]
+
+            stories = await get_top_stories(limit=3)
+            assert len(stories) == 2

@@ -1,0 +1,331 @@
+from __future__ import annotations
+import numpy as np
+import asyncio
+import webbrowser
+import argparse
+import re
+import traceback
+import os
+from typing import Optional
+
+from textual.app import App, ComposeResult
+from textual.containers import Vertical, Horizontal
+from textual.widgets import Header, Footer, ListView, ListItem, Label, Static, Button
+from textual.reactive import reactive
+from textual.binding import Binding
+from textual import work, on
+
+from api.main import get_user_data, get_best_stories
+from api import rerank
+from api.client import HNClient
+from api.config import save_config, get_username
+from sklearn.metrics.pairwise import cosine_similarity
+
+# --- HARDCODED CREDS (Prefer Env Vars) ---
+HN_USER = os.getenv("HN_USERNAME", "your_username")
+HN_PASS = os.getenv("HN_PASSWORD", "your_password")
+
+
+class StoryItem(ListItem):
+    expanded = reactive(False)
+    vote_status = reactive(None)  # 'up', 'down', None
+
+    def __init__(self, story: dict, score: float, reason: str, rel_title: str):
+        super().__init__()
+        self.story = story
+        self.score_val = score
+        self.reason = reason
+        self.rel_title = rel_title
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="wrapper"):
+            with Horizontal(id="row"):
+                yield Label(f"{int(self.score_val * 100)}%", id="match-score")
+                yield Label(
+                    f"[@click=app.open_article]{self.story['title']}[/]",
+                    id="story-title",
+                )
+                host = (
+                    self.story.get("url", "hn").split("/")[2]
+                    if self.story.get("url") and "//" in self.story["url"]
+                    else "hn"
+                )
+                yield Label(host, id="hostname")
+                yield Label("", id="vote-icon")
+
+            with Vertical(id="details"):
+                if self.rel_title:
+                    yield Label(
+                        f"[bold blue]INSIGHT FROM:[/]{self.rel_title}", classes="meta"
+                    )
+                if self.reason:
+                    yield Label(f'[italic] "{self.reason}"[/]', classes="reason")
+
+                if self.story.get("comments"):
+                    yield Label(
+                        "[bold underline]TOP DISCUSSION[/]", classes="section-title"
+                    )
+                    for c in self.story["comments"][:5]:
+                        yield Static(f"💬 {c}\n", classes="comment")
+
+                with Horizontal(classes="actions"):
+                    yield Button("Article (v)", id="open-art", variant="primary")
+                    yield Button("Comments (c)", id="open-hn")
+                    yield Button("Upvote (u)", id="upvote", variant="success")
+                    yield Button("Hide (d)", id="hide", variant="error")
+
+    @on(Button.Pressed, "#open-art")
+    def on_open_art(self):
+        url = (
+            self.story.get("url")
+            or f"https://news.ycombinator.com/item?id={self.story['id']}"
+        )
+        self.app.notify("Opening article...")
+        webbrowser.open_new_tab(url)
+
+    @on(Button.Pressed, "#open-hn")
+    def on_open_hn(self):
+        url = f"https://news.ycombinator.com/item?id={self.story['id']}"
+        self.app.notify("Opening comments...")
+        webbrowser.open_new_tab(url)
+
+    @on(Button.Pressed, "#upvote")
+    def on_upvote(self):
+        self.app.action_upvote()
+
+    @on(Button.Pressed, "#hide")
+    def on_hide(self):
+        self.app.action_hide()
+
+    def watch_expanded(self, val: bool):
+        self.set_class(val, "is-expanded")
+
+    def watch_vote_status(self, val: str):
+        try:
+            icon = self.query_one("#vote-icon")
+            if val == "up":
+                icon.update("[bold green]↑[/]")
+            elif val == "down":
+                icon.update("[bold red]↓[/]")
+        except Exception:
+            pass
+
+
+class HNRerankTUI(App):
+    CSS = """
+    Screen { background: $surface; }
+    #story-list { height: 1fr; background: transparent; padding: 1; }
+    StoryItem {
+        padding: 0 1;
+        margin-bottom: 0;
+        border: none;
+        height: 1;
+        overflow: hidden;
+    }
+    StoryItem.is-expanded { height: auto; background: $surface; border: tall $primary; margin: 1 0; }
+    StoryItem #row { height: 1; }
+    StoryItem #match-score { width: 5; text-style: bold; color: $accent; }
+    StoryItem #story-title { width: 1fr; text-style: bold; }
+    StoryItem #hostname { width: 15; color: $text-muted; text-align: right; }
+    StoryItem #vote-icon { width: 2; }
+    
+    StoryItem #details { display: none; padding: 1 2; }
+    StoryItem.is-expanded #details { display: block; }
+    .meta { color: $text-muted; }
+    .reason { background: $primary-muted; padding: 1; border-left: solid $primary; }
+    .comment { 
+        color: $text; 
+        background: $surface; 
+        padding: 0 1; 
+        margin-bottom: 1; 
+        border-left: solid $accent-muted;
+    }
+    .section-title { margin-top: 1; color: $accent; }
+    .actions { height: 3; margin-top: 1; }
+    .actions Button { height: 1; border: none; }
+    """
+
+    BINDINGS = [
+        Binding("q", "quit", "Quit"),
+        Binding("enter", "toggle_expand", "Expand"),
+        Binding("v", "open_article", "View"),
+        Binding("c", "open_hn", "Comments"),
+        Binding("u", "upvote", "Up"),
+        Binding("d", "hide", "Hide"),
+        Binding("r", "refresh_feed", "Refresh"),
+    ]
+
+    def __init__(self, username: str):
+        super().__init__()
+        self.username = username
+        self._pending_actions = set()
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        yield ListView(id="story-list")
+        yield Footer()
+
+    async def on_mount(self):
+        # Auto-login if creds available
+        if HN_USER != "your_username" and HN_PASS != "your_password":
+            self.notify(f"Authenticating as {HN_USER}...")
+            client = HNClient()
+            success, msg = await client.login(HN_USER, HN_PASS)
+            await client.close()
+            if success:
+                self.username = HN_USER
+                save_config("username", HN_USER)
+                self.notify("Authenticated")
+            else:
+                self.notify(f"Auth failed: {msg}", severity="error")
+
+        if not self.username:
+            self.notify(
+                "No username provided. Results will be generic.", severity="warning"
+            )
+
+        self.refresh_feed()
+
+    @on(ListView.Selected)
+    def on_item_selected(self):
+        self.action_toggle_expand()
+
+    @work
+    async def refresh_feed(self):
+        if not self.username:
+            # Fallback to a default if not logged in
+            self.username = "pg"
+
+        self.notify("Syncing Intelligence...")
+
+        try:
+            rerank.init_model()
+            pos_data, neg_data, exclude_ids = await get_user_data(self.username)
+            candidates = await get_best_stories(200, 30, exclude_ids)
+            if not candidates:
+                self.notify("No new stories found")
+                return
+
+            def do_rank():
+                p_texts = [s["text_content"] for s in pos_data]
+                n_texts = [s["text_content"] for s in neg_data]
+                c_texts = [s["text_content"] for s in candidates]
+
+                p_weights = np.linspace(1.0, 0.5, len(p_texts)) if p_texts else None
+
+                p_emb = rerank.get_embeddings(p_texts, is_query=True)
+                n_emb = rerank.get_embeddings(n_texts, is_query=True)
+                c_emb = rerank.get_embeddings(c_texts, is_query=False)
+
+                return rerank.rank_stories(
+                    candidates,
+                    cand_embeddings=c_emb,
+                    positive_embeddings=p_emb,
+                    negative_embeddings=n_emb,
+                    positive_weights=p_weights,
+                    hn_weight=0.15,
+                )
+
+            ranked = await asyncio.to_thread(do_rank)
+
+            list_view = self.query_one("#story-list")
+            list_view.clear()
+
+            for idx, score, fav_idx in ranked[:50]:
+                story = candidates[idx]
+                rel_obj = pos_data[fav_idx] if 0 <= fav_idx < len(pos_data) else None
+                reason_text, rel_title = "", ""
+                if rel_obj:
+                    rel_title = rel_obj.get("title")
+                    sens = [
+                        s.strip()
+                        for s in re.split(r"(?<=[.!?]) +", rel_obj["text_content"])
+                        if len(s.strip()) > 20
+                    ]
+                    if sens:
+                        s_embs = rerank.get_embeddings(sens, is_query=False)
+                        q_emb = rerank.get_embeddings([story["title"]], is_query=True)
+                        reason_text = sens[cosine_similarity(q_emb, s_embs)[0].argmax()]
+
+                list_view.append(StoryItem(story, score, reason_text, rel_title))
+
+            if list_view.children:
+                list_view.index = 0
+                list_view.focus()
+
+            self.notify("Feed Ready")
+        except Exception as e:
+            traceback.print_exc()
+            self.notify(f"Sync error: {e}", severity="error")
+
+    def _get_current(self) -> Optional[StoryItem]:
+        return self.query_one("#story-list").highlighted_child
+
+    def action_toggle_expand(self):
+        if item := self._get_current():
+            item.expanded = not item.expanded
+
+    def _open_url(self, url: str):
+        if "SSH_CONNECTION" in os.environ:
+            self.app.copy_to_clipboard(url)
+            self.notify("Remote session: URL copied to local clipboard")
+        else:
+            self.notify("Opening in browser...")
+            webbrowser.open_new_tab(url)
+
+    def action_open_article(self):
+        if item := self._get_current():
+            url = (
+                item.story.get("url")
+                or f"https://news.ycombinator.com/item?id={item.story['id']}"
+            )
+            self._open_url(url)
+
+    def action_open_hn(self):
+        if item := self._get_current():
+            url = f"https://news.ycombinator.com/item?id={item.story['id']}"
+            self._open_url(url)
+
+    @work
+    async def action_upvote(self):
+        if item := self._get_current():
+            sid = item.story["id"]
+            if sid in self._pending_actions:
+                return
+            self._pending_actions.add(sid)
+            try:
+                client = HNClient()
+                success, _ = await client.vote(sid, "up")
+                await client.close()
+                if success:
+                    item.vote_status = "up"
+            finally:
+                self._pending_actions.remove(sid)
+
+    @work
+    async def action_hide(self):
+        if item := self._get_current():
+            sid = item.story["id"]
+            if sid in self._pending_actions:
+                return
+            self._pending_actions.add(sid)
+            try:
+                client = HNClient()
+                success, _ = await client.hide(sid)
+                await client.close()
+                if success:
+                    item.vote_status = "down"
+                    self.notify("Story hidden")
+            finally:
+                self._pending_actions.remove(sid)
+
+    def action_refresh_feed(self):
+        self.refresh_feed()
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("username", nargs="?", default=get_username())
+    args = parser.parse_args()
+    app = HNRerankTUI(args.username)
+    app.run()

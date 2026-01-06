@@ -1,0 +1,27 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv/
+
+# Project specific
+.cache/
+.hypothesis/
+.pytest_cache/
+.ruff_cache/
+stderr.log
+*.log
+
+# Models (Large Files)
+bge_model/
+onnx_model/
+mxbai_model/
+
+# Temp files
+test_init.py
+reproduce_error.py
