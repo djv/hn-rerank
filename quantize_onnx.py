@@ -22,7 +22,7 @@ def quantize(input_path: str, output_path: str):
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
-        # Default fallback
-        quantize("onnx_model/model.onnx", "onnx_model/model_quantized.onnx")
+        # Default fallback to bge_model
+        quantize("bge_model/model.onnx", "bge_model/model_quantized.onnx")
     else:
         quantize(sys.argv[1], sys.argv[2])

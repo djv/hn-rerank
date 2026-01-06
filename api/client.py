@@ -171,8 +171,17 @@ class HNClient:
 
     async def check_session(self):
         """Verify if cookies are valid."""
-        resp = await self.client.get("/")
-        return "logout" in resp.text
+        try:
+            resp = await self.client.get("/")
+            return "logout" in resp.text
+        except Exception:
+            return False
 
     async def close(self):
         await self.client.aclose()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_value, traceback):
+        await self.close()
