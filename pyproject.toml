@@ -1,15 +1,35 @@
 [project]
 name = "hn-rerank"
 version = "0.1.0"
-description = "Add your description here"
+description = "A semantic search TUI for Hacker News that reranks the front page based on your personal interests"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    # TUI
+    "textual>=0.47.0",
+    # Data fetching
+    "httpx>=0.26.0",
+    "beautifulsoup4>=4.12.0",
+    "trafilatura>=1.6.0",
+    # ML/AI
+    "numpy>=1.26.0",
+    "scikit-learn>=1.4.0",
+    "onnxruntime>=1.16.0",
+    "transformers>=4.36.0",
+    # Testing (dev dependencies)
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
     "pytest-cov>=7.0.0",
+    "pytest-timeout>=2.2.0",
+    "hypothesis>=6.92.0",
     "respx>=0.22.0",
 ]
 
+[project.scripts]
+hn-rerank = "tui_app:main"
+
 [tool.pytest.ini_options]
+pythonpath = "."
 timeout = 30
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"

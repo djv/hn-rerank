@@ -1,6 +1,4 @@
 import pytest
-import json
-from pathlib import Path
 from api import config
 
 def test_config_workflow(tmp_path):

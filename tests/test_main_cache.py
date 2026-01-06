@@ -4,7 +4,7 @@ import time
 import shutil
 from pathlib import Path
 from unittest.mock import AsyncMock, patch, MagicMock
-from api import main
+from api import fetching as main
 
 TEST_STORY_CACHE = Path(".cache_test/stories")
 
@@ -50,7 +50,7 @@ async def test_fetch_story_cache_migration(temp_story_cache):
         "children": []
     }
     
-    with patch("api.main.fetch_article_text", return_value="New Snippet") as m_fetch_text:
+    with patch("api.fetching.fetch_article_text", return_value="New Snippet") as m_fetch_text:
         mock_client.get = AsyncMock(return_value=mock_resp)
         
         # This should trigger a re-fetch because it's an external URL and article_snippet is missing
@@ -81,7 +81,7 @@ async def test_fetch_story_cache_hit_valid(temp_story_cache):
     cache_path.write_text(json.dumps(valid_data))
     
     mock_client = AsyncMock()
-    with patch("api.main.fetch_article_text") as m_fetch_text:
+    with patch("api.fetching.fetch_article_text") as m_fetch_text:
         story = await main.fetch_story_with_comments(mock_client, story_id)
         assert story is not None
         assert story["title"] == "Valid Story"

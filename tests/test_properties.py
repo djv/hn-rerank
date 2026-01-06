@@ -10,7 +10,8 @@ def embeddings(n_min, n_max, d):
         np.float64,
         shape=st.tuples(st.integers(min_value=n_min, max_value=n_max), st.just(d)),
         elements=st.floats(
-            min_value=-1.0, max_value=1.0, allow_nan=False, allow_infinity=False
+            min_value=-1.0, max_value=1.0, allow_nan=False, allow_infinity=False,
+            allow_subnormal=False  # Avoid subnormal numbers that cause normalization issues
         ),
     )
 
@@ -31,15 +32,23 @@ def test_maxsim_property_correctness(data):
     """
     candidates, favorites = data
 
-    # Normalize inputs to simulate unit vectors (like embeddings)
-    c_norm = np.linalg.norm(candidates, axis=1, keepdims=True)
-    # Avoid div by zero by adding epsilon or simple check
-    c_norm[c_norm == 0] = 1.0
-    candidates = candidates / c_norm
+    # Filter out near-zero vectors to avoid numerical instability
+    MIN_NORM = 1e-10
+    c_norms = np.linalg.norm(candidates, axis=1)
+    valid_c_indices = np.where(c_norms >= MIN_NORM)[0]
+    candidates = candidates[valid_c_indices]
 
-    f_norm = np.linalg.norm(favorites, axis=1, keepdims=True)
-    f_norm[f_norm == 0] = 1.0
-    favorites = favorites / f_norm
+    f_norms = np.linalg.norm(favorites, axis=1)
+    valid_f_indices = np.where(f_norms >= MIN_NORM)[0]
+    favorites = favorites[valid_f_indices]
+
+    # Skip if we have no valid vectors
+    if len(candidates) == 0 or len(favorites) == 0:
+        return
+
+    # Normalize inputs to simulate unit vectors (like embeddings)
+    candidates = candidates / np.linalg.norm(candidates, axis=1, keepdims=True)
+    favorites = favorites / np.linalg.norm(favorites, axis=1, keepdims=True)
 
     results = rerank.rank_embeddings_maxsim(candidates, favorites)
 
@@ -67,14 +76,23 @@ def test_maxsim_permutation_invariance(data):
     """
     candidates, favorites = data
 
-    # Normalize
-    c_norm = np.linalg.norm(candidates, axis=1, keepdims=True)
-    c_norm[c_norm == 0] = 1.0
-    candidates = candidates / c_norm
+    # Filter out near-zero vectors to avoid numerical instability
+    MIN_NORM = 1e-10
+    c_norms = np.linalg.norm(candidates, axis=1)
+    valid_c_indices = np.where(c_norms >= MIN_NORM)[0]
+    candidates = candidates[valid_c_indices]
 
-    f_norm = np.linalg.norm(favorites, axis=1, keepdims=True)
-    f_norm[f_norm == 0] = 1.0
-    favorites = favorites / f_norm
+    f_norms = np.linalg.norm(favorites, axis=1)
+    valid_f_indices = np.where(f_norms >= MIN_NORM)[0]
+    favorites = favorites[valid_f_indices]
+
+    # Skip if we have no valid vectors
+    if len(candidates) == 0 or len(favorites) == 0:
+        return
+
+    # Normalize
+    candidates = candidates / np.linalg.norm(candidates, axis=1, keepdims=True)
+    favorites = favorites / np.linalg.norm(favorites, axis=1, keepdims=True)
 
     # Original run
     results_orig = rerank.rank_embeddings_maxsim(candidates, favorites)

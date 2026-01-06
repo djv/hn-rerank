@@ -1,9 +1,10 @@
 import pytest
 from hypothesis import given, strategies as st, settings, HealthCheck
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import AsyncMock, patch
 from tui_app import HNRerankTUI, StoryItem
 import numpy as np
-import asyncio
+from typing import cast
+from textual.widgets import ListView
 
 # Mock Data Generator
 def create_mock_story(sid, score=100):
@@ -57,7 +58,7 @@ async def test_law_of_ranking_integrity(tui_mocks, _):
     app = HNRerankTUI("testuser")
     async with app.run_test() as pilot:
         await pilot.pause(0.2)
-        list_view = app.query_one("#story-list")
+        list_view = app.query_one("#story-list", ListView)
         
         scores = [child.score_val for child in list_view.children if isinstance(child, StoryItem)]
         assert scores == sorted(scores, reverse=True)
@@ -71,18 +72,19 @@ async def test_law_of_expansion_isolation(tui_mocks, _):
     """
     app = HNRerankTUI("testuser")
     async with app.run_test() as pilot:
-        await pilot.pause(1.0) # Wait for initial load and focus
-        list_view = app.query_one("#story-list")
-        
+        await pilot.pause(1.5) # Wait for initial load, focus, and timer expansion
+        list_view = app.query_one("#story-list", ListView)
+
         # 1. Check initial state (first item expanded)
-        assert list_view.children[0].expanded is True
-        
+        # The app sets a 0.2s timer for auto-expansion, so we need sufficient wait
+        assert cast(StoryItem, list_view.children[0]).expanded is True
+
         # 2. Navigate down
         await pilot.press("down")
-        await pilot.pause(0.2)
-        
-        assert list_view.children[1].expanded is True
-        assert list_view.children[0].expanded is False
+        await pilot.pause(0.3)  # Increased to handle reactivity
+
+        assert cast(StoryItem, list_view.children[1]).expanded is True
+        assert cast(StoryItem, list_view.children[0]).expanded is False
 
 @settings(suppress_health_check=[HealthCheck.function_scoped_fixture], deadline=None, max_examples=3)
 @given(keys=st.lists(st.sampled_from(["down", "up", "enter", "u", "d"]), min_size=5, max_size=10))
@@ -99,4 +101,4 @@ async def test_system_thermal_stability(tui_mocks, keys):
                 await pilot.press(key)
                 
             assert app.is_running
-            assert app.query_one("#story-list").index is not None
+            assert app.query_one("#story-list", ListView).index is not None

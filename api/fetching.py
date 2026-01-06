@@ -1,81 +1,38 @@
+"""
+Data fetching module for HN stories and user data.
+"""
 import asyncio
 import httpx
 import json
 import time
 import re
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Optional
 from api.client import HNClient
 from datetime import datetime, timedelta, timezone
+import trafilatura
 
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-
-app = FastAPI(title="HN Rerank API")
-
-# Enable CORS for frontend
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+from api.constants import (
+    STORY_CACHE_TTL,
+    EXTERNAL_REQUEST_SEMAPHORE,
+    ARTICLE_RANKING_LENGTH,
+    ARTICLE_SNIPPET_LENGTH,
+    TEXT_CONTENT_MAX_LENGTH,
+    MAX_COMMENTS_COLLECTED,
+    TOP_COMMENTS_FOR_RANKING,
+    TOP_COMMENTS_FOR_UI,
+    MAX_USER_STORIES,
+    ALGOLIA_MIN_POINTS,
+    ALGOLIA_DEFAULT_DAYS,
 )
-
-
-class LoginRequest(BaseModel):
-    username: str
-    password: str
-
-
-class VoteRequest(BaseModel):
-    story_id: int
-    direction: str = "up"
-
-
-@app.get("/health")
-def health():
-    return {"status": "ok"}
-
-
-@app.post("/login")
-async def login_route(req: LoginRequest):
-    client = HNClient()
-    try:
-        success, msg = await client.login(req.username, req.password)
-        if not success:
-            raise HTTPException(status_code=401, detail=msg)
-        return {"status": "success", "username": req.username}
-    finally:
-        await client.close()
-
-
-@app.post("/vote")
-async def vote_route(req: VoteRequest):
-    client = HNClient()
-    try:
-        if req.direction == "up":
-            success, msg = await client.vote(req.story_id, "up")
-        else:
-            success, msg = await client.hide(req.story_id)
-        if not success:
-            raise HTTPException(status_code=400, detail=msg)
-        return {"status": "success"}
-    finally:
-        await client.close()
-
 
 HN_API_BASE = "https://hacker-news.firebaseio.com/v0"
 ALGOLIA_API_BASE = "https://hn.algolia.com/api/v1"
 STORY_CACHE_DIR = Path(".cache/stories")
 STORY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-CACHE_TTL = 86400
 
-EXTERNAL_SEM = asyncio.Semaphore(50)
+EXTERNAL_SEM = asyncio.Semaphore(EXTERNAL_REQUEST_SEMAPHORE)
 
-
-import trafilatura
 
 async def fetch_article_text(url: str) -> str:
     """Fetch and extract main text from a URL using trafilatura."""
@@ -88,7 +45,7 @@ async def fetch_article_text(url: str) -> str:
                 # Extract text, favoring clean and concise output
                 return trafilatura.extract(downloaded, include_comments=False, include_tables=False)
             return ""
-        
+
         content = await asyncio.to_thread(_download_and_extract)
         return content or ""
     except Exception:
@@ -104,13 +61,13 @@ async def fetch_story_with_comments(
         try:
             with open(cache_path, "r") as f:
                 cached = json.load(f)
-            
+
             # Check if cache is recent and has the new fields
             # We want article_snippet if it's an external link
             data = cached["data"]
             has_snippet = "article_snippet" in data or not data.get("url") or "news.ycombinator.com" in data.get("url", "")
-            
-            if time.time() - cached["retrieved_at"] < CACHE_TTL and has_snippet:
+
+            if time.time() - cached["retrieved_at"] < STORY_CACHE_TTL and has_snippet:
                 return data
         except Exception:
             pass
@@ -119,7 +76,7 @@ async def fetch_story_with_comments(
     try:
         async with EXTERNAL_SEM:
             resp = await client.get(f"{ALGOLIA_API_BASE}/items/{story_id}", timeout=5.0)
-        
+
         if resp.status_code == 200:
             data = resp.json()
             story = {
@@ -134,16 +91,17 @@ async def fetch_story_with_comments(
             if not story["title"]:
                 return None
 
-            text_parts = [story["title"]]
+            text_parts: list[str] = [str(story["title"])]
 
             # Try to fetch article text for deeper semantic matching
-            if story.get("url") and "news.ycombinator.com" not in story["url"]:
+            url = story.get("url")
+            if isinstance(url, str) and "news.ycombinator.com" not in url:
                 async with EXTERNAL_SEM:
-                    article_text = await fetch_article_text(story["url"])
+                    article_text = await fetch_article_text(url)
                 if article_text:
-                    # Use first 2000 chars of article for ranking
-                    text_parts.append(article_text[:2000])
-                    story["article_snippet"] = article_text[:1000] # Store snippet for UI
+                    # Use first N chars of article for ranking
+                    text_parts.append(article_text[:ARTICLE_RANKING_LENGTH])
+                    story["article_snippet"] = article_text[:ARTICLE_SNIPPET_LENGTH]  # Store snippet for UI
 
             # Extract top comments
             all_comments = []
@@ -153,20 +111,20 @@ async def fetch_story_with_comments(
                         # Basic HTML cleanup
                         text = re.sub("<[^<]+?>", "", node["text"])
                         all_comments.append((node.get("points", 0) or 0, text))
-                    if len(all_comments) > 40:
+                    if len(all_comments) > MAX_COMMENTS_COLLECTED:
                         break
                     collect(node.get("children", []))
 
             collect(data.get("children", []))
             all_comments.sort(key=lambda x: x[0], reverse=True)
 
-            # Use top 5 for ranking text
-            for _, t in all_comments[:5]:
+            # Use top N for ranking text
+            for _, t in all_comments[:TOP_COMMENTS_FOR_RANKING]:
                 text_parts.append(t)
 
-            # Store top 10 for UI
-            story["comments"] = [t for _, t in all_comments[:10]]
-            story["text_content"] = " ".join(text_parts)[:5000]
+            # Store top N for UI
+            story["comments"] = [t for _, t in all_comments[:TOP_COMMENTS_FOR_UI]]
+            story["text_content"] = " ".join(text_parts)[:TEXT_CONTENT_MAX_LENGTH]
 
             with open(cache_path, "w") as f:
                 json.dump({"retrieved_at": time.time(), "data": story}, f)
@@ -176,7 +134,7 @@ async def fetch_story_with_comments(
     return None
 
 
-async def get_top_stories(limit: int) -> List[dict]:
+async def get_top_stories(limit: int) -> list[dict]:
     async with httpx.AsyncClient() as client:
         resp = await client.get(f"{HN_API_BASE}/topstories.json")
         ids = resp.json()[:limit]
@@ -185,7 +143,7 @@ async def get_top_stories(limit: int) -> List[dict]:
         return [s for s in stories if s]
 
 
-async def get_user_data(username: str) -> Tuple[List[dict], List[dict], set]:
+async def get_user_data(username: str) -> tuple[list[dict], list[dict], set[int]]:
     client = HNClient()
     try:
         fav_ids = await client.fetch_favorites(username)
@@ -201,7 +159,7 @@ async def get_user_data(username: str) -> Tuple[List[dict], List[dict], set]:
         exclude_ids = pos_ids.union(hidden_ids).union(submitted_ids)
 
         async def fetch_batch(ids):
-            subset = sorted(list(ids), reverse=True)[:50]
+            subset = sorted(list(ids), reverse=True)[:MAX_USER_STORIES]
             async with httpx.AsyncClient(timeout=5.0) as ac:
                 res = await asyncio.gather(
                     *[fetch_story_with_comments(ac, int(idx)) for idx in subset]
@@ -217,8 +175,8 @@ async def get_user_data(username: str) -> Tuple[List[dict], List[dict], set]:
 
 
 async def get_best_stories(
-    limit: int, days: int = 30, exclude_ids: Optional[set] = None
-) -> List[dict]:
+    limit: int, days: int = ALGOLIA_DEFAULT_DAYS, exclude_ids: Optional[set[int]] = None
+) -> list[dict]:
     if exclude_ids is None:
         exclude_ids = set()
     async with httpx.AsyncClient(timeout=10.0) as client:
@@ -227,7 +185,7 @@ async def get_best_stories(
         )
         params = {
             "tags": "story",
-            "numericFilters": f"created_at_i>{start_time},points>20",
+            "numericFilters": f"created_at_i>{start_time},points>{ALGOLIA_MIN_POINTS}",
             "hitsPerPage": limit,
         }
         resp = await client.get(f"{ALGOLIA_API_BASE}/search", params=params)

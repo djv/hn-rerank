@@ -3,11 +3,10 @@ import numpy as np
 import asyncio
 import webbrowser
 import argparse
-import re
 import traceback
 import os
 import time
-from typing import Optional
+from typing import Optional, cast
 
 from textual.app import App, ComposeResult
 from textual.containers import Vertical, Horizontal
@@ -16,18 +15,17 @@ from textual.reactive import reactive
 from textual.binding import Binding
 from textual import work, on
 
-from api.main import get_user_data, get_best_stories
+from api.fetching import get_user_data, get_best_stories
 from api import rerank
 from api.client import HNClient
 from api.config import save_config, get_username
-from sklearn.metrics.pairwise import cosine_similarity
 
 # --- CREDENTIALS (Env Vars) ---
 HN_USER = os.getenv("HN_USERNAME")
 HN_PASS = os.getenv("HN_PASSWORD")
 
 
-def get_relative_time(timestamp: int) -> str:
+def get_relative_time(timestamp: Optional[int]) -> str:
     if not timestamp:
         return ""
     diff = int(time.time()) - timestamp
@@ -43,7 +41,7 @@ def get_relative_time(timestamp: int) -> str:
 
 class StoryItem(ListItem):
     expanded = reactive(False)
-    vote_status = reactive(None)  # 'up', 'down', None
+    vote_status: reactive[Optional[str]] = reactive(None)  # 'up', 'down', None
 
     def __init__(self, story: dict, score: float, reason: str, rel_title: str):
         super().__init__()
@@ -106,18 +104,18 @@ class StoryItem(ListItem):
 
     @on(Button.Pressed, "#upvote")
     def on_upvote(self):
-        self.app.action_upvote()
+        cast("HNRerankTUI", self.app).action_upvote()
 
     @on(Button.Pressed, "#hide")
     def on_hide(self):
-        self.app.action_hide()
+        cast("HNRerankTUI", self.app).action_hide()
 
     def watch_expanded(self, val: bool):
         self.set_class(val, "is-expanded")
 
     def watch_vote_status(self, val: str):
         try:
-            icon = self.query_one("#vote-icon")
+            icon = self.query_one("#vote-icon", Static)
             if val == "up":
                 icon.update("[bold green]↑[/]")
             elif val == "down":
@@ -196,7 +194,7 @@ class HNRerankTUI(App):
         Binding("r", "refresh_feed", "Refresh"),
     ]
 
-    def __init__(self, username: str):
+    def __init__(self, username: Optional[str]):
         super().__init__()
         self.username = username
         self._pending_actions = set()
@@ -236,14 +234,14 @@ class HNRerankTUI(App):
     def on_highlight_changed(self, event: ListView.Highlighted):
         if event.item and isinstance(event.item, StoryItem):
             # Collapse all others to keep view clean during scroll
-            for child in self.query_one("#story-list").children:
+            for child in self.query_one("#story-list", ListView).children:
                 if isinstance(child, StoryItem) and child != event.item:
                     child.expanded = False
             
             # Auto-expand the highlighted one
             event.item.expanded = True
             # Ensure expanded content is visible
-            self.query_one("#story-list").scroll_to_widget(event.item)
+            self.query_one("#story-list", ListView).scroll_to_widget(event.item)
 
     @work
     async def refresh_feed(self):
@@ -272,7 +270,7 @@ class HNRerankTUI(App):
                 n_texts = [s["text_content"] for s in neg_data]
                 c_texts = [s["text_content"] for s in candidates]
 
-                p_weights = np.linspace(1.0, 0.5, len(p_texts)) if p_texts else None
+                p_weights = np.linspace(1.0, 0.5, len(p_texts)).astype(np.float32) if p_texts else None
 
                 p_emb = rerank.get_embeddings(p_texts, is_query=True)
                 n_emb = rerank.get_embeddings(n_texts, is_query=True)
@@ -289,7 +287,7 @@ class HNRerankTUI(App):
 
             ranked = await asyncio.to_thread(do_rank)
 
-            list_view = self.query_one("#story-list")
+            list_view = self.query_one("#story-list", ListView)
             list_view.clear()
 
             for idx, score, fav_idx in ranked[:50]:
@@ -314,13 +312,13 @@ class HNRerankTUI(App):
             self.remove_class("loading")
 
     def _get_current(self) -> Optional[StoryItem]:
-        return self.query_one("#story-list").highlighted_child
+        return cast(Optional[StoryItem], self.query_one("#story-list", ListView).highlighted_child)
 
     def action_toggle_expand(self):
         if item := self._get_current():
             item.expanded = not item.expanded
             if item.expanded:
-                self.query_one("#story-list").scroll_to_widget(item)
+                self.query_one("#story-list", ListView).scroll_to_widget(item)
 
     def _open_url(self, url: str):
         if "SSH_CONNECTION" in os.environ:
@@ -378,9 +376,14 @@ class HNRerankTUI(App):
         self.refresh_feed()
 
 
-if __name__ == "__main__":
+def main():
+    """Entry point for hn-rerank CLI."""
     parser = argparse.ArgumentParser()
     parser.add_argument("username", nargs="?", default=get_username())
     args = parser.parse_args()
     app = HNRerankTUI(args.username)
     app.run()
+
+
+if __name__ == "__main__":
+    main()

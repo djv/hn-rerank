@@ -1,5 +1,4 @@
-from api.main import fetch_story_with_comments, get_top_stories, fetch_article_text, get_user_data
-import httpx
+from api.fetching import fetch_story_with_comments, get_top_stories, fetch_article_text, get_user_data
 import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 
@@ -9,13 +8,13 @@ async def test_get_user_data():
     mock_ids = {101, 102}
     mock_story = {"id": 101, "title": "Fav"}
     
-    with patch("api.main.HNClient") as MockClass:
+    with patch("api.fetching.HNClient") as MockClass:
         client = MockClass.return_value
         client.fetch_favorites = AsyncMock(return_value=mock_ids)
         client.check_session = AsyncMock(return_value=False)
         client.close = AsyncMock()
         
-        with patch("api.main.fetch_story_with_comments", return_value=mock_story):
+        with patch("api.fetching.fetch_story_with_comments", return_value=mock_story):
             pos, neg, exclude = await get_user_data(username)
             assert len(pos) > 0
             assert 101 in exclude
@@ -34,7 +33,7 @@ async def test_get_top_stories():
     with patch("httpx.AsyncClient.get") as m_get:
         m_get.return_value = AsyncMock(status_code=200, json=lambda: mock_ids)
         
-        with patch("api.main.fetch_story_with_comments", return_value=mock_story):
+        with patch("api.fetching.fetch_story_with_comments", return_value=mock_story):
             res = await get_top_stories(limit=2)
             assert len(res) == 2
             assert res[0] == mock_story
@@ -77,7 +76,7 @@ async def test_get_top_stories_resilience():
     """
     Test that get_top_stories continues even if individual story fetches fail.
     """
-    from api.main import get_top_stories
+    from api.fetching import get_top_stories
 
     mock_client = AsyncMock()
     mock_response_ids = MagicMock()
@@ -87,7 +86,7 @@ async def test_get_top_stories_resilience():
         mock_client.__aenter__.return_value = mock_client
         mock_client.get.return_value = mock_response_ids
 
-        with patch("api.main.fetch_story_with_comments") as mock_fetch:
+        with patch("api.fetching.fetch_story_with_comments") as mock_fetch:
             mock_fetch.side_effect = [
                 {"id": 1, "title": "Good Story", "text_content": "Good Story"},
                 None,

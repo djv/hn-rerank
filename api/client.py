@@ -77,8 +77,9 @@ class HNClient:
                 break
 
             for r in rows:
-                if r.get("id"):
-                    ids.add(int(r.get("id")))
+                row_id = r.get("id")
+                if isinstance(row_id, str) and row_id.isdigit():
+                    ids.add(int(row_id))
 
             if not soup.find("a", class_="morelink"):
                 break

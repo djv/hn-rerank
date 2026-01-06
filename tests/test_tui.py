@@ -2,6 +2,7 @@ import pytest
 from unittest.mock import AsyncMock, patch
 from tui_app import HNRerankTUI, StoryItem
 import numpy as np
+from textual.widgets import ListView
 
 # Mock Data
 MOCK_STORY = {
@@ -54,7 +55,7 @@ async def test_tui_loading_and_expand(mock_rerank, mock_api, mock_hn_client):
     async with app.run_test() as pilot:
         await pilot.pause(1.0)
 
-        list_view = app.query_one("#story-list")
+        list_view = app.query_one("#story-list", ListView)
         assert len(list_view.children) == 1
 
         item = list_view.children[0]
@@ -96,7 +97,7 @@ async def test_tui_navigation(mock_rerank, mock_api, mock_hn_client):
         async with app.run_test() as pilot:
             await pilot.pause(1.0)
 
-            list_view = app.query_one("#story-list")
+            list_view = app.query_one("#story-list", ListView)
             assert list_view.index == 0
 
             await pilot.press("down")

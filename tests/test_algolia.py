@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
-from api.main import get_best_stories
+from api.fetching import get_best_stories
 from datetime import datetime, timezone, timedelta
 
 
@@ -27,7 +27,7 @@ async def test_get_best_stories_logic():
         mock_client.__aenter__.return_value = mock_client
         mock_client.get.return_value = mock_algolia_resp
 
-        with patch("api.main.fetch_story_with_comments", return_value=mock_story_resp):
+        with patch("api.fetching.fetch_story_with_comments", return_value=mock_story_resp):
             results = await get_best_stories(limit=50)
 
             # Check results

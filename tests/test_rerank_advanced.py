@@ -1,5 +1,4 @@
 import numpy as np
-import pytest
 from api import rerank
 
 def test_calculate_hn_score():
@@ -45,7 +44,7 @@ def test_rank_stories_diversity():
 
 def test_cluster_and_reduce_single():
     emb = np.array([[1.0, 0.0]])
-    c, r, l = rerank.cluster_and_reduce_auto(emb)
+    c, r, labels = rerank.cluster_and_reduce_auto(emb)
     assert len(c) == 1
     assert r == [0]
-    assert l == [0]
+    assert labels == [0]

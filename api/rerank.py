@@ -1,20 +1,42 @@
 import numpy as np
 import hashlib
 from pathlib import Path
+from typing import Optional, Any
+from numpy.typing import NDArray
 import onnxruntime as ort
 from transformers import AutoTokenizer
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.cluster import KMeans, AgglomerativeClustering
 
-# Global singleton
-_model = None
+from api.constants import (
+    EMBEDDING_CACHE_DIR,
+    SIMILARITY_MIN,
+    SIMILARITY_MAX,
+    HN_SCORE_POINTS_EXP,
+    HN_SCORE_TIME_EXP,
+    HN_SCORE_TIME_OFFSET,
+    CLUSTER_DISTANCE_THRESHOLD,
+    CLUSTER_MIN_NORM,
+    EMBEDDING_MIN_CLIP,
+    DEFAULT_EMBEDDING_BATCH_SIZE,
+    RECENCY_DECAY_RATE,
+)
 
-CACHE_DIR = Path(".cache/embeddings")
+# Global singleton
+_model: Optional["ONNXEmbeddingModel"] = None
+
+CACHE_DIR = Path(EMBEDDING_CACHE_DIR)
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class ONNXEmbeddingModel:
-    def __init__(self, model_dir="bge_model"):
+    tokenizer: Any
+    session: ort.InferenceSession
+    model_dir: str
+    model_id: str
+
+    def __init__(self, model_dir: str = "bge_model") -> None:
+        self.model_dir = model_dir
         # Check if model exists, if not, try to setup
         if not Path(f"{model_dir}/model_quantized.onnx").exists():
             print(f"Model not found in {model_dir}. Attempting to run setup...")
@@ -38,7 +60,24 @@ class ONNXEmbeddingModel:
         # Use the quantized version for speed
         self.session = ort.InferenceSession(f"{model_dir}/model_quantized.onnx")
 
-    def encode(self, texts, normalize_embeddings=True, batch_size=4):
+        # Determine stable model identifier for cache keying
+        # Check if model is Nomic or BGE based on tokenizer metadata
+        tokenizer_name = self.tokenizer.name_or_path.lower()
+        if "nomic" in tokenizer_name or "onnx_model" in model_dir.lower():
+            self.model_id = "nomic-embed-text-v1.5"
+        elif "bge" in tokenizer_name or "bge_model" in model_dir.lower():
+            self.model_id = "bge-small-en-v1.5"
+        else:
+            # Fallback: use model directory name + vocab size as identifier
+            vocab_size = len(self.tokenizer)
+            self.model_id = f"{model_dir}-{vocab_size}"
+
+    def encode(
+        self,
+        texts: list[str],
+        normalize_embeddings: bool = True,
+        batch_size: int = DEFAULT_EMBEDDING_BATCH_SIZE,
+    ) -> NDArray[np.float32]:
         all_embeddings = []
 
         for i in range(0, len(texts), batch_size):
@@ -66,14 +105,14 @@ class ONNXEmbeddingModel:
             mask_expanded = np.expand_dims(attention_mask, -1).astype(float)
 
             sum_embeddings = np.sum(last_hidden_state * mask_expanded, axis=1)
-            sum_mask = np.clip(mask_expanded.sum(axis=1), a_min=1e-9, a_max=None)
+            sum_mask = np.clip(mask_expanded.sum(axis=1), a_min=EMBEDDING_MIN_CLIP, a_max=None)
 
             batch_embeddings = sum_embeddings / sum_mask
 
             if normalize_embeddings:
                 norm = np.linalg.norm(batch_embeddings, axis=1, keepdims=True)
                 batch_embeddings = batch_embeddings / np.clip(
-                    norm, a_min=1e-9, a_max=None
+                    norm, a_min=EMBEDDING_MIN_CLIP, a_max=None
                 )
 
             all_embeddings.append(batch_embeddings)
@@ -81,14 +120,14 @@ class ONNXEmbeddingModel:
         return np.vstack(all_embeddings) if all_embeddings else np.array([])
 
 
-def init_model(model_name: str = "bge_model"):
+def init_model(model_name: str = "bge_model") -> ONNXEmbeddingModel:
     global _model
     if _model is None:
         _model = ONNXEmbeddingModel(model_name)
     return _model
 
 
-def get_model():
+def get_model() -> ONNXEmbeddingModel:
     if _model is None:
         return init_model()
     return _model
@@ -100,21 +139,35 @@ def get_cache_key(text: str, model_name: str) -> Path:
     return CACHE_DIR / f"{hash_digest}.npy"
 
 
-def get_embeddings(texts: list[str], is_query: bool = False) -> np.ndarray:
+def get_embeddings(texts: list[str], is_query: bool = False) -> NDArray[np.float32]:
+    """
+    Generate embeddings for texts with model-appropriate prefixes.
+
+    Uses cached embeddings when available. Cache keys include model_id
+    to prevent cross-contamination when switching models.
+
+    Args:
+        texts: List of text strings to embed
+        is_query: If True, use query prefix (vs. document prefix)
+
+    Returns:
+        Array of embeddings, shape (len(texts), embedding_dim)
+    """
     if not texts:
         return np.array([])
 
     model = get_model()
-    # Check if we are using Nomic (onnx_model) or BGE
-    is_nomic = "nomic" in model.tokenizer.name_or_path.lower() or "onnx_model" in model.tokenizer.name_or_path.lower()
-    
-    if is_nomic:
-        prefix = "search_query: " if is_query else "search_document: "
-    else:
-        # BGE style
-        prefix = "Represent this sentence for searching relevant passages: " if is_query else ""
+    model_id = model.model_id
 
-    model_id = "nomic-1.5" if is_nomic else "bge-1.5"
+    # Determine prefix based on model type
+    if "nomic" in model_id.lower():
+        prefix = "search_query: " if is_query else "search_document: "
+    elif "bge" in model_id.lower():
+        # BGE uses asymmetric prefixes (query-only)
+        prefix = "Represent this sentence for searching relevant passages: " if is_query else ""
+    else:
+        # Unknown model, no prefix
+        prefix = ""
 
     processed_texts = [f"{prefix}{t}" for t in texts]
 
@@ -147,18 +200,22 @@ def get_embeddings(texts: list[str], is_query: bool = False) -> np.ndarray:
 
 
 def cluster_and_reduce_auto(
-    embeddings: np.ndarray,
-) -> tuple[np.ndarray, list[int], list[int]]:
+    embeddings: NDArray[np.float32],
+) -> tuple[NDArray[np.float32], list[int], list[int]]:
     """
     Cluster embeddings using Agglomerative Clustering (Auto K).
     """
     if len(embeddings) < 2:
         return embeddings, list(range(len(embeddings))), list(range(len(embeddings)))
 
-    # distance_threshold 0.8 means items with >0.2 similarity can group.
-    # linkage='complete' or 'average' works well.
+    # distance_threshold with cosine metric means items with certain similarity can group.
+    # For cosine: distance = 1 - similarity, so threshold 0.8 = similarity > 0.2
+    # linkage='complete' ensures all pairs in cluster meet threshold
     clustering = AgglomerativeClustering(
-        n_clusters=None, distance_threshold=0.8, metric="euclidean", linkage="complete"
+        n_clusters=None,
+        distance_threshold=CLUSTER_DISTANCE_THRESHOLD,
+        metric="cosine",
+        linkage="complete",
     ).fit(embeddings)
 
     labels = clustering.labels_
@@ -174,7 +231,7 @@ def cluster_and_reduce_auto(
         centroid = np.mean(cluster_embeds, axis=0)
         # Normalize centroid
         norm = np.linalg.norm(centroid)
-        if norm > 1e-9:
+        if norm > CLUSTER_MIN_NORM:
             centroid = centroid / norm
         centroids.append(centroid)
 
@@ -189,8 +246,8 @@ def cluster_and_reduce_auto(
 
 
 def cluster_and_reduce(
-    embeddings: np.ndarray, k: int
-) -> tuple[np.ndarray, list[int], list[int]]:
+    embeddings: NDArray[np.float32], k: int
+) -> tuple[NDArray[np.float32], list[int], list[int]]:
     if len(embeddings) <= k:
         return embeddings, list(range(len(embeddings))), list(range(len(embeddings)))
 
@@ -201,16 +258,19 @@ def cluster_and_reduce(
     sim_matrix = cosine_similarity(centroids, embeddings)
     representative_indices = np.argmax(sim_matrix, axis=1).tolist()
 
-    return centroids, representative_indices, kmeans.labels_.tolist()
+    labels = kmeans.labels_
+    if labels is None:
+        return centroids, representative_indices, []
+    return centroids, representative_indices, labels.tolist()
 
 
 def rank_embeddings_maxsim(
-    candidate_embeddings: np.ndarray, fav_embeddings: np.ndarray
+    candidate_embeddings: NDArray[np.float32], fav_embeddings: NDArray[np.float32]
 ) -> list[tuple[int, float, int]]:
     if len(candidate_embeddings) == 0 or len(fav_embeddings) == 0:
         return []
     sim_matrix = cosine_similarity(fav_embeddings, candidate_embeddings)
-    sim_matrix = np.clip(sim_matrix, -1.0, 1.0)
+    sim_matrix = np.clip(sim_matrix, SIMILARITY_MIN, SIMILARITY_MAX)
     max_scores = np.max(sim_matrix, axis=0)
     best_fav_indices = np.argmax(sim_matrix, axis=0)
     results = []
@@ -221,47 +281,66 @@ def rank_embeddings_maxsim(
 
 
 def rank_mmr(
-    cand_embeddings: np.ndarray,
-    fav_embeddings: np.ndarray,
+    cand_embeddings: NDArray[np.float32],
+    fav_embeddings: NDArray[np.float32],
     diversity_penalty: float,
-    cand_texts: list[str] = None,
-    fav_texts: list[str] = None,
+    cand_texts: Optional[list[str]] = None,
+    fav_texts: Optional[list[str]] = None,
 ) -> list[tuple[int, float, int]]:
+    """
+    Maximal Marginal Relevance ranking with vectorized redundancy computation.
+
+    Balances relevance to favorites vs. diversity among selected candidates.
+    Time complexity: O(n×m + n²) where n=candidates, m=favorites.
+    """
     if len(cand_embeddings) == 0 or len(fav_embeddings) == 0:
         return []
+
+    # Compute relevance scores (similarity to favorites)
     sim_matrix = cosine_similarity(fav_embeddings, cand_embeddings)
-    sim_matrix = np.clip(sim_matrix, -1.0, 1.0)
+    sim_matrix = np.clip(sim_matrix, SIMILARITY_MIN, SIMILARITY_MAX)
     relevance_scores = np.max(sim_matrix, axis=0)
+    best_fav_indices = np.argmax(sim_matrix, axis=0)
+
+    # Precompute candidate-to-candidate similarities (once, upfront)
+    cand_sim = cosine_similarity(cand_embeddings, cand_embeddings)
+
     results = []
-    selected_indices = []
+    selected_mask = np.zeros(len(cand_embeddings), dtype=bool)
+
     for _ in range(len(cand_embeddings)):
-        best_score = -float("inf")
-        best_cand_idx = -1
-        for cand_idx in range(len(cand_embeddings)):
-            if cand_idx in selected_indices:
-                continue
-            relevance = relevance_scores[cand_idx]
-            redundancy = 0.0
-            if selected_indices:
-                picked_embeds = cand_embeddings[selected_indices]
-                cand_embed = cand_embeddings[cand_idx].reshape(1, -1)
-                redundancy = np.max(cosine_similarity(cand_embed, picked_embeds)[0])
-            score = relevance - (diversity_penalty * redundancy)
-            if score > best_score:
-                best_score = score
-                best_cand_idx = cand_idx
-        if best_cand_idx != -1:
-            best_fav_idx = np.argmax(sim_matrix[:, best_cand_idx])
-            results.append(
-                (
-                    best_cand_idx,
-                    float(relevance_scores[best_cand_idx]),
-                    int(best_fav_idx),
-                )
-            )
-            selected_indices.append(best_cand_idx)
-        else:
+        # Compute MMR scores for all unselected candidates
+        mmr_scores = np.full(len(cand_embeddings), -np.inf)
+
+        unselected_indices = np.where(~selected_mask)[0]
+        if len(unselected_indices) == 0:
             break
+
+        if np.any(selected_mask):
+            # Vectorized redundancy: max similarity to any selected candidate
+            redundancy = np.max(cand_sim[unselected_indices][:, selected_mask], axis=1)
+        else:
+            redundancy = np.zeros(len(unselected_indices))
+
+        # MMR score = relevance - λ × redundancy
+        mmr_scores[unselected_indices] = (
+            relevance_scores[unselected_indices] - diversity_penalty * redundancy
+        )
+
+        # Select best candidate
+        best_cand_idx = np.argmax(mmr_scores)
+        if mmr_scores[best_cand_idx] == -np.inf:
+            break
+
+        results.append(
+            (
+                best_cand_idx,
+                float(relevance_scores[best_cand_idx]),
+                int(best_fav_indices[best_cand_idx]),
+            )
+        )
+        selected_mask[best_cand_idx] = True
+
     return results
 
 
@@ -295,10 +374,12 @@ def rank_candidates(
     return final_results
 
 
-def calculate_hn_score(points: int, time_ts: int, current_time: float = None) -> float:
+def calculate_hn_score(
+    points: int, time_ts: int, current_time: Optional[float] = None
+) -> float:
     """
     Calculate HN score with gravity decay.
-    Score = (P - 1)^0.8 / (T + 2)^1.8
+    Score = (P - 1)^POINTS_EXP / (T + TIME_OFFSET)^TIME_EXP
     """
     if current_time is None:
         import time
@@ -309,25 +390,96 @@ def calculate_hn_score(points: int, time_ts: int, current_time: float = None) ->
     if hours_age < 0:
         hours_age = 0
 
-    numerator = (points - 1) ** 0.8 if points > 1 else 0
-    denominator = (hours_age + 2) ** 1.8
+    numerator = (points - 1) ** HN_SCORE_POINTS_EXP if points > 1 else 0
+    denominator = (hours_age + HN_SCORE_TIME_OFFSET) ** HN_SCORE_TIME_EXP
 
     return numerator / denominator
 
 
+def compute_recency_weights(
+    story_timestamps: list[int],
+    decay_rate: float = RECENCY_DECAY_RATE,
+    current_time: Optional[float] = None,
+) -> NDArray[np.float32]:
+    """
+    Compute exponential recency weights for stories.
+
+    Applies time-based decay to downweight older stories. More recent stories
+    receive higher weights, making them more influential in semantic ranking.
+
+    Formula: weight = exp(-decay_rate × age_in_days)
+
+    Args:
+        story_timestamps: Unix timestamps of stories (seconds since epoch)
+        decay_rate: Exponential decay rate per day, default from constants
+            - 0.01 (default): slow decay, ~90% weight at 10 days
+            - 0.05: medium decay, ~60% weight at 10 days
+            - 0.10: fast decay, ~37% weight at 10 days
+        current_time: Reference time (defaults to now)
+
+    Returns:
+        Array of weights in [0, 1], shape (len(story_timestamps),)
+
+    Example:
+        >>> timestamps = [time.time(), time.time() - 86400*10]  # now, 10 days ago
+        >>> weights = compute_recency_weights(timestamps)
+        >>> weights
+        array([1.0, 0.905], dtype=float32)  # Recent story gets full weight
+    """
+    if current_time is None:
+        import time
+
+        current_time = time.time()
+
+    timestamps = np.array(story_timestamps, dtype=np.float32)
+    age_seconds = current_time - timestamps
+    age_days = age_seconds / 86400  # Convert to days
+
+    # Exponential decay: exp(-decay_rate × age)
+    weights = np.exp(-decay_rate * age_days)
+
+    # Clip to [0, 1] in case of future timestamps
+    weights = np.clip(weights, 0.0, 1.0)
+
+    return weights.astype(np.float32)
+
+
 def rank_stories(
     stories: list[dict],
-    cand_embeddings: np.ndarray = None,
-    positive_embeddings: np.ndarray = None,
-    negative_embeddings: np.ndarray = None,
-    positive_weights: np.ndarray = None,
+    cand_embeddings: Optional[NDArray[np.float32]] = None,
+    positive_embeddings: Optional[NDArray[np.float32]] = None,
+    negative_embeddings: Optional[NDArray[np.float32]] = None,
+    positive_weights: Optional[NDArray[np.float32]] = None,
     diversity_lambda: float = 0.0,
     hn_weight: float = 0.15,
     neg_weight: float = 0.5,
 ) -> list[tuple[int, float, int]]:
     """
-    Rank stories using hybrid score: (1-w)*Semantic + w*HN_Score.
-    Semantic = WeightedMaxSim(Positive) - neg_weight * MaxSim(Negative).
+    Rank stories using hybrid semantic + temporal scoring.
+
+    Hybrid Score = (1 - hn_weight) × Semantic + hn_weight × HN_Score
+
+    Where:
+    - Semantic = WeightedMaxSim(Positive) - neg_weight × MaxSim(Negative)
+    - HN_Score = Gravity-decayed score normalized to [0, 1]
+    - Gravity formula: (P - 1)^0.8 / (T + 2)^1.8
+
+    Args:
+        stories: List of story dicts with keys: id, title, score, time, text_content
+        cand_embeddings: Precomputed candidate embeddings (computed from text_content if None)
+        positive_embeddings: Embeddings of user's favorited/upvoted stories
+        negative_embeddings: Embeddings of user's hidden stories
+        positive_weights: Recency weights for positive stories, shape (len(positive_embeddings),)
+            - If provided, applies element-wise multiplication to similarity matrix
+            - Higher weights = more influence on ranking
+            - Typical formula: exp(-decay × age_in_days) for exponential recency
+            - Example: [1.0, 0.95, 0.90, ...] for recent to older favorites
+        diversity_lambda: MMR diversity penalty ∈ [0, 1], 0 = no diversity
+        hn_weight: Weight for HN gravity score ∈ [0, 1], default 0.15
+        neg_weight: Penalty multiplier for negative stories, default 0.5
+
+    Returns:
+        List of (story_idx, hybrid_score, best_match_fav_idx) tuples, sorted descending
     """
     if not stories:
         return []
@@ -345,7 +497,11 @@ def rank_stories(
     best_fav_indices = np.zeros(len(cand_embeddings), dtype=int) - 1
 
     if positive_embeddings is not None and len(positive_embeddings) > 0:
-        sim_pos = np.clip(cosine_similarity(positive_embeddings, cand_embeddings), -1.0, 1.0)
+        sim_pos = np.clip(
+            cosine_similarity(positive_embeddings, cand_embeddings),
+            SIMILARITY_MIN,
+            SIMILARITY_MAX,
+        )
 
         if positive_weights is not None:
             # Apply recency weights to similarities before taking max
@@ -375,9 +531,9 @@ def rank_stories(
     hours_age = np.maximum(hours_age, 0)
 
     # Vectorized calculate_hn_score logic
-    # Score = (P - 1)^0.8 / (T + 2)^1.8
-    numerator = np.power(np.maximum(scores - 1, 0), 0.8)
-    denominator = np.power(hours_age + 2, 1.8)
+    # Score = (P - 1)^POINTS_EXP / (T + TIME_OFFSET)^TIME_EXP
+    numerator = np.power(np.maximum(scores - 1, 0), HN_SCORE_POINTS_EXP)
+    denominator = np.power(hours_age + HN_SCORE_TIME_OFFSET, HN_SCORE_TIME_EXP)
 
     hn_scores = numerator / denominator
 
