@@ -24,7 +24,7 @@ def tui_mocks():
         return [(i, 1.0 - (i * 0.01), 0) for i in range(len(candidates))]
 
     with patch("api.rerank.init_model"), \
-         patch("api.rerank.get_embeddings", return_value=np.zeros((1, 384))), \
+         patch("api.rerank.get_embeddings", return_value=np.zeros((1, 768))), \
          patch("api.rerank.rank_stories", side_effect=mock_ranker), \
          patch("tui_app.get_user_data", new_callable=AsyncMock) as m_user, \
          patch("tui_app.get_best_stories", new_callable=AsyncMock) as m_cand, \
@@ -54,7 +54,7 @@ async def test_law_of_ranking_integrity(tui_mocks, _):
     """
     app = HNRerankTUI("testuser")
     async with app.run_test() as pilot:
-        await pilot.pause(0.2)
+        await pilot.pause(0.5)
         list_view = app.query_one("#story-list")
         
         scores = [child.score_val for child in list_view.children if isinstance(child, StoryItem)]
@@ -69,7 +69,7 @@ async def test_law_of_expansion_isolation(tui_mocks, indices):
     """
     app = HNRerankTUI("testuser")
     async with app.run_test() as pilot:
-        await pilot.pause(0.2)
+        await pilot.pause(0.5)
         list_view = app.query_one("#story-list")
         
         # Expand target indices
@@ -94,7 +94,7 @@ async def test_system_thermal_stability(tui_mocks, keys):
     app = HNRerankTUI("testuser")
     with patch("webbrowser.open_new_tab"):
         async with app.run_test() as pilot:
-            await pilot.pause(0.2)
+            await pilot.pause(0.5)
             for key in keys:
                 await pilot.press(key)
                 

@@ -18,7 +18,7 @@ MOCK_STORY = {
 def mock_rerank():
     with (
         patch("api.rerank.init_model"),
-        patch("api.rerank.get_embeddings", return_value=np.zeros((1, 384))),
+        patch("api.rerank.get_embeddings", return_value=np.zeros((1, 768))),
         patch("api.rerank.rank_stories", return_value=[(0, 0.9, 0)]),
     ):
         yield

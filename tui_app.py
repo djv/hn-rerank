@@ -10,7 +10,7 @@ from typing import Optional
 
 from textual.app import App, ComposeResult
 from textual.containers import Vertical, Horizontal
-from textual.widgets import Header, Footer, ListView, ListItem, Label, Static, Button
+from textual.widgets import Header, Footer, ListView, ListItem, Label, Static, Button, LoadingIndicator
 from textual.reactive import reactive
 from textual.binding import Binding
 from textual import work, on
@@ -114,15 +114,38 @@ class StoryItem(ListItem):
 class HNRerankTUI(App):
     CSS = """
     Screen { background: $surface; }
-    #story-list { height: 1fr; background: transparent; padding: 1; }
+    #loading {
+        display: none;
+        height: 1fr;
+        content-align: center middle;
+    }
+    App.loading #loading {
+        display: block;
+    }
+    App.loading #story-list {
+        display: none;
+    }
+    #story-list { 
+        height: 1fr; 
+        background: transparent; 
+        padding: 1;
+        border: none;
+    }
     StoryItem {
         padding: 0 1;
-        margin-bottom: 0;
+        margin: 0;
         border: none;
         height: 1;
-        overflow: hidden;
     }
-    StoryItem.is-expanded { height: auto; background: $surface; border: tall $primary; margin: 1 0; }
+    StoryItem:focus {
+        background: $accent-muted;
+    }
+    StoryItem.is-expanded { 
+        height: auto; 
+        background: $surface; 
+        border: tall $primary; 
+        margin: 1 0; 
+    }
     StoryItem #row { height: 1; }
     StoryItem #match-score { width: 5; text-style: bold; color: $accent; }
     StoryItem #story-title { width: 1fr; text-style: bold; }
@@ -162,6 +185,7 @@ class HNRerankTUI(App):
 
     def compose(self) -> ComposeResult:
         yield Header()
+        yield LoadingIndicator(id="loading")
         yield ListView(id="story-list")
         yield Footer()
 
@@ -193,19 +217,26 @@ class HNRerankTUI(App):
     @work
     async def refresh_feed(self):
         if not self.username:
-            # Fallback to a default if not logged in
             self.username = "pg"
 
-        self.notify("Syncing Intelligence...")
+        self.add_class("loading")
+        self.notify(f"Syncing Intelligence for {self.username}...")
 
         try:
             rerank.init_model()
+            # ... existing code logic ...
+            self.notify("Model Loaded. Fetching user data...")
             pos_data, neg_data, exclude_ids = await get_user_data(self.username)
+            
+            self.notify(f"Got {len(pos_data)} signals. Fetching candidates...")
             candidates = await get_best_stories(200, 30, exclude_ids)
+            
             if not candidates:
-                self.notify("No new stories found")
+                self.notify("No new stories found", severity="warning")
+                self.remove_class("loading")
                 return
 
+            self.notify(f"Ranking {len(candidates)} stories...")
             def do_rank():
                 p_texts = [s["text_content"] for s in pos_data]
                 n_texts = [s["text_content"] for s in neg_data]
@@ -247,7 +278,7 @@ class HNRerankTUI(App):
                         q_emb = rerank.get_embeddings([story["title"]], is_query=True)
                         reason_text = sens[cosine_similarity(q_emb, s_embs)[0].argmax()]
 
-                list_view.append(StoryItem(story, score, reason_text, rel_title))
+                await list_view.append(StoryItem(story, score, reason_text, rel_title))
 
             if list_view.children:
                 list_view.index = 0
@@ -257,6 +288,8 @@ class HNRerankTUI(App):
         except Exception as e:
             traceback.print_exc()
             self.notify(f"Sync error: {e}", severity="error")
+        finally:
+            self.remove_class("loading")
 
     def _get_current(self) -> Optional[StoryItem]:
         return self.query_one("#story-list").highlighted_child
