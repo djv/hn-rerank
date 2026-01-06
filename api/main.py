@@ -104,14 +104,22 @@ async def fetch_story_with_comments(
         try:
             with open(cache_path, "r") as f:
                 cached = json.load(f)
-            if time.time() - cached["retrieved_at"] < CACHE_TTL:
-                return cached["data"]
+            
+            # Check if cache is recent and has the new fields
+            # We want article_snippet if it's an external link
+            data = cached["data"]
+            has_snippet = "article_snippet" in data or not data.get("url") or "news.ycombinator.com" in data.get("url", "")
+            
+            if time.time() - cached["retrieved_at"] < CACHE_TTL and has_snippet:
+                return data
         except Exception:
             pass
 
     # 2. Fetch from Algolia (Fast, includes comments)
     try:
-        resp = await client.get(f"{ALGOLIA_API_BASE}/items/{story_id}", timeout=3.0)
+        async with EXTERNAL_SEM:
+            resp = await client.get(f"{ALGOLIA_API_BASE}/items/{story_id}", timeout=5.0)
+        
         if resp.status_code == 200:
             data = resp.json()
             story = {
@@ -129,15 +137,16 @@ async def fetch_story_with_comments(
             text_parts = [story["title"]]
 
             # Try to fetch article text for deeper semantic matching
-            article_text = await fetch_article_text(story["url"])
-            if article_text:
-                # Use first 2000 chars of article for ranking
-                text_parts.append(article_text[:2000])
-                story["article_snippet"] = article_text[:1000] # Store snippet for UI
+            if story.get("url") and "news.ycombinator.com" not in story["url"]:
+                async with EXTERNAL_SEM:
+                    article_text = await fetch_article_text(story["url"])
+                if article_text:
+                    # Use first 2000 chars of article for ranking
+                    text_parts.append(article_text[:2000])
+                    story["article_snippet"] = article_text[:1000] # Store snippet for UI
 
             # Extract top comments
             all_comments = []
-
             def collect(nodes):
                 for node in nodes:
                     if node.get("text"):
@@ -151,7 +160,7 @@ async def fetch_story_with_comments(
             collect(data.get("children", []))
             all_comments.sort(key=lambda x: x[0], reverse=True)
 
-            # Use top 5 for ranking text if article text is short or missing
+            # Use top 5 for ranking text
             for _, t in all_comments[:5]:
                 text_parts.append(t)
 
