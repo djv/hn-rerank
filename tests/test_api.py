@@ -15,7 +15,7 @@ def test_recency_weights():
         assert weights[0] > 0.9
         # 10 days -> ~0.97 (plateau)
         assert weights[1] > 0.9
-        assert weights[1] <= weights[0] # Monotonic
+        assert weights[1] <= weights[0]  # Monotonic
         # 400 days -> < 0.5 (decay)
         assert weights[2] < 0.5
 
@@ -63,3 +63,42 @@ def test_rank_stories_basic():
         results = rank_stories(stories, pos_emb)
         assert len(results) == 1
         assert results[0][0] == 0
+
+
+def test_rank_stories_no_positive_signals():
+    """
+    Regression test: When there are no positive signals (empty upvotes),
+    ranking should still work but return 0% match scores and fav_idx=-1.
+    """
+    stories = [
+        {"id": 1, "score": 100, "time": 1000, "text_content": "Story about AI"},
+        {"id": 2, "score": 200, "time": 2000, "text_content": "Story about Python"},
+    ]
+
+    # No positive signals - pass None for positive_embeddings
+    with patch(
+        "api.rerank.get_embeddings", return_value=np.array([[0.5] * 768, [0.6] * 768])
+    ):
+        results = rank_stories(stories, positive_embeddings=None)
+
+        assert len(results) == 2
+        # All should have 0 max_sim and -1 fav_idx when no positive signals
+        for idx, score, fav_idx, max_sim in results:
+            assert max_sim == 0.0, "max_sim should be 0 when no positive signals"
+            assert fav_idx == -1, "fav_idx should be -1 when no positive signals"
+
+
+def test_rank_stories_empty_positive_embeddings():
+    """
+    Regression test: Empty positive embeddings array should behave like None.
+    """
+    stories = [{"id": 1, "score": 100, "time": 1000, "text_content": "Test story"}]
+
+    with patch("api.rerank.get_embeddings", return_value=np.array([[0.5] * 768])):
+        # Empty array
+        results = rank_stories(stories, positive_embeddings=np.array([]))
+
+        assert len(results) == 1
+        idx, score, fav_idx, max_sim = results[0]
+        assert max_sim == 0.0
+        assert fav_idx == -1

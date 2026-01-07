@@ -18,6 +18,7 @@ dependencies = [
     "rich>=14.2.0",
     "ruff>=0.14.10",
     "scikit-learn>=1.8.0",
+    "sentence-transformers>=5.2.0",
     "trafilatura>=2.0.0",
     "transformers>=4.57.3",
     "ty>=0.0.9",

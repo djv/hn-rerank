@@ -10,7 +10,7 @@ HN_SCORE_TIME_OFFSET = 2
 # Content Limits
 ARTICLE_RANKING_LENGTH = 3000
 ARTICLE_SNIPPET_LENGTH = 1000
-TEXT_CONTENT_MAX_LENGTH = 6000
+TEXT_CONTENT_MAX_LENGTH = 8000
 
 # Cache Paths
 EMBEDDING_CACHE_DIR = ".cache/embeddings"
@@ -18,16 +18,18 @@ STORY_CACHE_DIR = ".cache/stories"
 USER_CACHE_DIR = ".cache/user"
 STORY_CACHE_TTL = 86400
 USER_CACHE_TTL = 1800  # 30 minutes
-STORY_CACHE_MAX_FILES = 2000  # LRU eviction threshold (~18MB)
+STORY_CACHE_MAX_FILES = 10000  # LRU eviction threshold
 
 # Concurrency
-EXTERNAL_REQUEST_SEMAPHORE = 200
+EXTERNAL_REQUEST_SEMAPHORE = 50  # Algolia is resilient, can increase
 
 # Comment Pool
+MIN_STORY_COMMENTS = 10  # Filter in Algolia query + fetch validation
 MAX_COMMENTS_COLLECTED = 100
-TOP_COMMENTS_FOR_RANKING = 25
+TOP_COMMENTS_FOR_RANKING = 50
 TOP_COMMENTS_FOR_UI = 10
 RANKING_DEPTH_PENALTY = 10
+MIN_COMMENT_LENGTH = 50  # Filter short low-value comments
 
 # User Limits
 MAX_USER_STORIES = 50
@@ -40,7 +42,7 @@ CANDIDATE_FETCH_COUNT = 200
 # Inference
 DEFAULT_EMBEDDING_BATCH_SIZE = 8
 EMBEDDING_MIN_CLIP = 1e-9
-EMBEDDING_MODEL_VERSION = "v1"  # Bump to invalidate cache on model change
+EMBEDDING_MODEL_VERSION = "v5"  # Bump to invalidate cache on model change
 
 # Recency Weighting
 RECENCY_DECAY_RATE = 0.003
@@ -48,4 +50,4 @@ RECENCY_DECAY_RATE = 0.003
 # Similarity Bounds
 SIMILARITY_MIN = -1.0
 SIMILARITY_MAX = 1.0
-SEMANTIC_MATCH_THRESHOLD = 0.60
+SEMANTIC_MATCH_THRESHOLD = 0.50

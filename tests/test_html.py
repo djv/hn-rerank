@@ -125,7 +125,13 @@ class TestCommentTruncation:
             "title": "Test",
             "hn_url": "https://news.ycombinator.com/item?id=1",
             "reason": None,
-            "comments": ["Comment 1", "Comment 2", "Comment 3", "Comment 4", "Comment 5"],
+            "comments": [
+                "Comment 1",
+                "Comment 2",
+                "Comment 3",
+                "Comment 4",
+                "Comment 5",
+            ],
         }
         html = generate_story_html(story)
         assert "Comment 1" in html

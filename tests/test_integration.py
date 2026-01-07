@@ -35,9 +35,13 @@ async def test_generate_html_integration(tmp_path):
     ):
         # Mock API behavior
         client_instance = mock_client_class.return_value.__aenter__.return_value
+        # Mock login check - simulate logged in state
+        mock_response = AsyncMock()
+        mock_response.text = "logout"  # Contains "logout" = logged in
+        client_instance.client.get = AsyncMock(return_value=mock_response)
         client_instance.fetch_user_data.return_value = {
-            "pos": {1},
-            "upvoted": set(),
+            "pos": set(),
+            "upvoted": {1},  # Now using upvoted instead of pos
             "hidden": set(),
         }
 

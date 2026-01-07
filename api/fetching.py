@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import html
 import json
 import os
 import re
@@ -8,21 +9,21 @@ from pathlib import Path
 from datetime import UTC, datetime, timedelta
 from typing import Any, Callable, Optional
 import httpx
-from bs4 import BeautifulSoup
+
 from api.constants import (
     ALGOLIA_DEFAULT_DAYS,
     ALGOLIA_MIN_POINTS,
     EXTERNAL_REQUEST_SEMAPHORE,
+    MIN_COMMENT_LENGTH,
+    MIN_STORY_COMMENTS,
     TOP_COMMENTS_FOR_RANKING,
     TOP_COMMENTS_FOR_UI,
-    RANKING_DEPTH_PENALTY,
     STORY_CACHE_DIR,
     STORY_CACHE_TTL,
     STORY_CACHE_MAX_FILES,
 )
 
 ALGOLIA_BASE: str = "https://hn.algolia.com/api/v1"
-HN_BASE: str = "https://news.ycombinator.com"
 SEM: asyncio.Semaphore = asyncio.Semaphore(EXTERNAL_REQUEST_SEMAPHORE)
 CACHE_PATH: Path = Path(STORY_CACHE_DIR)
 CACHE_PATH.mkdir(parents=True, exist_ok=True)
@@ -31,6 +32,7 @@ CACHE_PATH.mkdir(parents=True, exist_ok=True)
 def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
     """Write JSON atomically using temp file + rename."""
     import tempfile
+
     tmp_fd, tmp_path = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     try:
         with os.fdopen(tmp_fd, "w") as f:
@@ -61,14 +63,16 @@ def _clean_text(txt: str) -> Optional[str]:
     """
     Cleans comment text. Returns None if text should be discarded.
     """
+    # 0. Decode HTML entities (&#x27; -> ', &#x2F; -> /, etc.)
+    txt = html.unescape(txt)
     # 1. Braille/Symbol Blocks
     txt_clean = re.sub(r"[\u2800-\u28FF\u2500-\u27BF]+", "", txt)
     # 2. Excessive Punctuation
     txt_clean = re.sub(r"[#*^\\/\\|\\-_+]{3,}", "", txt_clean)
-    
+
     if len(txt_clean) == 0:
         return None
-    
+
     # 3. Alphanumeric Ratio Check
     alnum_count = sum(c.isalnum() for c in txt_clean)
     if len(txt_clean) > 0 and (alnum_count / len(txt_clean)) < 0.5:
@@ -76,8 +80,54 @@ def _clean_text(txt: str) -> Optional[str]:
 
     if len(txt_clean.strip()) <= 20:
         return None
-        
+
     return txt_clean
+
+
+def _extract_comments_recursive(
+    children: list[dict[str, Any]],
+    depth: int = 0,
+    max_depth: int = 3,
+    parent_points: int = 0,
+) -> list[dict[str, Any]]:
+    """
+    Extract comments from Algolia's nested children structure.
+
+    Returns comments ranked by points (higher = better).
+    Uses parent's points for replies to maintain thread coherence.
+    """
+    DEPTH_PENALTY = 50  # Points penalty per depth level
+    results: list[dict[str, Any]] = []
+
+    for child in children:
+        if child.get("type") != "comment":
+            continue
+
+        # Use comment points, fallback to parent's points for replies
+        points = child.get("points") or 0
+        if depth > 0 and points == 0:
+            points = parent_points
+
+        # Score: higher points = lower score (for sorting), depth penalty
+        score = -points + depth * DEPTH_PENALTY
+
+        text = child.get("text", "")
+        if text:
+            # Strip HTML tags
+            clean = re.sub(r"<[^>]+>", " ", text)
+            clean = _clean_text(clean)
+            # Filter short comments (low value)
+            if clean and len(clean) >= MIN_COMMENT_LENGTH:
+                results.append({"text": clean, "score": score})
+
+        # Recurse into replies (limited depth to avoid deep threads)
+        if depth < max_depth and child.get("children"):
+            results.extend(
+                _extract_comments_recursive(
+                    child["children"], depth + 1, max_depth, parent_points=points
+                )
+            )
+    return results
 
 
 async def fetch_story(client: httpx.AsyncClient, sid: int) -> Optional[dict[str, Any]]:
@@ -86,96 +136,44 @@ async def fetch_story(client: httpx.AsyncClient, sid: int) -> Optional[dict[str,
         try:
             data: dict[str, Any] = json.loads(cache_file.read_text())
             if time.time() - float(data["ts"]) < STORY_CACHE_TTL:
-                return data.get("story") # Returns None if cached as None
+                return data.get("story")  # Returns None if cached as None
         except Exception:
             pass
 
     async with SEM:
         try:
-            # We scrape HN directly to get comments in ranked order (score/quality),
-            # as APIs do not expose comment scores or reliable ranking.
-            resp: httpx.Response = await client.get(
-                f"{HN_BASE}/item?id={sid}",
-                headers={"User-Agent": "Mozilla/5.0"}
-            )
+            # Use Algolia API instead of scraping HN (avoids rate limits)
+            resp: httpx.Response = await client.get(f"{ALGOLIA_BASE}/items/{sid}")
             if resp.status_code != 200:
-                # Cache failure to prevent retry
-                _atomic_write_json(cache_file, {"ts": time.time(), "story": None})
                 return None
 
-            soup = BeautifulSoup(resp.text, "html.parser")
-            
-            # 1. Metadata
-            title_tag = soup.find("span", class_="titleline")
-            if not title_tag:
-                # Likely a comment or job or invalid page. Cache as None.
-                _atomic_write_json(cache_file, {"ts": time.time(), "story": None})
+            item = resp.json()
+
+            # Validate it's a story
+            if item.get("type") != "story":
                 return None
-            
-            title_link = title_tag.find("a")
-            title = title_link.get_text()
-            url = title_link["href"]
-            
-            score_span = soup.find("span", class_="score")
-            score = int(score_span.get_text().split()[0]) if score_span else 0
-            
-            age_span = soup.find("span", class_="age")
-            # title attribute has format "YYYY-MM-DDTHH:MM:SS UNIX_TIMESTAMP"
-            ts_str = age_span["title"].split()[-1] if age_span and "title" in age_span.attrs else "0"
-            created_at = int(ts_str) if ts_str.isdigit() else 0
 
-            # 2. Comments (Ranked by HN)
-            # We scan a larger pool to prioritize "Breadth-First" selection.
-            # This avoids getting stuck in a single deep thread (the "Tree Problem").
-            comment_rows = soup.find_all("tr", class_="comtr")
-            
-            candidates: list[dict[str, Any]] = []
-            
-            for i, row in enumerate(comment_rows[:TOP_COMMENTS_FOR_RANKING * 5]):
-                # Parse Indent
-                ind_td = row.find("td", class_="ind")
-                indent = int(ind_td.get("indent")) if ind_td else 0
-                
-                commtext = row.find(class_="commtext")
-                if not commtext:
-                    continue
-                
-                # Remove reply link
-                for reply in commtext.find_all("div", class_="reply"):
-                    reply.decompose()
-                    
-                txt = commtext.get_text(" ", strip=True) # preserve spacing slightly
-                
-                clean_txt = _clean_text(txt)
-                if clean_txt:
-                    candidates.append({
-                        "original_index": i,
-                        "indent": indent,
-                        "text": clean_txt
-                    })
+            title = html.unescape(item.get("title", ""))
+            url = item.get("url", "")
+            score = item.get("points", 0) or 0
+            created_at = item.get("created_at_i", 0) or 0
 
-            # Weighted Sort: Index + (Indent * Penalty)
-            # This balances "Page Rank" (Index) with "Tree Depth" (Indent).
-            # A low penalty (e.g. 10) allows top replies to beat late roots,
-            # but penalizes deep nested threads.
-            candidates.sort(key=lambda x: x["original_index"] + (x["indent"] * RANKING_DEPTH_PENALTY))
+            # Extract comments from nested structure
+            children = item.get("children", [])
+            all_comments = _extract_comments_recursive(children)
 
-            # Select Top N
-            selected = candidates[:TOP_COMMENTS_FOR_RANKING]
-            
-            # For the text content (embedding), the order matters less, but logical flow is nice.
-            # We'll just join them.
-            top_for_rank: str = " ".join([c["text"] for c in selected])
+            # Require minimum comments for meaningful signal
+            if len(all_comments) < MIN_STORY_COMMENTS:
+                return None
 
-            # For UI, we take the top M from this diverse set.
-            # We might want to sort them back by original index to show "flow" if they are close,
-            # but since we are cherry-picking roots, "original index" order puts them in 'Page Order'.
-            # Page Order for roots = "Best" algorithm order. This is desirable.
-            ui_candidates = selected[:TOP_COMMENTS_FOR_UI]
-            ui_candidates.sort(key=lambda x: x["original_index"])
-            
-            ui_comments = [c["text"] for c in ui_candidates]
+            # Sort by score (position + depth penalty), lower = better
+            all_comments.sort(key=lambda x: x["score"])
+            selected = all_comments[:TOP_COMMENTS_FOR_RANKING]
+            top_for_rank = " ".join([c["text"] for c in selected])
+            ui_comments = [c["text"] for c in selected[:TOP_COMMENTS_FOR_UI]]
 
+            # Repeat title 4x to weight it higher than comments in embeddings
+            title_weighted = f"{title}. {title}. {title}. {title}."
             story: dict[str, Any] = {
                 "id": sid,
                 "title": title,
@@ -183,7 +181,7 @@ async def fetch_story(client: httpx.AsyncClient, sid: int) -> Optional[dict[str,
                 "score": score,
                 "time": created_at,
                 "comments": ui_comments,
-                "text_content": f"{title}. {top_for_rank}",
+                "text_content": f"{title_weighted} {top_for_rank}",
             }
             _atomic_write_json(cache_file, {"ts": time.time(), "story": story})
             _evict_old_cache_files()
@@ -200,19 +198,52 @@ async def get_best_stories(
 ) -> list[dict[str, Any]]:
     if exclude_ids is None:
         exclude_ids = set()
+
+    # Algolia limits to 1000 results per query, so use time windows
+    ALGOLIA_MAX_PER_QUERY = 1000
+    WINDOW_DAYS = 3  # Days per window (smaller = more queries but finer control)
+    hits: set[int] = set()
+
     async with httpx.AsyncClient() as client:
-        ts: int = int((datetime.now(UTC) - timedelta(days=days)).timestamp())
-        params: dict[str, Any] = {
-            "tags": "story",
-            "numericFilters": f"created_at_i>{ts},points>{ALGOLIA_MIN_POINTS}",
-            "hitsPerPage": limit + len(exclude_ids),
-        }
-        resp: httpx.Response = await client.get(f"{ALGOLIA_BASE}/search", params=params)
-        hits: list[int] = [
-            int(h["objectID"])
-            for h in resp.json()["hits"]
-            if int(h["objectID"]) not in exclude_ids
-        ][:limit]
+        now = datetime.now(UTC)
+
+        # Iterate through time windows from newest to oldest
+        window = 0
+        while len(hits) < limit and window * WINDOW_DAYS < days:
+            window_end = now - timedelta(days=window * WINDOW_DAYS)
+            window_start = now - timedelta(days=min((window + 1) * WINDOW_DAYS, days))
+
+            params: dict[str, Any] = {
+                "tags": "story",
+                "numericFilters": (
+                    f"created_at_i>{int(window_start.timestamp())},"
+                    f"created_at_i<{int(window_end.timestamp())},"
+                    f"points>{ALGOLIA_MIN_POINTS},"
+                    f"num_comments>={MIN_STORY_COMMENTS}"
+                ),
+                "hitsPerPage": ALGOLIA_MAX_PER_QUERY,
+            }
+            resp: httpx.Response = await client.get(
+                f"{ALGOLIA_BASE}/search", params=params
+            )
+            if resp.status_code != 200 or not resp.content:
+                window += 1
+                continue
+            try:
+                data = resp.json()
+            except Exception:
+                window += 1
+                continue
+            page_hits = data.get("hits", [])
+
+            for h in page_hits:
+                oid = int(h["objectID"])
+                if oid not in exclude_ids and oid not in hits:
+                    hits.add(oid)
+                    if len(hits) >= limit:
+                        break
+
+            window += 1
 
         results: list[dict[str, Any]] = []
         if not hits:

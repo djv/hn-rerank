@@ -25,3 +25,6 @@ mxbai_model/
 # Temp files
 test_init.py
 reproduce_error.py
+
+# Generated output
+index.html

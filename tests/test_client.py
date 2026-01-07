@@ -16,19 +16,22 @@ async def test_fetch_user_data_mocked():
         ]
 
         async with HNClient() as client:
-            with patch("pathlib.Path.exists", return_value=False):
-                data = await client.fetch_user_data(username)
-                assert "pos" in data
-                assert "upvoted" in data
-                assert "hidden" in data
-                assert data["pos"] == {1, 2}
-                assert data["upvoted"] == {3, 4}
-                assert data["hidden"] == {5, 6}
+            # Mock login check to return logged in
+            with patch.object(client.client, "get") as mock_get:
+                mock_get.return_value = MagicMock(text="logout")
+                with patch("pathlib.Path.exists", return_value=False):
+                    data = await client.fetch_user_data(username)
+                    assert "pos" in data
+                    assert "upvoted" in data
+                    assert "hidden" in data
+                    assert data["pos"] == {1, 2}
+                    assert data["upvoted"] == {3, 4}
+                    assert data["hidden"] == {5, 6}
 
-                # Verify scrape calls
-                mock_scrape.assert_any_call(f"/favorites?id={username}")
-                mock_scrape.assert_any_call(f"/upvoted?id={username}")
-                mock_scrape.assert_any_call(f"/hidden?id={username}")
+                    # Verify scrape calls
+                    mock_scrape.assert_any_call(f"/favorites?id={username}")
+                    mock_scrape.assert_any_call(f"/upvoted?id={username}")
+                    mock_scrape.assert_any_call(f"/hidden?id={username}")
 
 
 @pytest.mark.asyncio

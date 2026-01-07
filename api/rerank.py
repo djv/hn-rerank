@@ -124,7 +124,7 @@ def get_embeddings(
         return np.array([], dtype=np.float32)
 
     model: ONNXEmbeddingModel = get_model()
-    # BGE-style prefixes
+    # BGE-style prefix for queries only
     prefix: str = (
         "Represent this sentence for searching relevant passages: " if is_query else ""
     )
@@ -135,11 +135,13 @@ def get_embeddings(
     vectors: list[Optional[NDArray[np.float32]]] = []
     to_compute_indices: list[int] = []
 
-    expected_dim: int = 768 if "base" in model.model_id.lower() else 384
+    expected_dim: int = 768  # e5-base-v2
 
     for idx, text in enumerate(processed_texts):
         # Include model version in hash to invalidate cache on model change
-        h: str = hashlib.sha256(f"{EMBEDDING_MODEL_VERSION}:{text}".encode()).hexdigest()
+        h: str = hashlib.sha256(
+            f"{EMBEDDING_MODEL_VERSION}:{text}".encode()
+        ).hexdigest()
         cache_path: Path = CACHE_DIR / f"{h}.npy"
         if cache_path.exists():
             try:
@@ -162,7 +164,6 @@ def get_embeddings(
         progress_callback(cached_count, len(texts))
 
     if to_compute_indices:
-
         # Wrap the original callback to add the offset from cached items
         def wrapped_callback(curr: int, total: int) -> None:
             if progress_callback:
@@ -192,22 +193,22 @@ def compute_recency_weights(
     # decay_rate arg is kept for compatibility but we default to the "Long Term" sigmoid
     # if it is explicitly passed as None or a positive value.
     # If 0.0 is passed, we still return uniform weights.
-    
+
     if decay_rate is not None and decay_rate <= 0:
         return np.ones(len(timestamps), dtype=np.float32)
-    
+
     now: float = time.time()
     ages_days: NDArray[Any] = (now - np.array(timestamps)) / 86400
-    
+
     # Sigmoid parameters for "1 day ~= 1 month, 1 year = 0.5"
     k = 0.01
     inflection = 365
-    
+
     # 1 / (1 + exp(k * (age - inflection)))
     # We clip exponent to avoid overflow, though ages shouldn't be that huge
     exponent = np.clip(k * (ages_days - inflection), -50, 50)
     weights: NDArray[Any] = 1.0 / (1.0 + np.exp(exponent))
-    
+
     return np.clip(weights, 0.0, 1.0).astype(np.float32)
 
 
@@ -235,7 +236,7 @@ def rank_stories(
     semantic_scores: NDArray[np.float32]
     max_sim_scores: NDArray[np.float32]
     best_fav_indices: NDArray[np.int64]
-    
+
     if positive_embeddings is None or len(positive_embeddings) == 0:
         # If no positive signals, use HN scores primarily
         semantic_scores = np.zeros(len(stories), dtype=np.float32)
@@ -246,7 +247,7 @@ def rank_stories(
         # We combine the single best match (MaxSim) with the average of the top 3 matches (Density).
         # This rewards "Dense Clusters" of interest (consistent upvotes) while not completely
         # killing "One-Off" interests (high specific match).
-        
+
         sim_pos: NDArray[np.float32] = cosine_similarity(positive_embeddings, cand_emb)
         if positive_weights is not None:
             sim_pos = sim_pos * positive_weights[:, np.newaxis]
@@ -254,21 +255,21 @@ def rank_stories(
         # A. MaxSim (Nearest Neighbor)
         max_sim = np.max(sim_pos, axis=0)
         max_sim_scores = max_sim
-        
+
         # B. Top-K Mean (Robustness/Density)
         k = 3
         if sim_pos.shape[0] >= k:
-             # partition moves the top k elements to the end of the axis
-             top_k = np.partition(sim_pos, -k, axis=0)[-k:, :]
-             mean_top_k = np.mean(top_k, axis=0)
+            # partition moves the top k elements to the end of the axis
+            top_k = np.partition(sim_pos, -k, axis=0)[-k:, :]
+            mean_top_k = np.mean(top_k, axis=0)
         else:
-             mean_top_k = max_sim
+            mean_top_k = max_sim
 
         # Combined Score
         semantic_scores = (max_sim + mean_top_k) / 2.0
-        
+
         best_fav_indices = np.argmax(sim_pos, axis=0)
-        
+
         # Apply type-based penalty (Tell/Ask HN are often chatty/marginal)
         for i, s in enumerate(stories):
             t = str(s.get("title", "")).lower()
@@ -295,7 +296,7 @@ def rank_stories(
 
     # 3. HN Gravity Score (Now just based on points, no recency bias for candidates)
     points: NDArray[Any] = np.array([int(s.get("score", 0)) for s in stories])
-    
+
     # We removed the hours/time decay denominator.
     hn_scores: NDArray[Any] = np.power(np.maximum(points - 1, 0), HN_SCORE_POINTS_EXP)
 

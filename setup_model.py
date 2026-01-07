@@ -11,9 +11,6 @@ def setup():
     print("Setting up model (requires internet and ~450MB space)...")
     model_id = "BAAI/bge-base-en-v1.5"
 
-    # We use optimum to export to ONNX.
-    # Check if optimum-cli is available
-
     print(f"Exporting {model_id} to ONNX...")
     subprocess.check_call(
         [

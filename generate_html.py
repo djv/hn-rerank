@@ -120,15 +120,17 @@ STORY_CARD_TEMPLATE: str = """
 def generate_story_html(story: dict[str, Any]) -> str:
     reason_html: str = ""
     if story.get("reason"):
-        escaped_reason: str = html.escape(str(story["reason"]))
-        reason_html = f'<p class="text-[11px] text-emerald-600 mb-1">↳ {escaped_reason}</p>'
+        escaped_reason: str = html.escape(str(story["reason"]), quote=False)
+        reason_html = (
+            f'<p class="text-[11px] text-emerald-600 mb-1">↳ {escaped_reason}</p>'
+        )
 
     comments_html: str = ""
     comments: list[Any] = story.get("comments") or []
     for comment in comments[:3]:
         text: str = str(comment)
         snippet: str = text[:200] + "..." if len(text) > 200 else text
-        escaped_snippet: str = html.escape(snippet)
+        escaped_snippet: str = html.escape(snippet, quote=False)
         comments_html += f'<div class="text-[11px] text-stone-500 bg-stone-50 p-1.5 rounded border border-stone-100 leading-snug">"{escaped_snippet}"</div>'
 
     return STORY_CARD_TEMPLATE.format(
@@ -136,23 +138,11 @@ def generate_story_html(story: dict[str, Any]) -> str:
         points=story["points"],
         time_ago=story["time_ago"],
         url=story["url"] or story["hn_url"],
-        title=html.escape(str(story["title"])),
+        title=html.escape(str(story["title"]), quote=False),
         hn_url=story["hn_url"],
         reason_html=reason_html,
         comments_html=comments_html,
     )
-
-
-async def run_login(user: str) -> None:
-    pw: str = getpass.getpass(f"Enter password for {user}: ")
-    async with HNClient() as hn:
-        success: bool
-        msg: str
-        success, msg = await hn.login(user, pw)
-        if success:
-            print("[+] Login successful! Cookies saved.")
-        else:
-            print(f"[-] Login failed: {msg}")
 
 
 async def main() -> None:
@@ -186,16 +176,11 @@ async def main() -> None:
         help=f"Time window in days for fetching candidates (default: {ALGOLIA_DEFAULT_DAYS})",
     )
     parser.add_argument(
-        "--login", action="store_true", help="Log in to HN to enable private signals"
-    )
-    parser.add_argument(
-        "--no-recency-bias", action="store_true", help="Disable recency weighting for user profile (default: False)"
+        "--no-recency-bias",
+        action="store_true",
+        help="Disable recency weighting for user profile (default: False)",
     )
     args: argparse.Namespace = parser.parse_args()
-
-    if args.login:
-        await run_login(args.username)
-        return
 
     with Progress(
         SpinnerColumn(),
@@ -209,6 +194,23 @@ async def main() -> None:
             f"[*] Building profile for @{args.username}...", total=100
         )
         async with HNClient() as hn:
+            # Check if logged in
+            is_logged_in: bool = "logout" in (await hn.client.get("/")).text
+            if not is_logged_in:
+                progress.stop()
+                console.print(
+                    "[yellow][!] Not logged in. Upvotes require authentication.[/yellow]"
+                )
+                pw: str = getpass.getpass(f"Enter password for {args.username}: ")
+                success: bool
+                msg: str
+                success, msg = await hn.login(args.username, pw)
+                if not success:
+                    console.print(f"[red][-] Login failed: {msg}[/red]")
+                    raise SystemExit(1)
+                console.print("[green][+] Login successful![/green]")
+                progress.start()
+
             data: dict[str, set[int]] = await hn.fetch_user_data(args.username)
             progress.update(
                 p_task, completed=20, description="[*] Fetching signal details..."
@@ -234,8 +236,8 @@ async def main() -> None:
                 progress.remove_task(sub_task)
                 return results
 
-            # Positive signals = Favorites + Upvoted
-            pos_ids: list[int] = list(data["pos"] | data["upvoted"])[: args.signals]
+            # Positive signals = Upvoted only (requires login)
+            pos_ids: list[int] = list(data["upvoted"])[: args.signals]
             neg_ids: list[int] = list(data["hidden"])[: args.signals]
 
             pos_stories: list[dict[str, Any]] = await fetch_with_progress(
@@ -253,7 +255,6 @@ async def main() -> None:
 
         def emb_cb(curr: int, total: int) -> None:
             progress.update(e_task, total=total, completed=curr)
-
 
         p_emb: Optional[NDArray[np.float32]] = (
             rerank.get_embeddings(
@@ -297,7 +298,7 @@ async def main() -> None:
             ),
             days=args.days,
         )
-        progress.update(c_task, description="[green][+] Candidates fetched.")
+        progress.update(c_task, description=f"[green][+] Candidates fetched.   ({len(cands)} valid)")
 
         # 4. Reranking
         r_task: Any = progress.add_task("[*] Reranking stories...", total=100)
