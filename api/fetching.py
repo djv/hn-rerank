@@ -58,15 +58,20 @@ async def fetch_story(client: httpx.AsyncClient, sid: int) -> Optional[dict[str,
             if is_moved:
                 return None
 
-            top_for_rank = " ".join(
-                [c[1] for c in comments[:TOP_COMMENTS_FOR_RANKING]]
-            )
-            
-            # Clean noise (Braille art, excessive symbols)
-            # This regex targets common Braille art blocks
-            top_for_rank = re.sub(r"[\u2800-\u28FF]{3,}", "", top_for_rank)
-            # Remove excessive punctuation/symbols often used in ASCII art
-            top_for_rank = re.sub(r"[#*^\\/\\|\\-_+]{5,}", "", top_for_rank)
+            cleaned_comments = []
+            for _, txt in comments[:TOP_COMMENTS_FOR_RANKING]:
+                # 1. Braille Block (Standard)
+                txt = re.sub(r"[\u2800-\u28FF]+", "", txt)
+                # 2. Block Drawing / Geometric Shapes / Misc Symbols
+                txt = re.sub(r"[\u2500-\u27BF]+", "", txt)
+                # 3. Excessive Punctuation
+                txt = re.sub(r"[#*^\\/\\|\\-_+]{3,}", "", txt)
+                
+                # Filter out noise
+                if len(txt.strip()) > 15:
+                    cleaned_comments.append(txt)
+
+            top_for_rank: str = " ".join(cleaned_comments)
 
             story: dict[str, Any] = {
                 "id": int(data["id"]),
