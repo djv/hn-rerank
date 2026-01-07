@@ -189,15 +189,25 @@ def get_embeddings(
 def compute_recency_weights(
     timestamps: list[int], decay_rate: Optional[float] = None
 ) -> NDArray[np.float32]:
-    if decay_rate is None:
-        decay_rate = RECENCY_DECAY_RATE
-        
-    if decay_rate <= 0:
+    # decay_rate arg is kept for compatibility but we default to the "Long Term" sigmoid
+    # if it is explicitly passed as None or a positive value.
+    # If 0.0 is passed, we still return uniform weights.
+    
+    if decay_rate is not None and decay_rate <= 0:
         return np.ones(len(timestamps), dtype=np.float32)
-        
+    
     now: float = time.time()
-    ages: NDArray[Any] = (now - np.array(timestamps)) / 86400
-    weights: NDArray[Any] = np.exp(-decay_rate * ages)
+    ages_days: NDArray[Any] = (now - np.array(timestamps)) / 86400
+    
+    # Sigmoid parameters for "1 day ~= 1 month, 1 year = 0.5"
+    k = 0.01
+    inflection = 365
+    
+    # 1 / (1 + exp(k * (age - inflection)))
+    # We clip exponent to avoid overflow, though ages shouldn't be that huge
+    exponent = np.clip(k * (ages_days - inflection), -50, 50)
+    weights: NDArray[Any] = 1.0 / (1.0 + np.exp(exponent))
+    
     return np.clip(weights, 0.0, 1.0).astype(np.float32)
 
 

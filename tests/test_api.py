@@ -6,12 +6,18 @@ from api.fetching import fetch_story
 
 
 def test_recency_weights():
-    now = 1000000
-    timestamps = [now, now - 86400 * 10]
+    now = 100000000
+    # 0 days, 10 days, 400 days
+    timestamps = [now, now - 86400 * 10, now - 86400 * 400]
     with patch("time.time", return_value=now):
         weights = compute_recency_weights(timestamps)
-        assert weights[0] == 1.0
-        assert weights[1] < 1.0
+        # 0 days -> ~0.97
+        assert weights[0] > 0.9
+        # 10 days -> ~0.97 (plateau)
+        assert weights[1] > 0.9
+        assert weights[1] <= weights[0] # Monotonic
+        # 400 days -> < 0.5 (decay)
+        assert weights[2] < 0.5
 
 
 @pytest.mark.asyncio
