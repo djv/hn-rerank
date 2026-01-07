@@ -31,13 +31,24 @@ class HNClient:
     async def login(self, user, pw) -> tuple[bool, str]:
         resp = await self.client.get("/login")
         soup = BeautifulSoup(resp.text, "html.parser")
-        fnid = soup.find("input", {"name": "fnid"})["value"]
-        resp = await self.client.post("/login", data={"acct": user, "pw": pw, "fnid": fnid})
+        fnid_tag = soup.find("input", {"name": "fnid"})
+        
+        data = {"acct": user, "pw": pw}
+        if fnid_tag:
+            data["fnid"] = fnid_tag["value"]
+            
+        resp = await self.client.post("/login", data=data)
         if "logout" in resp.text:
             COOKIES_FILE.parent.mkdir(parents=True, exist_ok=True)
             COOKIES_FILE.write_text(json.dumps(dict(self.client.cookies)))
             return True, "Success"
-        return False, "Login failed"
+        
+        # Check for specific error message in HN response
+        error_msg = "Login failed"
+        if "Bad login" in resp.text:
+            error_msg = "Bad login (check username/password)"
+        
+        return False, error_msg
 
     async def _scrape_ids(self, path, max_pages=3) -> set[int]:
         ids = set()

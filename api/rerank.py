@@ -35,7 +35,7 @@ class ONNXEmbeddingModel:
 
         self.tokenizer = AutoTokenizer.from_pretrained(model_dir)
         self.session = ort.InferenceSession(f"{model_dir}/model.onnx")
-        self.model_id = "bge-small-en-v1.5"
+        self.model_id = "bge-base-en-v1.5"
 
     def encode(
         self,
@@ -102,11 +102,22 @@ def get_embeddings(
     vectors = []
     to_compute_indices = []
     
+    expected_dim = 768 if "base" in model.model_id.lower() else 384
+    
     for idx, text in enumerate(processed_texts):
         h = hashlib.sha256(text.encode()).hexdigest()
         cache_path = CACHE_DIR / f"{h}.npy"
         if cache_path.exists():
-            vectors.append(np.load(cache_path))
+            try:
+                vec = np.load(cache_path)
+                if vec.shape == (expected_dim,):
+                    vectors.append(vec)
+                else:
+                    vectors.append(None)
+                    to_compute_indices.append(idx)
+            except Exception:
+                vectors.append(None)
+                to_compute_indices.append(idx)
         else:
             vectors.append(None)
             to_compute_indices.append(idx)
@@ -122,7 +133,10 @@ def get_embeddings(
             h = hashlib.sha256(processed_texts[original_idx].encode()).hexdigest()
             np.save(CACHE_DIR / f"{h}.npy", vec)
             
-    return np.array(vectors)
+    if not vectors:
+        return np.zeros((0, expected_dim), dtype=np.float32)
+        
+    return np.stack(vectors).astype(np.float32)
 
 def compute_recency_weights(timestamps: list[int]) -> NDArray[np.float32]:
     now = time.time()
@@ -131,68 +145,40 @@ def compute_recency_weights(timestamps: list[int]) -> NDArray[np.float32]:
     return np.clip(weights, 0.0, 1.0).astype(np.float32)
 
 def rank_stories(
-
     stories: list[dict],
-
     positive_embeddings: NDArray[np.float32],
-
     negative_embeddings: Optional[NDArray[np.float32]] = None,
-
     positive_weights: Optional[NDArray[np.float32]] = None,
-
     hn_weight: float = 0.25,
-
     neg_weight: float = 0.6,
-
     diversity_lambda: float = 0.3,
-
     progress_callback: Optional[Callable[[int, int], None]] = None
-
 ) -> list[tuple[int, float, int]]:
-
-    if not stories: return []
-
+    if not stories:
+        return []
     
-
     cand_texts = [s.get("text_content", "") for s in stories]
-
     cand_emb = get_embeddings(cand_texts, progress_callback=progress_callback)
-
     
-
     if positive_embeddings is None or len(positive_embeddings) == 0:
-
         # If no positive signals, use HN scores primarily
-
         semantic_scores = np.zeros(len(stories))
-
         best_fav_indices = np.full(len(stories), -1)
-
     else:
-
         # 1. Semantic Score (MaxSim)
-
         sim_pos = cosine_similarity(positive_embeddings, cand_emb)
-
         if positive_weights is not None:
-
             sim_pos = sim_pos * positive_weights[:, np.newaxis]
-
         
-
         semantic_scores = np.max(sim_pos, axis=0)
-
         best_fav_indices = np.argmax(sim_pos, axis=0)
-
     
-
+    # 2. Negative Signal (Penalty)
     if negative_embeddings is not None and len(negative_embeddings) > 0:
-
-
         sim_neg = np.max(cosine_similarity(negative_embeddings, cand_emb), axis=0)
         semantic_scores -= neg_weight * sim_neg
 
-    # 2. HN Gravity Score
+    # 3. HN Gravity Score
     now = time.time()
     points = np.array([s.get("score", 0) for s in stories])
     times = np.array([s.get("time", now) for s in stories])
@@ -204,10 +190,10 @@ def rank_stories(
     if hn_scores.max() > 0:
         hn_scores /= hn_scores.max()
         
-    # 3. Hybrid Score
+    # 4. Hybrid Score
     hybrid_scores = (1 - hn_weight) * semantic_scores + hn_weight * hn_scores
     
-    # 4. Diversity (MMR)
+    # 5. Diversity (MMR)
     results = []
     selected_mask = np.zeros(len(cand_emb), dtype=bool)
     cand_sim = cosine_similarity(cand_emb, cand_emb)

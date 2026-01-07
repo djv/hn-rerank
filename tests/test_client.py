@@ -38,3 +38,31 @@ async def test_fetch_user_data_signals():
                 mock_scrape.assert_any_call(f"/favorites?id={username}")
                 mock_scrape.assert_any_call(f"/upvoted?id={username}")
                 mock_scrape.assert_any_call(f"/hidden?id={username}")
+
+@pytest.mark.asyncio
+async def test_scrape_ids_logic():
+    """Test the low-level _scrape_ids logic with mock HTML."""
+    mock_html = """
+    <html>
+        <tr class="athing" id="123"></tr>
+        <tr class="athing" id="456"></tr>
+        <a class="morelink" href="?p=2">More</a>
+    </html>
+    """
+    mock_html_page2 = """
+    <html>
+        <tr class="athing" id="789"></tr>
+    </html>
+    """
+    
+    async with HNClient() as client:
+        with patch.object(client.client, "get") as mock_get:
+            # Page 1 then Page 2
+            mock_get.side_effect = [
+                MagicMock(status_code=200, text=mock_html),
+                MagicMock(status_code=200, text=mock_html_page2)
+            ]
+            
+            ids = await client._scrape_ids("/test")
+            assert ids == {123, 456, 789}
+            assert mock_get.call_count == 2

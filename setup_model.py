@@ -1,6 +1,5 @@
 from pathlib import Path
 import subprocess
-import sys
 
 def setup():
     model_dir = Path("onnx_model")
@@ -8,13 +7,11 @@ def setup():
         print("Model already exists.")
         return
 
-    print("Setting up model (requires internet and ~100MB space)...")
-    model_id = "BAAI/bge-small-en-v1.5"
+    print("Setting up model (requires internet and ~450MB space)...")
+    model_id = "BAAI/bge-base-en-v1.5"
     
     # We use optimum to export to ONNX. 
     # Check if optimum-cli is available
-    import subprocess
-    import sys
 
     print(f"Exporting {model_id} to ONNX...")
     subprocess.check_call([
