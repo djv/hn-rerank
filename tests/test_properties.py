@@ -164,15 +164,11 @@ def test_rank_stories_empty_signals():
 
     with pytest.MonkeyPatch().context() as mp:
         mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: cand_emb)
-
+        
         # Both positive and negative embeddings are empty/None
-        results = rank_stories(
-            stories,
-            positive_embeddings=np.zeros((0, 384)),
-            negative_embeddings=None,
-            hn_weight=0.5,
-        )
-
+        results = rank_stories(stories, positive_embeddings=np.zeros((0, 384), dtype=np.float32), 
+                              negative_embeddings=None, hn_weight=0.5)
+        
         assert len(results) == 2
         # Should be sorted by HN score (Story 2 has 500 points)
         assert results[0][0] == 1

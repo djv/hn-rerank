@@ -20,4 +20,7 @@ dependencies = [
     "scikit-learn>=1.8.0",
     "trafilatura>=2.0.0",
     "transformers>=4.57.3",
+    "ty>=0.0.9",
+    "types-beautifulsoup4>=4.12.0.20250516",
+    "types-tqdm>=4.67.0.20250809",
 ]

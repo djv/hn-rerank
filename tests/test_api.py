@@ -31,6 +31,7 @@ async def test_fetch_story_cached():
         )
 
         res = await fetch_story(mock_client, sid)
+        assert res is not None
         assert res["id"] == sid
         assert mock_client.get.call_count == 0
 

@@ -1,9 +1,11 @@
+from __future__ import annotations
 import asyncio
 import json
 import re
 import time
 from pathlib import Path
 from datetime import UTC, datetime, timedelta
+from typing import Any, Callable, Optional
 import httpx
 from api.constants import (
     ALGOLIA_DEFAULT_DAYS,
@@ -15,53 +17,57 @@ from api.constants import (
     STORY_CACHE_TTL,
 )
 
-ALGOLIA_BASE = "https://hn.algolia.com/api/v1"
-SEM = asyncio.Semaphore(EXTERNAL_REQUEST_SEMAPHORE)
-CACHE_PATH = Path(STORY_CACHE_DIR)
+ALGOLIA_BASE: str = "https://hn.algolia.com/api/v1"
+SEM: asyncio.Semaphore = asyncio.Semaphore(EXTERNAL_REQUEST_SEMAPHORE)
+CACHE_PATH: Path = Path(STORY_CACHE_DIR)
 CACHE_PATH.mkdir(parents=True, exist_ok=True)
 
 
-async def fetch_story(client, sid) -> dict:
-    cache_file = CACHE_PATH / f"{sid}.json"
+async def fetch_story(client: httpx.AsyncClient, sid: int) -> Optional[dict[str, Any]]:
+    cache_file: Path = CACHE_PATH / f"{sid}.json"
     if cache_file.exists():
         try:
-            data = json.loads(cache_file.read_text())
-            if time.time() - data["ts"] < STORY_CACHE_TTL:
+            data: dict[str, Any] = json.loads(cache_file.read_text())
+            if time.time() - float(data["ts"]) < STORY_CACHE_TTL:
                 return data["story"]
         except Exception:
             pass
 
     async with SEM:
         try:
-            resp = await client.get(f"{ALGOLIA_BASE}/items/{sid}")
+            resp: httpx.Response = await client.get(f"{ALGOLIA_BASE}/items/{sid}")
             data = resp.json()
 
-            comments = []
+            comments: list[tuple[int, str]] = []
 
-            def extract(nodes):
+            def extract(nodes: list[dict[str, Any]]) -> None:
                 for n in nodes:
                     if n.get("text"):
-                        txt = re.sub("<[^<]+?>", "", n["text"])
-                        comments.append((n.get("points", 0) or 0, txt))
-                    extract(n.get("children", []))
+                        txt: str = re.sub("<[^<]+?>", "", str(n["text"]))
+                        comments.append((int(n.get("points", 0) or 0), txt))
+                    extract(list(n.get("children", [])))
 
-            extract(data.get("children", []))
+            extract(list(data.get("children", [])))
             comments.sort(reverse=True)
 
             # Detect if story is a dupe/closed (HN mods often move comments)
-            is_moved = any("Comments moved to" in (c.get("text") or "") 
-                          for c in data.get("children", [])[:5])
+            is_moved: bool = any(
+                "Comments moved to" in (str(c.get("text") or ""))
+                for c in list(data.get("children", []))[:5]
+            )
             if is_moved:
                 return None
 
-            top_for_rank = " ".join([c[1] for c in comments[:TOP_COMMENTS_FOR_RANKING]])
+            top_for_rank: str = " ".join(
+                [c[1] for c in comments[:TOP_COMMENTS_FOR_RANKING]]
+            )
 
-            story = {
-                "id": data["id"],
-                "title": data["title"],
+            story: dict[str, Any] = {
+                "id": int(data["id"]),
+                "title": str(data["title"]),
                 "url": data.get("url"),
-                "score": data.get("points", 0),
-                "time": data.get("created_at_i", 0),
+                "score": int(data.get("points", 0)),
+                "time": int(data.get("created_at_i", 0)),
                 "comments": [c[1] for c in comments[:TOP_COMMENTS_FOR_UI]],
                 "text_content": f"{data['title']} {top_for_rank}",
             }
@@ -72,31 +78,34 @@ async def fetch_story(client, sid) -> dict:
 
 
 async def get_best_stories(
-    limit, exclude_ids=None, progress_callback=None, days=ALGOLIA_DEFAULT_DAYS
-) -> list[dict]:
+    limit: int,
+    exclude_ids: Optional[set[int]] = None,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+    days: int = ALGOLIA_DEFAULT_DAYS,
+) -> list[dict[str, Any]]:
     if exclude_ids is None:
         exclude_ids = set()
     async with httpx.AsyncClient() as client:
-        ts = int((datetime.now(UTC) - timedelta(days=days)).timestamp())
-        params = {
+        ts: int = int((datetime.now(UTC) - timedelta(days=days)).timestamp())
+        params: dict[str, Any] = {
             "tags": "story",
             "numericFilters": f"created_at_i>{ts},points>{ALGOLIA_MIN_POINTS}",
             "hitsPerPage": limit + len(exclude_ids),
         }
-        resp = await client.get(f"{ALGOLIA_BASE}/search", params=params)
-        hits = [
-            h["objectID"]
+        resp: httpx.Response = await client.get(f"{ALGOLIA_BASE}/search", params=params)
+        hits: list[int] = [
+            int(h["objectID"])
             for h in resp.json()["hits"]
             if int(h["objectID"]) not in exclude_ids
         ][:limit]
 
-        results = []
+        results: list[dict[str, Any]] = []
         if not hits:
             return []
 
-        tasks = [fetch_story(client, sid) for sid in hits]
+        tasks: list[Any] = [fetch_story(client, sid) for sid in hits]
         for i, task in enumerate(asyncio.as_completed(tasks)):
-            res = await task
+            res: Optional[dict[str, Any]] = await task
             if res:
                 results.append(res)
             if progress_callback:
