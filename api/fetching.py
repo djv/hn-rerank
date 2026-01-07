@@ -58,20 +58,37 @@ async def fetch_story(client: httpx.AsyncClient, sid: int) -> Optional[dict[str,
             if is_moved:
                 return None
 
-            cleaned_comments = []
+            cleaned_comments: list[str] = []
             for _, txt in comments[:TOP_COMMENTS_FOR_RANKING]:
-                # 1. Braille Block (Standard)
-                txt = re.sub(r"[\u2800-\u28FF]+", "", txt)
-                # 2. Block Drawing / Geometric Shapes / Misc Symbols
-                txt = re.sub(r"[\u2500-\u27BF]+", "", txt)
-                # 3. Excessive Punctuation
-                txt = re.sub(r"[#*^\\/\\|\\-_+]{3,}", "", txt)
+                # 1. Braille/Symbol Blocks
+                txt_clean = re.sub(r"[\u2800-\u28FF\u2500-\u27BF]+", "", txt)
+                # 2. Excessive Punctuation
+                txt_clean = re.sub(r"[#*^\\/\\|\\-_+]{3,}", "", txt_clean)
                 
-                # Filter out noise
-                if len(txt.strip()) > 15:
-                    cleaned_comments.append(txt)
+                # 3. Alphanumeric Ratio Check
+                # Count alphanumerics (unicode aware)
+                if len(txt_clean) == 0:
+                    continue
+                    
+                alnum_count = sum(c.isalnum() for c in txt_clean)
+                if (alnum_count / len(txt_clean)) < 0.5:
+                    continue # Skip if mostly symbols/spaces
+                
+                # Filter out short comments
+                if len(txt_clean.strip()) > 20:
+                    cleaned_comments.append(txt_clean)
 
             top_for_rank: str = " ".join(cleaned_comments)
+            
+            # Clean UI comments too (lighter touch)
+            ui_comments: list[str] = []
+            for _, txt in comments[:TOP_COMMENTS_FOR_UI]:
+                 # Just strip the big blocks
+                 clean = re.sub(r"[\u2800-\u28FF\u2500-\u27BF]+", "[art]", txt)
+                 ui_comments.append(clean)
+
+            # Clean title for embedding (remove common HN prefixes that inflate similarity)
+            title_for_emb = re.sub(r"^(Show|Tell|Ask|Launch) HN:\s*", "", str(data["title"]), flags=re.IGNORECASE)
 
             story: dict[str, Any] = {
                 "id": int(data["id"]),
@@ -79,9 +96,8 @@ async def fetch_story(client: httpx.AsyncClient, sid: int) -> Optional[dict[str,
                 "url": data.get("url"),
                 "score": int(data.get("points", 0)),
                 "time": int(data.get("created_at_i", 0)),
-                "comments": [c[1] for c in comments[:TOP_COMMENTS_FOR_UI]],
-                # Boost title weight by including it twice
-                "text_content": f"{data['title']}. {data['title']}. {top_for_rank}",
+                "comments": ui_comments,
+                "text_content": f"{title_for_emb}. {title_for_emb}. {top_for_rank}",
             }
             cache_file.write_text(json.dumps({"ts": time.time(), "story": story}))
             return story
