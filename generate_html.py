@@ -192,7 +192,7 @@ async def main() -> None:
         "--login", action="store_true", help="Log in to HN to enable private signals"
     )
     parser.add_argument(
-        "--use-recency-bias", action="store_true", help="Enable recency weighting for user profile (default: False)"
+        "--no-recency-bias", action="store_true", help="Disable recency weighting for user profile (default: False)"
     )
     args: argparse.Namespace = parser.parse_args()
 
@@ -281,7 +281,7 @@ async def main() -> None:
         p_weights: Optional[NDArray[np.float32]] = (
             rerank.compute_recency_weights(
                 [int(s["time"]) for s in pos_stories],
-                decay_rate=None if args.use_recency_bias else 0.0,
+                decay_rate=0.0 if args.no_recency_bias else None,
             )
             if pos_stories
             else None
