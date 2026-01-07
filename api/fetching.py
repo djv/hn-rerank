@@ -48,6 +48,12 @@ async def fetch_story(client, sid) -> dict:
             extract(data.get("children", []))
             comments.sort(reverse=True)
 
+            # Detect if story is a dupe/closed (HN mods often move comments)
+            is_moved = any("Comments moved to" in (c.get("text") or "") 
+                          for c in data.get("children", [])[:5])
+            if is_moved:
+                return None
+
             top_for_rank = " ".join([c[1] for c in comments[:TOP_COMMENTS_FOR_RANKING]])
 
             story = {

@@ -288,8 +288,31 @@ async def main():
         )
 
     stories_data = []
-    for idx, score, fav_idx in ranked[: args.count]:
+    seen_urls = set()
+    seen_titles = set()
+    
+    for idx, score, fav_idx in ranked:
+        if len(stories_data) >= args.count:
+            break
+            
         s = cands[idx]
+        
+        # Deduplication logic
+        url = s.get("url")
+        title = s.get("title")
+        
+        # Normalize for checking
+        norm_url = url.split("?")[0] if url else f"hn:{s['id']}"
+        norm_title = title.lower().strip() if title else ""
+        
+        if norm_url in seen_urls or norm_title in seen_titles:
+            continue
+
+        if url:
+            seen_urls.add(norm_url)
+        if title:
+            seen_titles.add(norm_title)
+
         reason = (
             pos_stories[fav_idx]["title"]
             if fav_idx != -1 and fav_idx < len(pos_stories)

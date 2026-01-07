@@ -301,3 +301,85 @@ def test_rank_stories_diversity_impact():
 
         # Let's just assert that order is returned.
         assert len(res_high) == 3
+
+def test_rank_stories_upvote_boost():
+    """
+    Invariant: A candidate similar to an upvoted story (positive signal) 
+    MUST have a higher score than a dissimilar candidate.
+    """
+    # 1. Create two candidates:
+    # A: Identical to the upvoted story
+    # B: Orthogonal (dissimilar) to the upvoted story
+    
+    # 2. Embeddings
+    # Pos signal: [1, 0]
+    pos_emb = np.array([[1.0, 0.0]], dtype=np.float32)
+    
+    # Candidate A: [1, 0] (Perfect match)
+    # Candidate B: [0, 1] (No match)
+    cand_emb = np.array([
+        [1.0, 0.0], 
+        [0.0, 1.0]
+    ], dtype=np.float32)
+    
+    stories = [
+        {"id": 1, "score": 100, "time": 1000, "text_content": "Match"},
+        {"id": 2, "score": 100, "time": 1000, "text_content": "NoMatch"},
+    ]
+    
+    import api.rerank
+    with pytest.MonkeyPatch().context() as mp:
+        mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: cand_emb)
+        
+        # Rank with pure semantic weight (hn_weight=0) to isolate the effect
+        results = rank_stories(
+            stories, 
+            positive_embeddings=pos_emb, 
+            hn_weight=0.0, 
+            diversity_lambda=0.0
+        )
+        
+        # Candidate A (id 1) should be first and have a higher score
+        assert results[0][0] == 0  # Index 0 is Story 1
+        assert results[0][1] > results[1][1]
+        assert results[0][1] == pytest.approx(1.0) # Cosine sim of identical vectors is 1
+        assert results[1][1] == pytest.approx(0.0) # Cosine sim of orthogonal is 0
+
+def test_rank_stories_hidden_penalty():
+    """
+    Invariant: A candidate similar to a hidden story (negative signal)
+    MUST have a lower score than if the negative signal didn't exist.
+    """
+    # 1. Setup a neutral candidate
+    # Candidate: [1, 0]
+    cand_emb = np.array([[1.0, 0.0]], dtype=np.float32)
+    
+    # 2. Setup a negative signal that MATCHES the candidate
+    # Negative: [1, 0]
+    neg_emb = np.array([[1.0, 0.0]], dtype=np.float32)
+    
+    # 3. Setup a positive signal (just to enable semantic ranking)
+    # Positive: [0, 1] (Orthogonal, doesn't boost this candidate)
+    pos_emb = np.array([[0.0, 1.0]], dtype=np.float32)
+    
+    stories = [{"id": 1, "score": 100, "time": 1000, "text_content": "A"}]
+    
+    import api.rerank
+    with pytest.MonkeyPatch().context() as mp:
+        mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: cand_emb)
+        
+        # Baseline: Rank WITHOUT negative embeddings
+        res_baseline = rank_stories(stories, pos_emb, negative_embeddings=None, hn_weight=0.0)
+        score_baseline = res_baseline[0][1]
+        
+        # Test: Rank WITH negative embeddings
+        res_penalized = rank_stories(stories, pos_emb, negative_embeddings=neg_emb, hn_weight=0.0, neg_weight=0.5)
+        score_penalized = res_penalized[0][1]
+        
+        # The penalized score must be lower
+        assert score_penalized < score_baseline
+        # Specifically, it should be reduced by neg_weight * similarity
+        # Baseline (sim with pos [0,1]) = 0.0
+        # Penalty (sim with neg [1,0]) = 1.0 * 0.5 = 0.5
+        # Final score should be roughly -0.5
+        assert score_penalized == pytest.approx(score_baseline - 0.5)
