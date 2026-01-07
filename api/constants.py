@@ -3,53 +3,45 @@ Constants and configuration values for HN reranking.
 """
 
 # HN Score Calculation (Gravity Decay Formula)
-HN_SCORE_POINTS_EXP = 0.8  # Exponent for (P - 1)^x
-HN_SCORE_TIME_EXP = 1.8  # Exponent for (T + 2)^x
-HN_SCORE_TIME_OFFSET = 2  # Hours offset for denominator
+HN_SCORE_POINTS_EXP = 0.8
+HN_SCORE_TIME_EXP = 1.8
+HN_SCORE_TIME_OFFSET = 2
 
 # Similarity Bounds
 SIMILARITY_MIN = -1.0
 SIMILARITY_MAX = 1.0
 
-# Article Text Truncation (characters)
-ARTICLE_RANKING_LENGTH = 5000  # For ranking embeddings
-ARTICLE_SNIPPET_LENGTH = 1000  # For UI display
-TEXT_CONTENT_MAX_LENGTH = 12000  # Total text content limit
+# Content Limits
+ARTICLE_RANKING_LENGTH = 3000
+ARTICLE_SNIPPET_LENGTH = 1000
+TEXT_CONTENT_MAX_LENGTH = 6000
 
-# Embedding Cache
+# Cache Paths
 EMBEDDING_CACHE_DIR = ".cache/embeddings"
-
-# Story Cache
 STORY_CACHE_DIR = ".cache/stories"
-STORY_CACHE_TTL = 86400  # 24 hours in seconds
+USER_CACHE_DIR = ".cache/user"
+STORY_CACHE_TTL = 86400
+USER_CACHE_TTL = 300
 
-# Concurrency Limits
-EXTERNAL_REQUEST_SEMAPHORE = 100  # Max concurrent external HTTP requests
+# Concurrency
+EXTERNAL_REQUEST_SEMAPHORE = 100
 
-# Clustering
-CLUSTER_DISTANCE_THRESHOLD = 0.8  # Agglomerative clustering threshold
-CLUSTER_MIN_NORM = 1e-9  # Minimum norm for normalization
+# Comment Pool
+MAX_COMMENTS_COLLECTED = 100
+TOP_COMMENTS_FOR_RANKING = 15
+TOP_COMMENTS_FOR_UI = 10
 
-# Comment Collection
-MAX_COMMENTS_COLLECTED = 100  # Max comments to collect from story
-TOP_COMMENTS_FOR_RANKING = 15  # Top N comments used in ranking
-TOP_COMMENTS_FOR_UI = 10  # Top N comments stored for display
+# User Limits
+MAX_USER_STORIES = 50
 
-# User Data Limits
-MAX_USER_STORIES = 50  # Max stories to fetch per user for ranking
+# Discovery Pool
+ALGOLIA_MIN_POINTS = 20
+ALGOLIA_DEFAULT_DAYS = 30
+CANDIDATE_FETCH_COUNT = 1000
 
-# Algolia Search
-ALGOLIA_MIN_POINTS = 20  # Minimum story score for candidates
-ALGOLIA_DEFAULT_DAYS = 30  # Default time window for story search
-
-# Embedding Model
+# Inference
 DEFAULT_EMBEDDING_BATCH_SIZE = 8
-EMBEDDING_MIN_CLIP = 1e-9  # Minimum value for clipping in normalization
+EMBEDDING_MIN_CLIP = 1e-9
 
-# Recency Weighting (Exponential Decay)
-# Formula: weight = exp(-RECENCY_DECAY_RATE * age_in_days)
-# Default decay: 0.003 means ~99% weight at 1 day, ~80% at 90 days, ~33% at 365 days
-RECENCY_DECAY_RATE = 0.003  # Per-day decay rate for positive story weights
-
-# Fetching Limits
-CANDIDATE_FETCH_COUNT = 1000  # Number of candidates to fetch from Algolia (5x default)
+# Recency Weighting
+RECENCY_DECAY_RATE = 0.003

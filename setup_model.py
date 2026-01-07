@@ -1,35 +1,45 @@
+from pathlib import Path
 import subprocess
 import sys
-from pathlib import Path
-
 
 def setup():
-    model_dir = Path("bge_model")
-    quantized_model = model_dir / "model_quantized.onnx"
-
-    if quantized_model.exists():
-        print("Model already exists and is quantized.")
+    model_dir = Path("onnx_model")
+    if (model_dir / "model_quantized.onnx").exists():
+        print("Model already exists.")
         return
 
-    print("Model missing. Starting setup process...")
-
-    # 1. Export
-    print("Running export_onnx.py...")
+    print("Setting up model (requires internet and ~500MB space)...")
+    model_id = "nomic-ai/nomic-embed-text-v1.5"
+    
+    # We use optimum to export to ONNX. 
+    # Adding it temporarily if not present.
     try:
-        subprocess.check_call([sys.executable, "export_onnx.py"])
-    except subprocess.CalledProcessError as e:
-        print(f"Error exporting model: {e}")
-        sys.exit(1)
+        import importlib.util
+        if importlib.util.find_spec("optimum") is None:
+            raise ImportError
+    except ImportError:
+        print("Installing optimum and onnxruntime...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "optimum[onnxruntime]"])
 
-    # 2. Quantize
-    print("Running quantize_onnx.py...")
-    try:
-        subprocess.check_call([sys.executable, "quantize_onnx.py"])
-    except subprocess.CalledProcessError as e:
-        print(f"Error quantizing model: {e}")
-        sys.exit(1)
-
-    print("Setup complete! You can now run the application.")
+    print(f"Exporting {model_id} to ONNX...")
+    subprocess.check_call([
+        "optimum-cli", "export", "onnx", 
+        "--model", model_id, 
+        "--task", "feature-extraction",
+        "--optimize", "O3",
+        str(model_dir)
+    ])
+    
+    # Quantize for CPU performance
+    if (model_dir / "model.onnx").exists() and not (model_dir / "model_quantized.onnx").exists():
+        print("Quantizing model...")
+        from onnxruntime.quantization import quantize_dynamic, QuantType
+        quantize_dynamic(
+            model_input=str(model_dir / "model.onnx"),
+            model_output=str(model_dir / "model_quantized.onnx"),
+            weight_type=QuantType.QUInt8
+        )
+    print("Setup complete.")
 
 if __name__ == "__main__":
     setup()

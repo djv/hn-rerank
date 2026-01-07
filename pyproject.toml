@@ -1,49 +1,19 @@
 [project]
 name = "hn-rerank"
 version = "0.1.0"
-description = "A semantic search TUI for Hacker News that reranks the front page based on your personal interests"
+description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    # TUI
-    "textual>=0.47.0",
-    # Data fetching
-    "httpx>=0.26.0",
-    "beautifulsoup4>=4.12.0",
-    "trafilatura>=1.6.0",
-    # ML/AI
-    "numpy>=1.26.0",
-    "scikit-learn>=1.4.0",
-    "onnxruntime>=1.16.0",
-    "transformers>=4.36.0",
-]
-
-[project.scripts]
-hn-rerank = "tui_app:main"
-
-[dependency-groups]
-dev = [
-    "pytest>=8.0.0",
-    "pytest-asyncio>=0.23.0",
-    "pytest-cov>=7.0.0",
-    "pytest-timeout>=2.2.0",
-    "hypothesis>=6.92.0",
-    "respx>=0.22.0",
+    "beautifulsoup4>=4.14.3",
+    "httpx>=0.28.1",
+    "numpy>=2.4.0",
+    "onnxruntime>=1.23.2",
+    "pytest>=9.0.2",
+    "pytest-asyncio>=1.3.0",
     "ruff>=0.14.10",
-    "pytest-xdist>=3.8.0",
+    "scikit-learn>=1.8.0",
+    "textual>=7.0.0",
+    "trafilatura>=2.0.0",
+    "transformers>=4.57.3",
 ]
-
-[tool.pytest.ini_options]
-pythonpath = "."
-timeout = 30
-asyncio_mode = "auto"
-asyncio_default_fixture_loop_scope = "function"
-addopts = "-n auto --dist worksteal -q"
-
-[tool.ruff]
-line-length = 88
-target-version = "py312"
-
-[tool.ruff.lint]
-select = ["E", "F", "I", "N", "W", "B", "UP", "PL", "RUF"]
-ignore = []
