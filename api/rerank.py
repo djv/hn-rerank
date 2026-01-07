@@ -251,15 +251,12 @@ def rank_stories(
         )
         semantic_scores -= neg_weight * sim_neg
 
-    # 3. HN Gravity Score
+    # 3. HN Gravity Score (Now just based on points, no recency bias for candidates)
     now: float = time.time()
     points: NDArray[Any] = np.array([int(s.get("score", 0)) for s in stories])
-    times: NDArray[Any] = np.array([int(s.get("time", now)) for s in stories])
-    hours: NDArray[Any] = np.maximum((now - times) / 3600, 0)
-
-    hn_scores: NDArray[Any] = np.power(
-        np.maximum(points - 1, 0), HN_SCORE_POINTS_EXP
-    ) / np.power(hours + HN_SCORE_TIME_OFFSET, HN_SCORE_TIME_EXP)
+    
+    # We removed the hours/time decay denominator.
+    hn_scores: NDArray[Any] = np.power(np.maximum(points - 1, 0), HN_SCORE_POINTS_EXP)
 
     if hn_scores.max() > 0:
         hn_scores /= hn_scores.max()

@@ -119,33 +119,130 @@ def test_negative_signal_impact(num_candidates, neg_multiplier):
         assert res_with_neg[0][1] < res_no_neg[0][1]
 
 
-@given(st.lists(st.integers(min_value=1, max_value=1000), min_size=1, max_size=10))
-def test_hn_gravity_normalization(scores):
+@given(st.lists(st.integers(min_value=1, max_value=1000), min_size=2, max_size=10))
+
+
+def test_hn_points_normalization(scores):
+
+
     """
+
+
     Invariants:
+
+
     1. HN scores should be normalized between 0 and 1.
+
+
+    2. Higher points MUST lead to higher HN score (since time is ignored).
+
+
     """
+
+
     stories = [
+
+
         {"id": i, "score": s, "time": 1000, "text_content": ""}
+
+
         for i, s in enumerate(scores)
+
+
     ]
 
-    # We need dummy embeddings
+
+    
+
+
+    # Dummy embeddings
+
+
     dummy_pos = np.zeros((1, 384), dtype=np.float32)
+
+
     dummy_cand = np.zeros((len(stories), 384), dtype=np.float32)
+
+
+    
+
 
     import api.rerank
 
+
     with pytest.MonkeyPatch().context() as mp:
+
+
         mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: dummy_cand)
 
+
+        
+
+
         # Pure HN weight
+
+
         results = rank_stories(
-            stories, positive_embeddings=dummy_pos, hn_weight=1.0, diversity_lambda=0.0
+
+
+            stories, 
+
+
+            positive_embeddings=dummy_pos, 
+
+
+            hn_weight=1.0, 
+
+
+            diversity_lambda=0.0
+
+
         )
 
-        for _, score, _ in results:
+
+        
+
+
+        # Sort results by original story index to check points
+
+
+        idx_to_score = {idx: score for idx, score, _ in results}
+
+
+        
+
+
+        # Check normalization
+
+
+        for score in idx_to_score.values():
+
+
             assert 0.0 <= score <= 1.000001
+
+
+            
+
+
+        # Check point ordering
+
+
+        # If Story A has more points than Story B, it must have a >= score
+
+
+        for i in range(len(stories)):
+
+
+            for j in range(len(stories)):
+
+
+                if stories[i]["score"] > stories[j]["score"]:
+
+
+                    assert idx_to_score[i] >= idx_to_score[j]
+
+
+
 
 
 def test_rank_stories_empty_signals():
