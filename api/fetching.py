@@ -87,9 +87,6 @@ async def fetch_story(client: httpx.AsyncClient, sid: int) -> Optional[dict[str,
                  clean = re.sub(r"[\u2800-\u28FF\u2500-\u27BF]+", "[art]", txt)
                  ui_comments.append(clean)
 
-            # Clean title for embedding (remove common HN prefixes that inflate similarity)
-            title_for_emb = re.sub(r"^(Show|Tell|Ask|Launch) HN:\s*", "", str(data["title"]), flags=re.IGNORECASE)
-
             story: dict[str, Any] = {
                 "id": int(data["id"]),
                 "title": str(data["title"]),
@@ -97,7 +94,8 @@ async def fetch_story(client: httpx.AsyncClient, sid: int) -> Optional[dict[str,
                 "score": int(data.get("points", 0)),
                 "time": int(data.get("created_at_i", 0)),
                 "comments": ui_comments,
-                "text_content": f"{title_for_emb}. {title_for_emb}. {top_for_rank}",
+                # Title + Rich Comment Context
+                "text_content": f"{data['title']}. {top_for_rank}",
             }
             cache_file.write_text(json.dumps({"ts": time.time(), "story": story}))
             return story
