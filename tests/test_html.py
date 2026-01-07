@@ -1,6 +1,7 @@
 import pytest
 from generate_html import generate_story_html
 
+
 def test_generate_story_html_special_chars():
     """
     Ensure that story titles or comments containing curly braces don't crash the generator.
@@ -9,13 +10,14 @@ def test_generate_story_html_special_chars():
     story = {
         "match_percent": 95,
         "points": 100,
+        "time_ago": "2h",
         "url": "https://example.com",
         "title": "React {hooks} vs [brackets]",
         "hn_url": "https://news.ycombinator.com/item?id=123",
         "reason": "Interest in {technology}",
-        "comments": ["This is a {comment}"]
+        "comments": ["This is a {comment}"],
     }
-    
+
     # This should not raise a KeyError or ValueError
     try:
         html = generate_story_html(story)
@@ -25,16 +27,18 @@ def test_generate_story_html_special_chars():
     except (KeyError, ValueError) as e:
         pytest.fail(f"generate_story_html crashed with special characters: {e}")
 
+
 def test_generate_story_html_missing_fields():
     """Test handling of stories with missing or None fields."""
     story = {
         "match_percent": 50,
         "points": 10,
-        "url": None, # Missing URL
+        "time_ago": "1d",
+        "url": None,  # Missing URL
         "title": "Untitled",
         "hn_url": "https://news.ycombinator.com/item?id=456",
-        "reason": "", # Empty reason
-        "comments": []
+        "reason": "",  # Empty reason
+        "comments": [],
     }
     html = generate_story_html(story)
     assert "Untitled" in html

@@ -5,9 +5,10 @@ import httpx
 from bs4 import BeautifulSoup
 from api.constants import USER_CACHE_DIR, USER_CACHE_TTL
 
-COOKIES_FILE = Path.home() / ".config" / "hn_rerank" / "cookies.json"
 USER_CACHE_DIR_PATH = Path(USER_CACHE_DIR)
 USER_CACHE_DIR_PATH.mkdir(parents=True, exist_ok=True)
+COOKIES_FILE = USER_CACHE_DIR_PATH / "cookies.json"
+
 
 class HNClient:
     BASE_URL = "https://news.ycombinator.com"
@@ -16,7 +17,7 @@ class HNClient:
         self.client = httpx.AsyncClient(
             base_url=self.BASE_URL,
             follow_redirects=True,
-            headers={"User-Agent": "Mozilla/5.0"}
+            headers={"User-Agent": "Mozilla/5.0"},
         )
         self._load_cookies()
 
@@ -32,22 +33,22 @@ class HNClient:
         resp = await self.client.get("/login")
         soup = BeautifulSoup(resp.text, "html.parser")
         fnid_tag = soup.find("input", {"name": "fnid"})
-        
+
         data = {"acct": user, "pw": pw}
         if fnid_tag:
             data["fnid"] = fnid_tag["value"]
-            
+
         resp = await self.client.post("/login", data=data)
         if "logout" in resp.text:
             COOKIES_FILE.parent.mkdir(parents=True, exist_ok=True)
             COOKIES_FILE.write_text(json.dumps(dict(self.client.cookies)))
             return True, "Success"
-        
+
         # Check for specific error message in HN response
         error_msg = "Login failed"
         if "Bad login" in resp.text:
             error_msg = "Bad login (check username/password)"
-        
+
         return False, error_msg
 
     async def _scrape_ids(self, path, max_pages=3) -> set[int]:
@@ -65,7 +66,9 @@ class HNClient:
 
     async def fetch_user_submissions(self, username: str) -> set[int]:
         """Fetch submission IDs for a user using the official Firebase API."""
-        resp = await self.client.get(f"https://hacker-news.firebaseio.com/v0/user/{username}.json")
+        resp = await self.client.get(
+            f"https://hacker-news.firebaseio.com/v0/user/{username}.json"
+        )
         if resp.status_code == 200:
             data = resp.json()
             return set(data.get("submitted", []))
@@ -79,18 +82,32 @@ class HNClient:
                 return {k: set(v) for k, v in data["ids"].items()}
 
         is_logged_in = "logout" in (await self.client.get("/")).text
-        
-        pos = await self._scrape_ids(f"/favorites?id={user}")
-        if is_logged_in:
-            pos.update(await self._scrape_ids(f"/upvoted?id={user}"))
-            neg = await self._scrape_ids(f"/hidden?id={user}")
-        else:
-            neg = set()
 
-        out = {"pos": pos, "neg": neg}
-        cache_path.write_text(json.dumps({"ts": time.time(), "ids": {k: list(v) for k, v in out.items()}}))
+        # Favorites are always positive signals
+        favorites = await self._scrape_ids(f"/favorites?id={user}")
+
+        if is_logged_in:
+            # If logged in, we also know what we've already upvoted and hidden
+            upvoted = await self._scrape_ids(f"/upvoted?id={user}")
+            hidden = await self._scrape_ids(f"/hidden?id={user}")
+        else:
+            upvoted = set()
+            hidden = set()
+
+        # Output format:
+        # pos: used for semantic profile building
+        # excluded: IDs to NEVER show as candidates
+        out = {"pos": favorites, "upvoted": upvoted, "hidden": hidden}
+        cache_path.write_text(
+            json.dumps({"ts": time.time(), "ids": {k: list(v) for k, v in out.items()}})
+        )
         return out
 
-    async def close(self): await self.client.aclose()
-    async def __aenter__(self): return self
-    async def __aexit__(self, *args): await self.close()
+    async def close(self):
+        await self.client.aclose()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        await self.close()

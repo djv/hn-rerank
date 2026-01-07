@@ -3,7 +3,10 @@ import pytest
 from hypothesis import given, strategies as st, settings
 from api.rerank import compute_recency_weights, rank_stories
 
-@given(st.lists(st.integers(min_value=0, max_value=2000000000), min_size=1, max_size=100))
+
+@given(
+    st.lists(st.integers(min_value=0, max_value=2000000000), min_size=1, max_size=100)
+)
 def test_recency_weights_invariants(timestamps):
     """
     Invariants for recency weights:
@@ -13,7 +16,7 @@ def test_recency_weights_invariants(timestamps):
     weights = compute_recency_weights(timestamps)
     assert np.all(weights >= 0.0)
     assert np.all(weights <= 1.0)
-    
+
     if len(timestamps) > 1:
         # Sort indices by timestamp descending (newest first)
         sorted_indices = np.argsort(timestamps)[::-1]
@@ -23,10 +26,11 @@ def test_recency_weights_invariants(timestamps):
         diffs = np.diff(sorted_weights)
         assert np.all(diffs <= 1e-7)
 
+
 @settings(deadline=None)
 @given(
     num_candidates=st.integers(min_value=1, max_value=20),
-    num_favorites=st.integers(min_value=1, max_value=10)
+    num_favorites=st.integers(min_value=1, max_value=10),
 )
 def test_ranking_invariants(num_candidates, num_favorites):
     """
@@ -36,6 +40,7 @@ def test_ranking_invariants(num_candidates, num_favorites):
     3. Scores are sorted descending.
     4. fav_idx corresponds to a valid index in positive_embeddings (or -1).
     """
+
     # Mock embeddings (random unit vectors)
     def random_unit_vectors(n, dim=384):
         vecs = np.random.randn(n, dim).astype(np.float32)
@@ -43,42 +48,45 @@ def test_ranking_invariants(num_candidates, num_favorites):
 
     pos_emb = random_unit_vectors(num_favorites)
     cand_emb = random_unit_vectors(num_candidates)
-    
+
     stories = [
         {"id": i, "score": 100, "time": 1000, "text_content": f"Story {i}"}
         for i in range(num_candidates)
     ]
-    
+
     # Mock get_embeddings to return our cand_emb
     import api.rerank
+
     with pytest.MonkeyPatch().context() as mp:
         mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: cand_emb)
-        
+
         results = rank_stories(
-            stories, 
-            positive_embeddings=pos_emb, 
-            hn_weight=0.0, # Pure semantic for this test
-            diversity_lambda=0.0
+            stories,
+            positive_embeddings=pos_emb,
+            hn_weight=0.0,  # Pure semantic for this test
+            diversity_lambda=0.0,
         )
-        
+
         assert len(results) == num_candidates
-        
-        last_score = float('inf')
+
+        last_score = float("inf")
         for idx, score, fav_idx in results:
             assert 0 <= idx < num_candidates
             assert score <= last_score + 1e-7
             assert 0 <= fav_idx < num_favorites
             last_score = score
 
+
 @given(
     num_candidates=st.integers(min_value=1, max_value=5),
-    neg_multiplier=st.floats(min_value=0.1, max_value=1.0)
+    neg_multiplier=st.floats(min_value=0.1, max_value=1.0),
 )
 def test_negative_signal_impact(num_candidates, neg_multiplier):
     """
-    Invariant: A story similar to negative signals must rank lower than 
+    Invariant: A story similar to negative signals must rank lower than
     if those negative signals weren't present.
     """
+
     def unit_vector(vec):
         return vec / np.linalg.norm(vec)
 
@@ -88,20 +96,28 @@ def test_negative_signal_impact(num_candidates, neg_multiplier):
     cand_emb = np.array([unit_vector(np.array([1.0, 0.1, 0.0]))], dtype=np.float32)
     # Negative signal matches the story!
     neg_emb = np.array([unit_vector(np.array([1.0, 0.2, 0.0]))], dtype=np.float32)
-    
+
     stories = [{"id": 0, "score": 100, "time": 1000, "text_content": "S"}]
-    
+
     import api.rerank
+
     with pytest.MonkeyPatch().context() as mp:
         mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: cand_emb)
-        
+
         # Rank without negative signal
         res_no_neg = rank_stories(stories, pos_emb, hn_weight=0.0, diversity_lambda=0.0)
         # Rank with negative signal
-        res_with_neg = rank_stories(stories, pos_emb, negative_embeddings=neg_emb, 
-                                   neg_weight=neg_multiplier, hn_weight=0.0, diversity_lambda=0.0)
-        
+        res_with_neg = rank_stories(
+            stories,
+            pos_emb,
+            negative_embeddings=neg_emb,
+            neg_weight=neg_multiplier,
+            hn_weight=0.0,
+            diversity_lambda=0.0,
+        )
+
         assert res_with_neg[0][1] < res_no_neg[0][1]
+
 
 @given(st.lists(st.integers(min_value=1, max_value=1000), min_size=1, max_size=10))
 def test_hn_gravity_normalization(scores):
@@ -113,50 +129,55 @@ def test_hn_gravity_normalization(scores):
         {"id": i, "score": s, "time": 1000, "text_content": ""}
         for i, s in enumerate(scores)
     ]
-    
+
     # We need dummy embeddings
     dummy_pos = np.zeros((1, 384), dtype=np.float32)
     dummy_cand = np.zeros((len(stories), 384), dtype=np.float32)
-    
+
     import api.rerank
+
     with pytest.MonkeyPatch().context() as mp:
         mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: dummy_cand)
-        
+
         # Pure HN weight
         results = rank_stories(
-            stories, 
-            positive_embeddings=dummy_pos, 
-            hn_weight=1.0, 
-            diversity_lambda=0.0
+            stories, positive_embeddings=dummy_pos, hn_weight=1.0, diversity_lambda=0.0
         )
-        
+
         for _, score, _ in results:
             assert 0.0 <= score <= 1.000001
 
+
 def test_rank_stories_empty_signals():
     """
-    Invariant: Ranking must still work (relying on HN gravity) even if 
+    Invariant: Ranking must still work (relying on HN gravity) even if
     there are no positive or negative signals.
     """
     stories = [
         {"id": 1, "score": 100, "time": 1000, "text_content": "A"},
         {"id": 2, "score": 500, "time": 1000, "text_content": "B"},
     ]
-    
+
     cand_emb = np.zeros((2, 384), dtype=np.float32)
-    
+
     import api.rerank
+
     with pytest.MonkeyPatch().context() as mp:
         mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: cand_emb)
-        
+
         # Both positive and negative embeddings are empty/None
-        results = rank_stories(stories, positive_embeddings=np.zeros((0, 384)), 
-                              negative_embeddings=None, hn_weight=0.5)
-        
+        results = rank_stories(
+            stories,
+            positive_embeddings=np.zeros((0, 384)),
+            negative_embeddings=None,
+            hn_weight=0.5,
+        )
+
         assert len(results) == 2
         # Should be sorted by HN score (Story 2 has 500 points)
         assert results[0][0] == 1
         assert results[1][0] == 0
+
 
 def test_rank_stories_diversity_impact():
     """
@@ -166,34 +187,35 @@ def test_rank_stories_diversity_impact():
     pos_emb = np.array([[1.0, 0.0]], dtype=np.float32)
     # two identical stories matching pos: [1, 0]
     cand_emb = np.array([[1.0, 0.0], [1.0, 0.0]], dtype=np.float32)
-    
+
     stories = [
         {"id": 1, "score": 100, "time": 1000, "text_content": "A"},
         {"id": 2, "score": 100, "time": 1000, "text_content": "B"},
     ]
-    
+
     import api.rerank
+
     with pytest.MonkeyPatch().context() as mp:
         mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: cand_emb)
-        
+
         # 1. No diversity: both should have high scores
         res_no_div = rank_stories(stories, pos_emb, diversity_lambda=0.0, hn_weight=0.0)
         assert res_no_div[0][1] == res_no_div[1][1]
-        
+
         # 2. High diversity: the second story should be significantly penalized
-        res_with_div = rank_stories(stories, pos_emb, diversity_lambda=1.0, hn_weight=0.0)
+        rank_stories(stories, pos_emb, diversity_lambda=1.0, hn_weight=0.0)
         # Note: rank_stories returns (idx, hybrid_score, fav_idx)
-        # In MMR, the score returned is the original hybrid_score, 
+        # In MMR, the score returned is the original hybrid_score,
         # BUT the selection order changes.
         # Wait, let's check rank_stories MMR implementation.
         # It appends (best_idx, float(hybrid_scores[best_idx]), ...)
-        # The hybrid_score is NOT penalized in the return value, 
+        # The hybrid_score is NOT penalized in the return value,
         # but the ORDER is determined by penalized scores.
         # However, if they are identical, the order might be same but the logic is exercised.
         # Actually, in MMR, once A is selected, B's internal mmr_score = relevance - diversity * similarity(A, B).
         # Since similarity(A, B) = 1.0 and diversity = 1.0, B's mmr_score = 1.0 - 1.0 = 0.0.
         # So A is picked first, then B.
-        
+
         # To prove MMR is working, we can use 3 stories.
         # A: [1, 0] (best match)
         # B: [1, 0] (identical to A)
@@ -201,38 +223,44 @@ def test_rank_stories_diversity_impact():
         # Target: [1, 0.5]
         target = np.array([[1.0, 0.5]], dtype=np.float32)
         target /= np.linalg.norm(target)
-        
+
         # A: [1, 0] -> dot(target, A) = 1.0/norm
         # B: [1, 0] -> dot(target, B) = 1.0/norm
         # C: [0.8, 0.6] -> dot(target, C) = (0.8 + 0.3)/norm = 1.1/norm (Wait, C is better)
-        
+
         # Let's keep it simple. If we have A, B (identical) and C (different).
         # Without diversity: A, B, C (if A, B match target better)
         # With diversity: A, C, B (because B is redundant with A)
-        
+
         target_v = np.array([1.0, 0.0], dtype=np.float32)
-        a_v = np.array([1.0, 0.01], dtype=np.float32) # Very close to target
-        b_v = np.array([1.0, 0.02], dtype=np.float32) # Very close to target
-        c_v = np.array([0.7, 0.7], dtype=np.float32) # Further from target, but different from A
-        
+        a_v = np.array([1.0, 0.01], dtype=np.float32)  # Very close to target
+        b_v = np.array([1.0, 0.02], dtype=np.float32)  # Very close to target
+        c_v = np.array(
+            [0.7, 0.7], dtype=np.float32
+        )  # Further from target, but different from A
+
         embs = np.array([a_v, b_v, c_v], dtype=np.float32)
         embs /= np.linalg.norm(embs, axis=1, keepdims=True)
-        
+
         stories_3 = [
             {"id": 0, "score": 100, "time": 1000, "text_content": "A"},
             {"id": 1, "score": 100, "time": 1000, "text_content": "B"},
             {"id": 2, "score": 100, "time": 1000, "text_content": "C"},
         ]
-        
+
         mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: embs)
-        
+
         # No diversity
-        res_low = rank_stories(stories_3, target_v.reshape(1,-1), diversity_lambda=0.0, hn_weight=0.0)
+        res_low = rank_stories(
+            stories_3, target_v.reshape(1, -1), diversity_lambda=0.0, hn_weight=0.0
+        )
         # Order should be A, B, C
         assert [r[0] for r in res_low] == [0, 1, 2]
-        
+
         # High diversity
-        res_high = rank_stories(stories_3, target_v.reshape(1,-1), diversity_lambda=0.5, hn_weight=0.0)
+        res_high = rank_stories(
+            stories_3, target_v.reshape(1, -1), diversity_lambda=0.5, hn_weight=0.0
+        )
         # Order should be A, C, B (or C first if C matched better, but here A/B are better matches)
         # Internal scores:
         # A relevance ~ 1.0
@@ -247,19 +275,19 @@ def test_rank_stories_diversity_impact():
         # B mmr = 1.0 - 0.8 * 1.0 = 0.2
         # C mmr = 0.7 - 0.8 * 0.7 = 0.7 - 0.56 = 0.14
         # Still B? MMR is hard to trigger with just 2 dimensions.
-        
+
         # Let's use orthogonal vectors.
         # target: [1, 0, 0]
         # A: [1, 0, 0] (rel=1)
         # B: [1, 0, 0] (rel=1, sim(A,B)=1)
         # C: [0.1, 1, 0] (rel=0.1, sim(A,C)=0.1)
-        
+
         # With diversity_lambda=0.5:
         # 1st pick: A
         # B mmr = 1.0 - 0.5 * 1.0 = 0.5
         # C mmr = 0.1 - 0.5 * 0.1 = 0.05
         # Diversity must be very high to pick C.
-        
+
         # If diversity_lambda=1.0:
         # B mmr = 1.0 - 1.0 * 1.0 = 0.0
         # C mmr = 0.1 - 1.0 * 0.1 = 0.0
@@ -267,9 +295,9 @@ def test_rank_stories_diversity_impact():
         # B mmr = 1.0 - 2.0 = -1.0
         # C mmr = 0.1 - 0.2 = -0.1
         # C would be picked!
-        
-        # In standard MMR [0, 1], diversity usually just reorders items with 
+
+        # In standard MMR [0, 1], diversity usually just reorders items with
         # similar relevance.
-        
+
         # Let's just assert that order is returned.
         assert len(res_high) == 3

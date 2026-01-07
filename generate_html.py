@@ -1,13 +1,24 @@
 import argparse
 import asyncio
+import getpass
 import os
+import time
 from datetime import datetime
 from pathlib import Path
+
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
+from rich.console import Console
 
 from api import rerank
 from api.client import HNClient
 from api.fetching import get_best_stories, fetch_story
-from api.constants import CANDIDATE_FETCH_COUNT, MAX_USER_STORIES
+from api.constants import (
+    ALGOLIA_DEFAULT_DAYS,
+    CANDIDATE_FETCH_COUNT,
+    MAX_USER_STORIES,
+)
+
+console = Console()
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -63,6 +74,21 @@ HTML_TEMPLATE = """
 </html>
 """
 
+
+def get_relative_time(timestamp: int) -> str:
+    if not timestamp:
+        return ""
+    diff = int(time.time()) - timestamp
+    if diff < 60:
+        return "now"
+    elif diff < 3600:
+        return f"{diff // 60}m"
+    elif diff < 86400:
+        return f"{diff // 3600}h"
+    else:
+        return f"{diff // 86400}d"
+
+
 STORY_CARD_TEMPLATE = """
 <div class="story-card group">
     <div class="flex items-start justify-between gap-4 mb-4">
@@ -72,6 +98,7 @@ STORY_CARD_TEMPLATE = """
                     {score}% Match
                 </span>
                 <span class="text-xs text-slate-500 font-mono">{points} points</span>
+                <span class="text-xs text-slate-500 font-mono italic">{time_ago}</span>
             </div>
             <h2 class="text-xl font-bold text-white group-hover:text-hn transition-colors">
                 <a href="{url}" target="_blank">{title}</a>
@@ -90,80 +117,209 @@ STORY_CARD_TEMPLATE = """
 </div>
 """
 
+
 def generate_story_html(story):
     reason_html = ""
-    if story.get('reason'):
+    if story.get("reason"):
         reason_html = f'<p class="text-sm text-emerald-400/90 font-medium mb-4 italic">Matches your interest in: “{story["reason"]}”</p>'
-    
+
     comments_html = ""
-    for comment in story.get('comments', [])[:3]:
+    for comment in story.get("comments", [])[:3]:
         snippet = comment[:200] + "..." if len(comment) > 200 else comment
         comments_html += f'<div class="text-sm text-slate-400 bg-slate-950/50 p-3 rounded-lg border border-slate-800/50 italic leading-relaxed">“{snippet}”</div>'
 
     return STORY_CARD_TEMPLATE.format(
-        score=story['match_percent'],
-        points=story['points'],
-        url=story['url'] or story['hn_url'],
-        title=story['title'],
-        hn_url=story['hn_url'],
+        score=story["match_percent"],
+        points=story["points"],
+        time_ago=story["time_ago"],
+        url=story["url"] or story["hn_url"],
+        title=story["title"],
+        hn_url=story["hn_url"],
         reason_html=reason_html,
-        comments_html=comments_html
+        comments_html=comments_html,
     )
+
+
+async def run_login(user):
+    pw = getpass.getpass(f"Enter password for {user}: ")
+    async with HNClient() as hn:
+        success, msg = await hn.login(user, pw)
+        if success:
+            print("[+] Login successful! Cookies saved.")
+        else:
+            print(f"[-] Login failed: {msg}")
+
+
+# ... (template strings and get_relative_time helpers)
+
 
 async def main():
     parser = argparse.ArgumentParser(description="Generate personalized HN dashboard")
     parser.add_argument("username", help="Hacker News username")
     parser.add_argument("-o", "--output", default="index.html", help="Output file path")
-    parser.add_argument("-c", "--count", type=int, default=30, help="Number of stories to show")
+    parser.add_argument(
+        "-c", "--count", type=int, default=30, help="Number of stories to show"
+    )
+    parser.add_argument(
+        "-s",
+        "--signals",
+        type=int,
+        default=MAX_USER_STORIES,
+        help=f"Number of user signals to process (default: {MAX_USER_STORIES})",
+    )
+    parser.add_argument(
+        "-k",
+        "--candidates",
+        type=int,
+        default=CANDIDATE_FETCH_COUNT,
+        help=f"Number of candidates to fetch from Algolia (default: {CANDIDATE_FETCH_COUNT})",
+    )
+    parser.add_argument(
+        "-d",
+        "--days",
+        type=int,
+        default=ALGOLIA_DEFAULT_DAYS,
+        help=f"Time window in days for fetching candidates (default: {ALGOLIA_DEFAULT_DAYS})",
+    )
+    parser.add_argument(
+        "--login", action="store_true", help="Log in to HN to enable private signals"
+    )
     args = parser.parse_args()
 
-    print(f"[*] Building preference profile for @{args.username}...")
-    async with HNClient() as hn:
-        data = await hn.fetch_user_data(args.username)
-        pos_stories = [s for s in await asyncio.gather(*[fetch_story(hn.client, i) for i in list(data["pos"])[:MAX_USER_STORIES]]) if s]
-        neg_stories = [s for s in await asyncio.gather(*[fetch_story(hn.client, i) for i in list(data["neg"])[:MAX_USER_STORIES]]) if s]
+    if args.login:
+        await run_login(args.username)
+        return
 
-    if not pos_stories:
-        print("[!] No favorites found. Using generic community signals.")
-        p_emb = None
-    else:
-        print(f"[*] Generating embeddings for {len(pos_stories)} favorites...")
-        p_emb = rerank.get_embeddings([s["text_content"] for s in pos_stories], is_query=True)
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+        console=console,
+    ) as progress:
+        # 1. Profile Building
+        p_task = progress.add_task(
+            f"[*] Building profile for @{args.username}...", total=100
+        )
+        async with HNClient() as hn:
+            data = await hn.fetch_user_data(args.username)
+            progress.update(
+                p_task, completed=20, description="[*] Fetching signal details..."
+            )
 
-    n_emb = rerank.get_embeddings([s["text_content"] for s in neg_stories], is_query=True) if neg_stories else None
-    p_weights = rerank.compute_recency_weights([s["time"] for s in pos_stories]) if pos_stories else None
+            # Helper for progress-aware batch fetch
+            async def fetch_with_progress(ids, label):
+                results = []
+                sub_task = progress.add_task(f"  > {label}", total=len(ids))
+                for i, res in enumerate(
+                    asyncio.as_completed([fetch_story(hn.client, sid) for sid in ids])
+                ):
+                    s = await res
+                    if s:
+                        results.append(s)
+                    progress.update(sub_task, advance=1)
+                progress.remove_task(sub_task)
+                return results
 
-    print(f"[*] Fetching up to {CANDIDATE_FETCH_COUNT} candidates from Algolia...")
-    cands = await get_best_stories(CANDIDATE_FETCH_COUNT, exclude_ids=data["pos"] | data["neg"])
-    
-    print(f"[*] Reranking {len(cands)} stories...")
-    ranked = rerank.rank_stories(cands, p_emb, n_emb, p_weights)
+            # Positive signals = Favorites + Upvoted
+            pos_ids = list(data["pos"] | data["upvoted"])[: args.signals]
+            neg_ids = list(data["hidden"])[: args.signals]
+
+            pos_stories = await fetch_with_progress(pos_ids, "Positive signals")
+            neg_stories = await fetch_with_progress(neg_ids, "Negative signals")
+            progress.update(
+                p_task, completed=100, description="[green][+] Profile built."
+            )
+
+        # 2. Embedding
+        e_task = progress.add_task("[*] Embedding preferences...", total=100)
+
+        def emb_cb(curr, total):
+            progress.update(e_task, total=total, completed=curr)
+
+        p_emb = (
+            rerank.get_embeddings(
+                [s["text_content"] for s in pos_stories],
+                is_query=True,
+                progress_callback=emb_cb,
+            )
+            if pos_stories
+            else None
+        )
+        n_emb = (
+            rerank.get_embeddings(
+                [s["text_content"] for s in neg_stories],
+                is_query=True,
+                progress_callback=emb_cb,
+            )
+            if neg_stories
+            else None
+        )
+        p_weights = (
+            rerank.compute_recency_weights([s["time"] for s in pos_stories])
+            if pos_stories
+            else None
+        )
+        progress.update(e_task, description="[green][+] Preferences embedded.")
+
+        # 3. Candidates
+        c_task = progress.add_task(
+            f"[*] Fetching {args.candidates} candidates...", total=args.candidates
+        )
+        # Exclude everything we've already interacted with
+        exclude = data["pos"] | data["upvoted"] | data["hidden"]
+        cands = await get_best_stories(
+            args.candidates,
+            exclude_ids=exclude,
+            progress_callback=lambda curr, tot: progress.update(
+                c_task, total=tot, completed=curr
+            ),
+            days=args.days,
+        )
+        progress.update(c_task, description="[green][+] Candidates fetched.")
+
+        # 4. Reranking
+        r_task = progress.add_task("[*] Reranking stories...", total=100)
+        ranked = rerank.rank_stories(
+            cands, p_emb, n_emb, p_weights, progress_callback=emb_cb
+        )
+        progress.update(
+            r_task, completed=100, description="[green][+] Reranking complete."
+        )
 
     stories_data = []
-    for idx, score, fav_idx in ranked[:args.count]:
+    for idx, score, fav_idx in ranked[: args.count]:
         s = cands[idx]
-        reason = pos_stories[fav_idx]["title"] if fav_idx != -1 and fav_idx < len(pos_stories) else ""
-        stories_data.append({
-            "match_percent": int(score * 100),
-            "points": s['score'],
-            "url": s['url'],
-            "title": s['title'],
-            "hn_url": f"https://news.ycombinator.com/item?id={s['id']}",
-            "reason": reason,
-            "comments": s['comments']
-        })
+        reason = (
+            pos_stories[fav_idx]["title"]
+            if fav_idx != -1 and fav_idx < len(pos_stories)
+            else ""
+        )
+        stories_data.append(
+            {
+                "match_percent": int(score * 100),
+                "points": s["score"],
+                "time_ago": get_relative_time(s.get("time", 0)),
+                "url": s["url"],
+                "title": s["title"],
+                "hn_url": f"https://news.ycombinator.com/item?id={s['id']}",
+                "reason": reason,
+                "comments": s["comments"],
+            }
+        )
 
     print("[*] Generating HTML...")
     stories_html = "\n".join([generate_story_html(s) for s in stories_data])
-    
+
     final_html = HTML_TEMPLATE.format(
         username=args.username,
         timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        stories_html=stories_html
+        stories_html=stories_html,
     )
 
     Path(args.output).write_text(final_html)
     print(f"[+] Done! Dashboard saved to: {os.path.abspath(args.output)}")
+
 
 if __name__ == "__main__":
     asyncio.run(main())
