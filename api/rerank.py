@@ -16,9 +16,6 @@ from api.constants import (
     EMBEDDING_CACHE_DIR,
     EMBEDDING_MIN_CLIP,
     HN_SCORE_POINTS_EXP,
-    HN_SCORE_TIME_EXP,
-    HN_SCORE_TIME_OFFSET,
-    RECENCY_DECAY_RATE,
     TEXT_CONTENT_MAX_LENGTH,
 )
 
@@ -252,7 +249,6 @@ def rank_stories(
         semantic_scores -= neg_weight * sim_neg
 
     # 3. HN Gravity Score (Now just based on points, no recency bias for candidates)
-    now: float = time.time()
     points: NDArray[Any] = np.array([int(s.get("score", 0)) for s in stories])
     
     # We removed the hours/time decay denominator.

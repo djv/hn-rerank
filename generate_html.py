@@ -6,7 +6,7 @@ import os
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Optional, cast
+from typing import Any, Optional
 
 import numpy as np
 from numpy.typing import NDArray
@@ -257,8 +257,6 @@ async def main() -> None:
         def emb_cb(curr: int, total: int) -> None:
             progress.update(e_task, total=total, completed=curr)
 
-        import numpy as np
-        from numpy.typing import NDArray
 
         p_emb: Optional[NDArray[np.float32]] = (
             rerank.get_embeddings(

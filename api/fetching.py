@@ -58,9 +58,15 @@ async def fetch_story(client: httpx.AsyncClient, sid: int) -> Optional[dict[str,
             if is_moved:
                 return None
 
-            top_for_rank: str = " ".join(
+            top_for_rank = " ".join(
                 [c[1] for c in comments[:TOP_COMMENTS_FOR_RANKING]]
             )
+            
+            # Clean noise (Braille art, excessive symbols)
+            # This regex targets common Braille art blocks
+            top_for_rank = re.sub(r"[\u2800-\u28FF]{3,}", "", top_for_rank)
+            # Remove excessive punctuation/symbols often used in ASCII art
+            top_for_rank = re.sub(r"[#*^\\/\\|\\-_+]{5,}", "", top_for_rank)
 
             story: dict[str, Any] = {
                 "id": int(data["id"]),
@@ -69,7 +75,8 @@ async def fetch_story(client: httpx.AsyncClient, sid: int) -> Optional[dict[str,
                 "score": int(data.get("points", 0)),
                 "time": int(data.get("created_at_i", 0)),
                 "comments": [c[1] for c in comments[:TOP_COMMENTS_FOR_UI]],
-                "text_content": f"{data['title']} {top_for_rank}",
+                # Boost title weight by including it twice
+                "text_content": f"{data['title']}. {data['title']}. {top_for_rank}",
             }
             cache_file.write_text(json.dumps({"ts": time.time(), "story": story}))
             return story

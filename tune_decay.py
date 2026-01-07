@@ -9,6 +9,6 @@ def compute_plateau_decay(ages_days):
 ages = np.array([1, 30, 90, 180, 365, 500, 730])
 weights = compute_plateau_decay(ages)
 
-print(f"k=0.01, inflection=365")
+print("k=0.01, inflection=365")
 for age, w in zip(ages, weights):
     print(f"Age {age:3d} days: {w:.4f}")
