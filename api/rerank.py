@@ -12,7 +12,6 @@ import numpy as np
 import onnxruntime as ort
 from numpy.typing import NDArray
 from sklearn.cluster import AgglomerativeClustering, KMeans
-from sklearn.metrics.pairwise import cosine_similarity
 from transformers import AutoTokenizer
 
 from api.constants import (
@@ -263,7 +262,8 @@ def cluster_and_reduce_auto(
         if len(member_indices) == 1:
             representative_indices.append(member_indices[0])
         else:
-            sims = cosine_similarity(centroid.reshape(1, -1), cluster_embeds)[0]
+            # Replaced cosine_similarity with dot product as embeddings are normalized
+            sims = (centroid.reshape(1, -1) @ cluster_embeds.T)[0]
             best_local_idx = np.argmax(sims)
             representative_indices.append(member_indices[best_local_idx])
 
@@ -280,7 +280,14 @@ def cluster_and_reduce(
     kmeans.fit(embeddings)
     centroids = kmeans.cluster_centers_
 
-    sim_matrix = cosine_similarity(centroids, embeddings)
+    # Normalize centroids for dot product similarity
+    # KMeans centroids are means, so they are not normalized.
+    centroids_norm = np.linalg.norm(centroids, axis=1, keepdims=True)
+    centroids = centroids / np.clip(centroids_norm, a_min=1e-9, a_max=None)
+
+    # Replaced cosine_similarity with dot product
+    # centroids: (K, D), embeddings: (N, D) -> (K, N)
+    sim_matrix = centroids @ embeddings.T
     representative_indices = np.argmax(sim_matrix, axis=1).tolist()
 
     labels = kmeans.labels_
@@ -294,7 +301,9 @@ def rank_embeddings_maxsim(
 ) -> list[tuple[int, float, int]]:
     if len(candidate_embeddings) == 0 or len(fav_embeddings) == 0:
         return []
-    sim_matrix = cosine_similarity(fav_embeddings, candidate_embeddings)
+
+    # Replaced cosine_similarity with dot product (assumes normalized inputs)
+    sim_matrix = fav_embeddings @ candidate_embeddings.T
     sim_matrix = np.clip(sim_matrix, SIMILARITY_MIN, SIMILARITY_MAX)
     max_scores = np.max(sim_matrix, axis=0)
     best_fav_indices = np.argmax(sim_matrix, axis=0)
@@ -321,13 +330,15 @@ def rank_mmr(
         return []
 
     # Compute relevance scores (similarity to favorites)
-    sim_matrix = cosine_similarity(fav_embeddings, cand_embeddings)
+    # Replaced cosine_similarity with dot product
+    sim_matrix = fav_embeddings @ cand_embeddings.T
     sim_matrix = np.clip(sim_matrix, SIMILARITY_MIN, SIMILARITY_MAX)
     relevance_scores = np.max(sim_matrix, axis=0)
     best_fav_indices = np.argmax(sim_matrix, axis=0)
 
     # Precompute candidate-to-candidate similarities (once, upfront)
-    cand_sim = cosine_similarity(cand_embeddings, cand_embeddings)
+    # Replaced cosine_similarity with dot product
+    cand_sim = cand_embeddings @ cand_embeddings.T
 
     results = []
     selected_mask = np.zeros(len(cand_embeddings), dtype=bool)
@@ -522,8 +533,9 @@ def rank_stories(  # noqa: PLR0912, PLR0913, PLR0915
     best_fav_indices = np.zeros(len(cand_embeddings), dtype=int) - 1
 
     if positive_embeddings is not None and len(positive_embeddings) > 0:
+        # Replaced cosine_similarity with dot product
         sim_pos = np.clip(
-            cosine_similarity(positive_embeddings, cand_embeddings),
+            positive_embeddings @ cand_embeddings.T,
             SIMILARITY_MIN,
             SIMILARITY_MAX,
         )
@@ -540,7 +552,8 @@ def rank_stories(  # noqa: PLR0912, PLR0913, PLR0915
         semantic_scores += pos_scores
 
     if negative_embeddings is not None and len(negative_embeddings) > 0:
-        sim_neg = cosine_similarity(negative_embeddings, cand_embeddings)
+        # Replaced cosine_similarity with dot product
+        sim_neg = negative_embeddings @ cand_embeddings.T
         neg_scores = np.max(sim_neg, axis=0)
         semantic_scores -= neg_weight * neg_scores
 
@@ -575,7 +588,8 @@ def rank_stories(  # noqa: PLR0912, PLR0913, PLR0915
         # We need to inject our hybrid_scores as the relevance signal
         
         # Compute candidate-to-candidate similarities (once, upfront)
-        cand_sim = cosine_similarity(cand_embeddings, cand_embeddings)
+        # Replaced cosine_similarity with dot product
+        cand_sim = cand_embeddings @ cand_embeddings.T
 
         selected_mask = np.zeros(len(cand_embeddings), dtype=bool)
 
