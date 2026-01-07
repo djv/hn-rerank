@@ -30,12 +30,12 @@ CACHE_DIR.mkdir(parents=True, exist_ok=True)
 class ONNXEmbeddingModel:
     def __init__(self, model_dir: str = "onnx_model") -> None:
         self.model_dir = model_dir
-        if not Path(f"{model_dir}/model_quantized.onnx").exists():
+        if not Path(f"{model_dir}/model.onnx").exists():
             raise FileNotFoundError(f"Model not found in {model_dir}. Please run setup_model.py.")
 
         self.tokenizer = AutoTokenizer.from_pretrained(model_dir)
-        self.session = ort.InferenceSession(f"{model_dir}/model_quantized.onnx")
-        self.model_id = "nomic-embed-text-v1.5" # Default assumption for this project
+        self.session = ort.InferenceSession(f"{model_dir}/model.onnx")
+        self.model_id = "bge-small-en-v1.5"
 
     def encode(
         self,
@@ -95,8 +95,8 @@ def get_embeddings(
         return np.array([])
     
     model = get_model()
-    # Nomic-style prefixes
-    prefix = "search_query: " if is_query else "search_document: "
+    # BGE-style prefixes
+    prefix = "Represent this sentence for searching relevant passages: " if is_query else ""
     processed_texts = [f"{prefix}{t[:TEXT_CONTENT_MAX_LENGTH]}" for t in texts]
     
     vectors = []
@@ -131,30 +131,64 @@ def compute_recency_weights(timestamps: list[int]) -> NDArray[np.float32]:
     return np.clip(weights, 0.0, 1.0).astype(np.float32)
 
 def rank_stories(
+
     stories: list[dict],
+
     positive_embeddings: NDArray[np.float32],
+
     negative_embeddings: Optional[NDArray[np.float32]] = None,
+
     positive_weights: Optional[NDArray[np.float32]] = None,
+
     hn_weight: float = 0.25,
+
     neg_weight: float = 0.6,
+
     diversity_lambda: float = 0.3,
+
     progress_callback: Optional[Callable[[int, int], None]] = None
+
 ) -> list[tuple[int, float, int]]:
-    if not stories:
-        return []
+
+    if not stories: return []
+
     
+
     cand_texts = [s.get("text_content", "") for s in stories]
+
     cand_emb = get_embeddings(cand_texts, progress_callback=progress_callback)
+
     
-    # 1. Semantic Score (MaxSim)
-    sim_pos = cosine_similarity(positive_embeddings, cand_emb)
-    if positive_weights is not None:
-        sim_pos = sim_pos * positive_weights[:, np.newaxis]
+
+    if positive_embeddings is None or len(positive_embeddings) == 0:
+
+        # If no positive signals, use HN scores primarily
+
+        semantic_scores = np.zeros(len(stories))
+
+        best_fav_indices = np.full(len(stories), -1)
+
+    else:
+
+        # 1. Semantic Score (MaxSim)
+
+        sim_pos = cosine_similarity(positive_embeddings, cand_emb)
+
+        if positive_weights is not None:
+
+            sim_pos = sim_pos * positive_weights[:, np.newaxis]
+
+        
+
+        semantic_scores = np.max(sim_pos, axis=0)
+
+        best_fav_indices = np.argmax(sim_pos, axis=0)
+
     
-    semantic_scores = np.max(sim_pos, axis=0)
-    best_fav_indices = np.argmax(sim_pos, axis=0)
-    
+
     if negative_embeddings is not None and len(negative_embeddings) > 0:
+
+
         sim_neg = np.max(cosine_similarity(negative_embeddings, cand_emb), axis=0)
         semantic_scores -= neg_weight * sim_neg
 

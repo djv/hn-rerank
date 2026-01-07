@@ -62,7 +62,7 @@ async def fetch_story(client, sid) -> dict:
         except Exception:
             return None
 
-async def get_best_stories(limit, exclude_ids=None) -> list[dict]:
+async def get_best_stories(limit, exclude_ids=None, progress_callback=None) -> list[dict]:
     if exclude_ids is None:
         exclude_ids = set()
     async with httpx.AsyncClient() as client:
@@ -75,6 +75,16 @@ async def get_best_stories(limit, exclude_ids=None) -> list[dict]:
         resp = await client.get(f"{ALGOLIA_BASE}/search", params=params)
         hits = [h["objectID"] for h in resp.json()["hits"] if int(h["objectID"]) not in exclude_ids][:limit]
         
+        results = []
+        if not hits:
+            return []
+        
         tasks = [fetch_story(client, sid) for sid in hits]
-        res = await asyncio.gather(*tasks)
-        return [r for r in res if r]
+        for i, task in enumerate(asyncio.as_completed(tasks)):
+            res = await task
+            if res:
+                results.append(res)
+            if progress_callback:
+                progress_callback(i + 1, len(hits))
+                
+        return results

@@ -33,14 +33,22 @@ class StoryItem(ListItem):
 
 class HNRerankTUI(App):
     CSS = """
+    #progress-container { display: none; padding: 1; border-top: solid $primary; }
+    App.loading #progress-container { display: block; }
+    App.loading #loading { display: block; }
+    App.loading #list { display: none; }
+    
+    #task-label { color: $accent; text-style: italic; margin-top: 1; }
+    #total-label { color: $primary; text-style: bold; }
+    
     #row { height: 1; margin-bottom: 1; }
-    #score { width: 5; color: cyan; font-weight: bold; }
+    #score { width: 5; color: cyan; text-style: bold; }
     #title { width: 1fr; }
     #points { width: 8; text-align: right; color: yellow; }
     #details { display: none; padding: 1; background: #222; }
     StoryItem.-highlight #details { display: block; }
     .comment { border-left: solid gray; padding-left: 1; margin-bottom: 1; color: #aaa; }
-    #reason { color: green; font-style: italic; margin-bottom: 1; }
+    #reason { color: green; text-style: italic; margin-bottom: 1; }
     """
     
     BINDINGS: ClassVar[list[Binding]] = [
@@ -59,44 +67,86 @@ class HNRerankTUI(App):
     def compose(self) -> ComposeResult:
         yield Header()
         yield LoadingIndicator(id="loading")
-        yield ProgressBar(id="progress", show_eta=False)
+        with Vertical(id="progress-container"):
+            yield Label("Total Progress", id="total-label")
+            yield ProgressBar(id="total-progress", show_eta=False)
+            yield Label("Current Task", id="task-label")
+            yield ProgressBar(id="task-progress", show_eta=False)
         yield ListView(id="list")
         yield Footer()
 
     async def on_mount(self): self.action_refresh()
 
+    async def _batch_fetch_stories(self, ac, ids, label):
+        results = []
+        task_prog = self.query_one("#task-progress", ProgressBar)
+        self.query_one("#task-label", Label).update(label)
+        task_prog.update(total=len(ids), progress=0)
+        
+        # Concurrency controlled by fetch_story semaphore
+        for i, sid in enumerate(ids):
+            res = await fetch_story(ac, sid)
+            if res: results.append(res)
+            task_prog.update(progress=i+1)
+        return results
+
     @work
     async def action_refresh(self):
         self.add_class("loading")
         try:
-            prog = self.query_one(ProgressBar)
-            prog.update(total=100, progress=0)
+            total_prog = self.query_one("#total-progress", ProgressBar)
+            task_prog = self.query_one("#task-progress", ProgressBar)
+            total_prog.update(total=100, progress=0)
             
+            # 1. User Data
+            self.query_one("#task-label", Label).update("Fetching User Profile...")
             async with HNClient() as hn:
                 data = await hn.fetch_user_data(self.user)
-                prog.update(progress=20)
+                total_prog.update(progress=10)
                 
-                pos_stories = [s for s in await asyncio.gather(*[fetch_story(hn.client, i) for i in list(data["pos"])[:MAX_USER_STORIES]]) if s]
-                neg_stories = [s for s in await asyncio.gather(*[fetch_story(hn.client, i) for i in list(data["neg"])[:MAX_USER_STORIES]]) if s]
-                prog.update(progress=40)
+                # 2. Positive Signal Details
+                pos_stories = await self._batch_fetch_stories(
+                    hn.client, list(data["pos"])[:MAX_USER_STORIES], "Fetching Positive Signals..."
+                )
+                total_prog.update(progress=25)
+                
+                # 3. Negative Signal Details
+                neg_stories = await self._batch_fetch_stories(
+                    hn.client, list(data["neg"])[:MAX_USER_STORIES], "Fetching Negative Signals..."
+                )
+                total_prog.update(progress=40)
             
-            p_emb = rerank.get_embeddings([s["text_content"] for s in pos_stories], is_query=True)
-            n_emb = rerank.get_embeddings([s["text_content"] for s in neg_stories], is_query=True)
+            # 4. Embed Signals
+            self.query_one("#task-label", Label).update("Embedding Preferences...")
+            task_prog.update(total=100, progress=0)
+            def emb_cb(curr, total): task_prog.update(total=total, progress=curr)
+            
+            p_emb = rerank.get_embeddings([s["text_content"] for s in pos_stories], is_query=True, progress_callback=emb_cb)
+            n_emb = rerank.get_embeddings([s["text_content"] for s in neg_stories], is_query=True, progress_callback=emb_cb)
             p_weights = rerank.compute_recency_weights([s["time"] for s in pos_stories])
-            prog.update(progress=60)
+            total_prog.update(progress=60)
             
+            # 5. Fetch Candidates
+            self.query_one("#task-label", Label).update("Fetching Candidates...")
             exclude = data["pos"] | data["neg"] | self.session_excluded_ids
-            cands = await get_best_stories(CANDIDATE_FETCH_COUNT, exclude_ids=exclude)
-            prog.update(progress=80)
+            cands = await get_best_stories(
+                CANDIDATE_FETCH_COUNT, 
+                exclude_ids=exclude,
+                progress_callback=lambda curr, tot: task_prog.update(total=tot, progress=curr)
+            )
+            total_prog.update(progress=80)
             
-            ranked = rerank.rank_stories(cands, p_emb, n_emb, p_weights)
+            # 6. Rank
+            self.query_one("#task-label", Label).update("Ranking Stories...")
+            # rank_stories will call get_embeddings for candidates
+            ranked = rerank.rank_stories(cands, p_emb, n_emb, p_weights, progress_callback=emb_cb)
             
             lst = self.query_one("#list", ListView)
             lst.clear()
             for idx, score, fav_idx in ranked[:50]:
                 reason = pos_stories[fav_idx]["title"] if fav_idx != -1 and fav_idx < len(pos_stories) else ""
                 await lst.append(StoryItem(cands[idx], score, reason))
-            prog.update(progress=100)
+            total_prog.update(progress=100)
         finally:
             self.remove_class("loading")
 
@@ -122,9 +172,8 @@ class HNRerankTUI(App):
 async def run_batch(user, count):
     async with HNClient() as hn:
         data = await hn.fetch_user_data(user)
-        async with hn.client as ac:
-            pos = [s for s in await asyncio.gather(*[fetch_story(ac, i) for i in list(data["pos"])[:MAX_USER_STORIES]]) if s]
-            neg = [s for s in await asyncio.gather(*[fetch_story(ac, i) for i in list(data["neg"])[:MAX_USER_STORIES]]) if s]
+        pos = [s for s in await asyncio.gather(*[fetch_story(hn.client, i) for i in list(data["pos"])[:MAX_USER_STORIES]]) if s]
+        neg = [s for s in await asyncio.gather(*[fetch_story(hn.client, i) for i in list(data["neg"])[:MAX_USER_STORIES]]) if s]
     
     p_emb = rerank.get_embeddings([s["text_content"] for s in pos], is_query=True)
     n_emb = rerank.get_embeddings([s["text_content"] for s in neg], is_query=True)
