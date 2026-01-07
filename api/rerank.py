@@ -186,10 +186,18 @@ def get_embeddings(
     return np.stack([v for v in vectors if v is not None]).astype(np.float32)
 
 
-def compute_recency_weights(timestamps: list[int]) -> NDArray[np.float32]:
+def compute_recency_weights(
+    timestamps: list[int], decay_rate: Optional[float] = None
+) -> NDArray[np.float32]:
+    if decay_rate is None:
+        decay_rate = RECENCY_DECAY_RATE
+        
+    if decay_rate <= 0:
+        return np.ones(len(timestamps), dtype=np.float32)
+        
     now: float = time.time()
     ages: NDArray[Any] = (now - np.array(timestamps)) / 86400
-    weights: NDArray[Any] = np.exp(-RECENCY_DECAY_RATE * ages)
+    weights: NDArray[Any] = np.exp(-decay_rate * ages)
     return np.clip(weights, 0.0, 1.0).astype(np.float32)
 
 

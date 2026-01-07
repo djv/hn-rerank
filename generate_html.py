@@ -191,6 +191,9 @@ async def main() -> None:
     parser.add_argument(
         "--login", action="store_true", help="Log in to HN to enable private signals"
     )
+    parser.add_argument(
+        "--use-recency-bias", action="store_true", help="Enable recency weighting for user profile (default: False)"
+    )
     args: argparse.Namespace = parser.parse_args()
 
     if args.login:
@@ -254,6 +257,9 @@ async def main() -> None:
         def emb_cb(curr: int, total: int) -> None:
             progress.update(e_task, total=total, completed=curr)
 
+        import numpy as np
+        from numpy.typing import NDArray
+
         p_emb: Optional[NDArray[np.float32]] = (
             rerank.get_embeddings(
                 [str(s["text_content"]) for s in pos_stories],
@@ -273,7 +279,10 @@ async def main() -> None:
             else None
         )
         p_weights: Optional[NDArray[np.float32]] = (
-            rerank.compute_recency_weights([int(s["time"]) for s in pos_stories])
+            rerank.compute_recency_weights(
+                [int(s["time"]) for s in pos_stories],
+                decay_rate=None if args.use_recency_bias else 0.0,
+            )
             if pos_stories
             else None
         )
