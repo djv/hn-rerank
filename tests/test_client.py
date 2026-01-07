@@ -66,3 +66,12 @@ async def test_scrape_ids_logic():
             ids = await client._scrape_ids("/test")
             assert ids == {123, 456, 789}
             assert mock_get.call_count == 2
+
+@pytest.mark.asyncio
+async def test_scrape_ids_empty():
+    """Ensure _scrape_ids handles empty pages gracefully."""
+    async with HNClient() as client:
+        with patch.object(client.client, "get") as mock_get:
+            mock_get.return_value = MagicMock(status_code=200, text="<html>No items here</html>")
+            ids = await client._scrape_ids("/empty")
+            assert ids == set()

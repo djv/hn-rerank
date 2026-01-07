@@ -29,6 +29,18 @@ async def test_fetch_story_cached():
         assert res["id"] == sid
         assert mock_client.get.call_count == 0
 
+@pytest.mark.asyncio
+async def test_fetch_story_network_error():
+    """Ensure fetch_story returns None on network failure."""
+    mock_client = AsyncMock()
+    mock_client.get.side_effect = Exception("Connection refused")
+    
+    with patch("api.fetching.CACHE_PATH") as mock_path:
+        mock_path.__truediv__.return_value.exists.return_value = False
+        
+        res = await fetch_story(mock_client, 123)
+        assert res is None
+
 def test_rank_stories_basic():
     stories = [{"id": 1, "score": 100, "time": 1000, "text_content": "A"}]
     pos_emb = np.array([[1.0]*768])
