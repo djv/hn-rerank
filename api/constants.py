@@ -47,7 +47,7 @@ DEFAULT_EMBEDDING_BATCH_SIZE = 8
 EMBEDDING_MIN_CLIP = 1e-9  # Minimum value for clipping in normalization
 
 # Recency Weighting (Exponential Decay)
-# Formula: weight = exp(-RECENCY_DECAY_RATE × age_in_days)
+# Formula: weight = exp(-RECENCY_DECAY_RATE * age_in_days)
 # Default decay: 0.003 means ~99% weight at 1 day, ~80% at 90 days, ~33% at 365 days
 RECENCY_DECAY_RATE = 0.003  # Per-day decay rate for positive story weights
 

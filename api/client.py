@@ -1,11 +1,16 @@
 import json
 import time
+from http import HTTPStatus
 from pathlib import Path
 
 import httpx
 from bs4 import BeautifulSoup
 
 COOKIES_FILE = Path.home() / ".config" / "hn_rerank" / "cookies.json"
+_USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
 USER_CACHE_DIR = Path(".cache/user")
 USER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 USER_CACHE_TTL = 300  # 5 minutes
@@ -18,9 +23,7 @@ class HNClient:
         self.client = httpx.AsyncClient(
             base_url=self.BASE_URL,
             follow_redirects=True,
-            headers={
-                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            },
+            headers={"User-Agent": _USER_AGENT},
         )
         self.username: str | None = None
         self._load_cookies()
@@ -45,7 +48,7 @@ class HNClient:
     async def login(self, username: str, password: str) -> tuple[bool, str]:
         # 1. Get fnid (if present)
         resp = await self.client.get("/login")
-        if resp.status_code != 200:
+        if resp.status_code != HTTPStatus.OK:
             return False, "Failed to load login page"
 
         soup = BeautifulSoup(resp.text, "html.parser")
@@ -73,7 +76,7 @@ class HNClient:
                 f"{url_path}&p={page}" if "?" in url_path else f"{url_path}?p={page}"
             )
             resp = await self.client.get(paged_url)
-            if resp.status_code != 200:
+            if resp.status_code != HTTPStatus.OK:
                 break
 
             soup = BeautifulSoup(resp.text, "html.parser")
@@ -140,28 +143,25 @@ class HNClient:
     async def vote(self, item_id: int, direction: str = "up") -> tuple[bool, str]:
         """
         Vote on a story or comment.
-        direction: 'up' or 'down'.
-        Note: Stories typically only support 'up'. 'down' is for comments (if high karma).
+
+        Args:
+            item_id: The HN item ID to vote on
+            direction: 'up' or 'down' (down only for comments with high karma)
         """
         # 1. Fetch item page to find auth token
         resp = await self.client.get(f"/item?id={item_id}")
-        if resp.status_code != 200:
+        if resp.status_code != HTTPStatus.OK:
             return False, "Failed to load item page"
 
         soup = BeautifulSoup(resp.text, "html.parser")
-
-        # Look for the vote link
         link = soup.find("a", id=f"{direction}_{item_id}")
 
         if not link:
-            # Check if already voted
-            unvote_link = soup.find("a", id=f"un_{item_id}")
-            if unvote_link:
+            # Determine why vote link is missing
+            if soup.find("a", id=f"un_{item_id}"):
                 return False, "Already voted"
-
             if "login" in resp.text and "logout" not in resp.text:
                 return False, "Not logged in"
-
             return False, f"Vote link '{direction}' not found"
 
         href = link.get("href")
@@ -170,45 +170,37 @@ class HNClient:
 
         # 2. Execute Vote
         vote_resp = await self.client.get(f"/{href}")
-        if vote_resp.status_code == 200:
-            return True, "Voted successfully"
-
-        return False, f"Vote failed: {vote_resp.status_code}"
+        success = vote_resp.status_code == HTTPStatus.OK
+        return (True, "Voted successfully") if success else (
+            False, f"Vote failed: {vote_resp.status_code}"
+        )
 
     async def hide(self, item_id: int) -> tuple[bool, str]:
-        """
-        Hide a story (negative signal).
-        """
+        """Hide a story (negative signal)."""
         resp = await self.client.get(f"/item?id={item_id}")
-        if resp.status_code != 200:
+        if resp.status_code != HTTPStatus.OK:
             return False, "Failed to load item page"
 
         soup = BeautifulSoup(resp.text, "html.parser")
-
-        # Find hide link: href starts with hide?id={item_id}
         link = soup.find("a", href=lambda x: x and x.startswith(f"hide?id={item_id}"))
 
         if not link:
             if "login" in resp.text and "logout" not in resp.text:
                 return False, "Not logged in"
-            # Check if already hidden? Hard to tell from item page (it might say "unhide"?)
-            # Usually if you go to item page of hidden story, you see "unhide" link?
-            # unhide link: href starts with unhide?id={item_id}
+            # Check for unhide link (indicates already hidden)
             unhide = soup.find(
                 "a", href=lambda x: x and x.startswith(f"unhide?id={item_id}")
             )
             if unhide:
                 return False, "Already hidden"
-
             return False, "Hide link not found"
 
         href = link.get("href")
-
         hide_resp = await self.client.get(f"/{href}")
-        if hide_resp.status_code == 200:
-            return True, "Hidden successfully"
-
-        return False, f"Hide failed: {hide_resp.status_code}"
+        success = hide_resp.status_code == HTTPStatus.OK
+        return (True, "Hidden successfully") if success else (
+            False, f"Hide failed: {hide_resp.status_code}"
+        )
 
     async def check_session(self) -> bool:
         """Verify if cookies are valid."""

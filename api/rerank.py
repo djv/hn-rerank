@@ -1,18 +1,19 @@
 import hashlib
+import os
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Optional
 
+# Suppress transformers backend warning (we use ONNX)
+os.environ["TRANSFORMERS_NO_ADVISORY_WARNINGS"] = "true"
+
 import numpy as np
 import onnxruntime as ort
-# Suppress transformers backend warning (we use ONNX)
-import os
-os.environ["TRANSFORMERS_NO_ADVISORY_WARNINGS"] = "true"
-from transformers import AutoTokenizer
-
 from numpy.typing import NDArray
 from sklearn.cluster import AgglomerativeClustering, KMeans
 from sklearn.metrics.pairwise import cosine_similarity
+from transformers import AutoTokenizer
 
 from api.constants import (
     CLUSTER_DISTANCE_THRESHOLD,
@@ -55,7 +56,7 @@ class ONNXEmbeddingModel:
                 if setup_script.exists():
                      subprocess.check_call([sys.executable, str(setup_script)])
                 else:
-                     print("setup_model.py not found! Please run the setup script manually.")
+                     print("setup_model.py not found! Run the setup script manually.")
             except Exception as e:
                 print(f"Failed to auto-setup model: {e}")
                 print("Please run 'uv run setup_model.py' manually.")
@@ -83,12 +84,14 @@ class ONNXEmbeddingModel:
         texts: list[str],
         normalize_embeddings: bool = True,
         batch_size: int = DEFAULT_EMBEDDING_BATCH_SIZE,
+        progress_callback: Callable[[int, int], None] | None = None,
     ) -> NDArray[np.float32]:
         all_embeddings = []
 
-        for i in range(0, len(texts), batch_size):
+        total_items = len(texts)
+        for i in range(0, total_items, batch_size):
             batch = texts[i : i + batch_size]
-            # Tokenize
+            # ... (tokenization and inference)
             inputs = self.tokenizer(
                 batch,
                 padding=True,
@@ -111,7 +114,9 @@ class ONNXEmbeddingModel:
             mask_expanded = np.expand_dims(attention_mask, -1).astype(float)
 
             sum_embeddings = np.sum(last_hidden_state * mask_expanded, axis=1)
-            sum_mask = np.clip(mask_expanded.sum(axis=1), a_min=EMBEDDING_MIN_CLIP, a_max=None)
+            sum_mask = np.clip(
+                mask_expanded.sum(axis=1), a_min=EMBEDDING_MIN_CLIP, a_max=None
+            )
 
             batch_embeddings = sum_embeddings / sum_mask
 
@@ -123,11 +128,14 @@ class ONNXEmbeddingModel:
 
             all_embeddings.append(batch_embeddings)
 
+            if progress_callback:
+                progress_callback(min(i + batch_size, total_items), total_items)
+
         return np.vstack(all_embeddings) if all_embeddings else np.array([])
 
 
 def init_model(model_name: str = "bge_model") -> ONNXEmbeddingModel:
-    global _model
+    global _model  # noqa: PLW0603
     if _model is None:
         _model = ONNXEmbeddingModel(model_name)
     return _model
@@ -145,7 +153,11 @@ def get_cache_key(text: str, model_name: str) -> Path:
     return CACHE_DIR / f"{hash_digest}.npy"
 
 
-def get_embeddings(texts: list[str], is_query: bool = False) -> NDArray[np.float32]:
+def get_embeddings(
+    texts: list[str],
+    is_query: bool = False,
+    progress_callback: Callable[[int, int], None] | None = None,
+) -> NDArray[np.float32]:
     """
     Generate embeddings for texts with model-appropriate prefixes.
 
@@ -155,6 +167,7 @@ def get_embeddings(texts: list[str], is_query: bool = False) -> NDArray[np.float
     Args:
         texts: List of text strings to embed
         is_query: If True, use query prefix (vs. document prefix)
+        progress_callback: Callback(current, total) for embedding progress
 
     Returns:
         Array of embeddings, shape (len(texts), embedding_dim)
@@ -170,7 +183,8 @@ def get_embeddings(texts: list[str], is_query: bool = False) -> NDArray[np.float
         prefix = "search_query: " if is_query else "search_document: "
     elif "bge" in model_id.lower():
         # BGE uses asymmetric prefixes (query-only)
-        prefix = "Represent this sentence for searching relevant passages: " if is_query else ""
+        bge_query_prefix = "Represent this sentence for searching relevant passages: "
+        prefix = bge_query_prefix if is_query else ""
     else:
         # Unknown model, no prefix
         prefix = ""
@@ -194,7 +208,11 @@ def get_embeddings(texts: list[str], is_query: bool = False) -> NDArray[np.float
 
     if indices_to_compute:
         texts_to_compute = [processed_texts[i] for i in indices_to_compute]
-        computed_vectors = model.encode(texts_to_compute, normalize_embeddings=True)
+        computed_vectors = model.encode(
+            texts_to_compute,
+            normalize_embeddings=True,
+            progress_callback=progress_callback,
+        )
 
         for i, original_idx in enumerate(indices_to_compute):
             vec = computed_vectors[i]
@@ -211,10 +229,11 @@ def cluster_and_reduce_auto(
     """
     Cluster embeddings using Agglomerative Clustering (Auto K).
     """
-    if len(embeddings) < 2:
+    min_cluster_size = 2
+    if len(embeddings) < min_cluster_size:
         return embeddings, list(range(len(embeddings))), list(range(len(embeddings)))
 
-    # distance_threshold with cosine metric means items with certain similarity can group.
+    # distance_threshold with cosine: items with similarity above threshold can group.
     # For cosine: distance = 1 - similarity, so threshold 0.8 = similarity > 0.2
     # linkage='complete' ensures all pairs in cluster meet threshold
     clustering = AgglomerativeClustering(
@@ -280,7 +299,8 @@ def rank_embeddings_maxsim(
     max_scores = np.max(sim_matrix, axis=0)
     best_fav_indices = np.argmax(sim_matrix, axis=0)
     results = []
-    for idx, (score, fav_idx) in enumerate(zip(max_scores, best_fav_indices)):
+    pairs = zip(max_scores, best_fav_indices, strict=True)
+    for idx, (score, fav_idx) in enumerate(pairs):
         results.append((idx, float(score), int(fav_idx)))
     results.sort(key=lambda x: x[1], reverse=True)
     return results
@@ -295,7 +315,7 @@ def rank_mmr(
     Maximal Marginal Relevance ranking with vectorized redundancy computation.
 
     Balances relevance to favorites vs. diversity among selected candidates.
-    Time complexity: O(n×m + n²) where n=candidates, m=favorites.
+    Time complexity: O(n*m + n^2) where n=candidates, m=favorites.
     """
     if len(cand_embeddings) == 0 or len(fav_embeddings) == 0:
         return []
@@ -326,7 +346,7 @@ def rank_mmr(
         else:
             redundancy = np.zeros(len(unselected_indices))
 
-        # MMR score = relevance - λ × redundancy
+        # MMR score = relevance - lambda * redundancy
         mmr_scores[unselected_indices] = (
             relevance_scores[unselected_indices] - diversity_penalty * redundancy
         )
@@ -410,7 +430,7 @@ def compute_recency_weights(
     Applies time-based decay to downweight older stories. More recent stories
     receive higher weights, making them more influential in semantic ranking.
 
-    Formula: weight = exp(-decay_rate × age_in_days)
+    Formula: weight = exp(-decay_rate * age_in_days)
 
     Args:
         story_timestamps: Unix timestamps of stories (seconds since epoch)
@@ -436,7 +456,7 @@ def compute_recency_weights(
     age_seconds = current_time - timestamps
     age_days = age_seconds / 86400  # Convert to days
 
-    # Exponential decay: exp(-decay_rate × age)
+    # Exponential decay: exp(-decay_rate * age)
     weights = np.exp(-decay_rate * age_days)
 
     # Clip to [0, 1] in case of future timestamps
@@ -445,7 +465,7 @@ def compute_recency_weights(
     return weights.astype(np.float32)
 
 
-def rank_stories(
+def rank_stories(  # noqa: PLR0912, PLR0913, PLR0915
     stories: list[dict],
     cand_embeddings: NDArray[np.float32] | None = None,
     positive_embeddings: NDArray[np.float32] | None = None,
@@ -454,30 +474,32 @@ def rank_stories(
     diversity_lambda: float = 0.0,
     hn_weight: float = 0.25,
     neg_weight: float = 0.6,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> list[tuple[int, float, int]]:
     """
     Rank stories using hybrid semantic + temporal scoring.
 
-    Hybrid Score = (1 - hn_weight) × Semantic + hn_weight × HN_Score
+    Hybrid Score = (1 - hn_weight) * Semantic + hn_weight * HN_Score
 
     Where:
-    - Semantic = WeightedMaxSim(Positive) - neg_weight × MaxSim(Negative)
+    - Semantic = WeightedMaxSim(Positive) - neg_weight * MaxSim(Negative)
     - HN_Score = Gravity-decayed score normalized to [0, 1]
     - Gravity formula: (P - 1)^0.8 / (T + 2)^1.8
 
     Args:
         stories: List of story dicts with keys: id, title, score, time, text_content
-        cand_embeddings: Precomputed candidate embeddings (computed from text_content if None)
+        cand_embeddings: Precomputed candidate embeddings (computed if None)
         positive_embeddings: Embeddings of user's favorited/upvoted stories
         negative_embeddings: Embeddings of user's hidden stories
-        positive_weights: Recency weights for positive stories, shape (len(positive_embeddings),)
+        positive_weights: Recency weights for positive stories
             - If provided, applies element-wise multiplication to similarity matrix
             - Higher weights = more influence on ranking
-            - Typical formula: exp(-decay × age_in_days) for exponential recency
+            - Typical formula: exp(-decay * age_in_days) for exponential recency
             - Example: [1.0, 0.95, 0.90, ...] for recent to older favorites
-        diversity_lambda: MMR diversity penalty ∈ [0, 1], 0 = no diversity
-        hn_weight: Weight for HN gravity score ∈ [0, 1], default 0.15
+        diversity_lambda: MMR diversity penalty in [0, 1], 0 = no diversity
+        hn_weight: Weight for HN gravity score in [0, 1], default 0.15
         neg_weight: Penalty multiplier for negative stories, default 0.5
+        progress_callback: Callback(current, total) for ranking progress
 
     Returns:
         List of (story_idx, hybrid_score, best_match_fav_idx) tuples, sorted descending
@@ -488,7 +510,9 @@ def rank_stories(
     # 1. Embeddings
     if cand_embeddings is None:
         cand_texts = [s.get("text_content", s.get("title", "")) for s in stories]
-        cand_embeddings = get_embeddings(cand_texts, is_query=False)
+        cand_embeddings = get_embeddings(
+            cand_texts, is_query=False, progress_callback=progress_callback
+        )
 
     if len(cand_embeddings) == 0:
         return []
@@ -545,44 +569,44 @@ def rank_stories(
 
     # 5. Ranking (MaxSim or MMR)
     results = []
-
     if diversity_lambda > 0:
-        # MMR Logic
-        selected_indices = []
+        # Use optimized vectorized MMR implementation
+        # rank_mmr returns (idx, relevance_score, best_fav_idx)
+        # We need to inject our hybrid_scores as the relevance signal
+        
+        # Compute candidate-to-candidate similarities (once, upfront)
+        cand_sim = cosine_similarity(cand_embeddings, cand_embeddings)
+
+        selected_mask = np.zeros(len(cand_embeddings), dtype=bool)
 
         for _ in range(len(cand_embeddings)):
-            best_mmr_score = -float("inf")
-            best_cand_idx = -1
-
-            for cand_idx in range(len(cand_embeddings)):
-                if cand_idx in selected_indices:
-                    continue
-
-                relevance = hybrid_scores[cand_idx]
-                redundancy = 0.0
-
-                if selected_indices:
-                    picked_embeds = cand_embeddings[selected_indices]
-                    cand_embed = cand_embeddings[cand_idx].reshape(1, -1)
-                    redundancy = np.max(cosine_similarity(cand_embed, picked_embeds)[0])
-
-                mmr_score = relevance - (diversity_lambda * redundancy)
-
-                if mmr_score > best_mmr_score:
-                    best_mmr_score = mmr_score
-                    best_cand_idx = cand_idx
-
-            if best_cand_idx != -1:
-                results.append(
-                    (
-                        best_cand_idx,
-                        float(hybrid_scores[best_cand_idx]),
-                        int(best_fav_indices[best_cand_idx]),
-                    )
-                )
-                selected_indices.append(best_cand_idx)
-            else:
+            mmr_scores = np.full(len(cand_embeddings), -np.inf)
+            unselected_indices = np.where(~selected_mask)[0]
+            if len(unselected_indices) == 0:
                 break
+
+            if np.any(selected_mask):
+                redundancy = np.max(cand_sim[unselected_indices][:, selected_mask], axis=1)
+            else:
+                redundancy = np.zeros(len(unselected_indices))
+
+            # MMR score = hybrid_relevance - lambda * redundancy
+            mmr_scores[unselected_indices] = (
+                hybrid_scores[unselected_indices] - diversity_lambda * redundancy
+            )
+
+            best_cand_idx = np.argmax(mmr_scores)
+            if mmr_scores[best_cand_idx] == -np.inf:
+                break
+
+            results.append(
+                (
+                    best_cand_idx,
+                    float(hybrid_scores[best_cand_idx]),
+                    int(best_fav_indices[best_cand_idx]),
+                )
+            )
+            selected_mask[best_cand_idx] = True
     else:
         # Simple Sort
         temp_list = []

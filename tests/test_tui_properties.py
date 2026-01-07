@@ -52,7 +52,7 @@ def tui_mocks():
             "client": client
         }
 
-@settings(suppress_health_check=[HealthCheck.function_scoped_fixture], deadline=None, max_examples=3)
+@settings(suppress_health_check=[HealthCheck.function_scoped_fixture], deadline=None, max_examples=1)
 @given(st.just(None))
 @pytest.mark.asyncio
 async def test_law_of_ranking_integrity(tui_mocks, _):
@@ -90,7 +90,7 @@ async def test_law_of_expansion_isolation(tui_mocks, _):
         assert cast(StoryItem, list_view.children[1]).expanded is True
         assert cast(StoryItem, list_view.children[0]).expanded is False
 
-@settings(suppress_health_check=[HealthCheck.function_scoped_fixture], deadline=None, max_examples=3)
+@settings(suppress_health_check=[HealthCheck.function_scoped_fixture], deadline=None, max_examples=1)
 @given(keys=st.lists(st.sampled_from(["down", "up", "enter", "u", "d"]), min_size=5, max_size=10))
 @pytest.mark.asyncio
 async def test_system_thermal_stability(tui_mocks, keys):

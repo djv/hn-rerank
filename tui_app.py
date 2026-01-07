@@ -35,19 +35,25 @@ from api.fetching import get_best_stories, get_user_data
 HN_USER = os.getenv("HN_USERNAME")
 HN_PASS = os.getenv("HN_PASSWORD")
 
+# Time constants
+_SECONDS_PER_MINUTE = 60
+_SECONDS_PER_HOUR = 3600
+_SECONDS_PER_DAY = 86400
+_COMMENT_TRUNCATE_LENGTH = 300
+
 
 def get_relative_time(timestamp: int | None) -> str:
     if not timestamp:
         return ""
     diff = int(time.time()) - timestamp
-    if diff < 60:
+    if diff < _SECONDS_PER_MINUTE:
         return "now"
-    elif diff < 3600:
-        return f"{diff // 60}m"
-    elif diff < 86400:
-        return f"{diff // 3600}h"
+    elif diff < _SECONDS_PER_HOUR:
+        return f"{diff // _SECONDS_PER_MINUTE}m"
+    elif diff < _SECONDS_PER_DAY:
+        return f"{diff // _SECONDS_PER_HOUR}h"
     else:
-        return f"{diff // 86400}d"
+        return f"{diff // _SECONDS_PER_DAY}d"
 
 
 class StoryItem(ListItem):
@@ -84,7 +90,10 @@ class StoryItem(ListItem):
                 if self.story.get("comments"):
                     for c in self.story["comments"][:8]:
                         # Truncate long comments
-                        text = c[:300] + "..." if len(c) > 300 else c
+                        if len(c) > _COMMENT_TRUNCATE_LENGTH:
+                            text = c[:_COMMENT_TRUNCATE_LENGTH] + "..."
+                        else:
+                            text = c
                         yield Static(text, classes="comment")
 
                 with Horizontal(classes="actions"):
@@ -133,47 +142,17 @@ class StoryItem(ListItem):
 class HNRerankTUI(App):
     CSS = """
     Screen { background: $surface; }
-    #loading {
-        display: none;
-        height: 1fr;
-        content-align: center middle;
-    }
-    #progress {
-        display: none;
-        dock: bottom;
-        height: 1;
-        margin: 0 0 1 0;
-    }
-    App.loading #loading {
-        display: block;
-    }
-    App.loading #progress {
-        display: block;
-    }
-    App.loading #story-list {
-        display: none;
-    }
-    #story-list { 
-        height: 1fr; 
-        background: transparent; 
-        padding: 1;
-        border: none;
-    }
-    StoryItem {
-        padding: 0 1;
-        margin: 0;
-        border: none;
-        height: 1;
-    }
-    StoryItem:focus {
-        background: $accent-muted;
-    }
+    #loading { display: none; height: 1fr; content-align: center middle; }
+    #progress { display: none; dock: bottom; height: 1; margin: 0 0 1 0; }
+    App.loading #loading { display: block; }
+    App.loading #progress { display: block; }
+    App.loading #story-list { display: none; }
+    #story-list { height: 1fr; background: transparent; padding: 1; border: none; }
+    StoryItem { padding: 0 1; margin: 0; border: none; height: 1; }
+    StoryItem:focus { background: $accent-muted; }
     StoryItem.is-expanded {
-        height: auto;
-        max-height: 70vh;
-        background: $surface;
-        border: tall $primary;
-        margin: 0;
+        height: auto; max-height: 70vh; background: $surface;
+        border: tall $primary; margin: 0;
     }
     StoryItem #row { height: 1; }
     StoryItem #match-score { width: 5; text-style: bold; color: $accent; }
@@ -181,17 +160,15 @@ class HNRerankTUI(App):
     StoryItem #hn-score { width: 7; color: $text-muted; text-align: right; }
     StoryItem #time { width: 6; color: $text-muted; text-align: right; }
     StoryItem #vote-icon { width: 2; }
-    
     StoryItem #details { display: none; padding: 1 2; }
-    StoryItem.is-expanded #details { display: block; height: auto; max-height: 60vh; overflow-y: auto; }
+    StoryItem.is-expanded #details {
+        display: block; height: auto; max-height: 60vh; overflow-y: auto;
+    }
     .meta { color: $text-muted; }
     .reason { background: $primary-muted; padding: 1; border-left: solid $primary; }
-    .comment { 
-        color: $text; 
-        background: $surface; 
-        padding: 0 1; 
-        margin-bottom: 1; 
-        border-left: solid $accent-muted;
+    .comment {
+        color: $text; background: $surface; padding: 0 1;
+        margin-bottom: 1; border-left: solid $accent-muted;
     }
     .section-title { margin-top: 1; color: $accent; }
     .actions { height: 3; margin-top: 1; }
@@ -266,7 +243,7 @@ class HNRerankTUI(App):
             self.query_one("#story-list", ListView).scroll_to_widget(event.item)
 
     @work
-    async def refresh_feed(self) -> None:
+    async def refresh_feed(self) -> None:  # noqa: PLR0915
         if not self.username:
             self.username = "pg"
 
@@ -290,7 +267,7 @@ class HNRerankTUI(App):
 
             self.notify("Fetching stories...")
             all_exclude = exclude_ids | self.session_excluded_ids
-            
+
             def fetch_progress(fetched: int, total: int):
                 # Map 0-100% of fetching to 30-70% of total progress
                 percent = 30 + int((fetched / total) * 40)
@@ -310,31 +287,69 @@ class HNRerankTUI(App):
             self.notify(f"Ranking {len(candidates)}...")
 
             def do_rank() -> list[tuple[int, float, int]]:
-                p_texts = [s["text_content"] for s in pos_data]
-                n_texts = [s["text_content"] for s in neg_data]
-                c_texts = [s["text_content"] for s in candidates]
+                try:
+                    p_texts = [s["text_content"] for s in pos_data]
+                    n_texts = [s["text_content"] for s in neg_data]
+                    c_texts = [s["text_content"] for s in candidates]
 
-                # Use actual timestamps for recency weighting
-                p_timestamps = [s.get("time", 0) for s in pos_data]
-                p_weights = (
-                    rerank.compute_recency_weights(p_timestamps)
-                    if p_timestamps
-                    else None
-                )
+                    p_timestamps = [s.get("time", 0) for s in pos_data]
+                    p_weights = (
+                        rerank.compute_recency_weights(p_timestamps)
+                        if p_timestamps
+                        else None
+                    )
 
-                p_emb = rerank.get_embeddings(p_texts, is_query=True)
-                n_emb = rerank.get_embeddings(n_texts, is_query=True)
-                c_emb = rerank.get_embeddings(c_texts, is_query=False)
+                    # Progress: 70-95% embeddings, 95-100% rank
+                    last_pct = 70
 
-                return rerank.rank_stories(
-                    candidates,
-                    cand_embeddings=c_emb,
-                    positive_embeddings=p_emb,
-                    negative_embeddings=n_emb,
-                    positive_weights=p_weights,
-                )
+                    def update_progress(pct: int) -> None:
+                        nonlocal last_pct
+                        if pct > last_pct:
+                            last_pct = pct
+                            self.call_from_thread(lambda p=pct: progress.update(progress=p))
 
-            progress.progress = 90
+                    total_texts = len(p_texts) + len(n_texts) + len(c_texts)
+                    done = 0
+
+                    def emb_progress(current: int, total: int) -> None:
+                        # current/total is for the current get_embeddings call
+                        pct = 70 + int(((done + current) / max(total_texts, 1)) * 25)
+                        update_progress(min(pct, 95))
+
+                    p_emb = rerank.get_embeddings(
+                        p_texts, is_query=True, progress_callback=emb_progress
+                    )
+                    done += len(p_texts)
+                    update_progress(70 + int((done / max(total_texts, 1)) * 25))
+
+                    n_emb = rerank.get_embeddings(
+                        n_texts, is_query=True, progress_callback=emb_progress
+                    )
+                    done += len(n_texts)
+                    update_progress(70 + int((done / max(total_texts, 1)) * 25))
+
+                    c_emb = rerank.get_embeddings(
+                        c_texts, is_query=False, progress_callback=emb_progress
+                    )
+                    update_progress(95)
+
+                    # Final ranking (fast, in-memory)
+                    results = rerank.rank_stories(
+                        candidates,
+                        cand_embeddings=c_emb,
+                        positive_embeddings=p_emb,
+                        negative_embeddings=n_emb,
+                        positive_weights=p_weights,
+                    )
+                    update_progress(100)
+                    return results
+                except Exception as e:
+                    # Log the error to console/file if possible, or re-raise
+                    # In a thread, printing might not show up well in TUI.
+                    # We re-raise so asyncio.to_thread catches it.
+                    raise e
+
+            progress.progress = 70
             ranked = await asyncio.to_thread(do_rank)
 
             list_view = self.query_one("#story-list", ListView)
@@ -366,7 +381,8 @@ class HNRerankTUI(App):
             progress.display = False
 
     def _get_current(self) -> StoryItem | None:
-        return cast(StoryItem | None, self.query_one("#story-list", ListView).highlighted_child)
+        lv = self.query_one("#story-list", ListView)
+        return cast(StoryItem | None, lv.highlighted_child)
 
     def action_toggle_expand(self) -> None:
         if item := self._get_current():
@@ -437,8 +453,8 @@ class HNRerankTUI(App):
 
 async def run_batch(username: str, count: int, fmt: str) -> None:
     """Run in batch mode without TUI."""
-    import json
-    import sys
+    import json  # noqa: PLC0415
+    import sys  # noqa: PLC0415
 
     if not username:
         username = "pg"
@@ -490,7 +506,7 @@ async def run_batch(username: str, count: int, fmt: str) -> None:
         reason = ""
         if fav_idx != -1 and fav_idx < len(pos_data):
             reason = f"Matches: {pos_data[fav_idx]['title']}"
-            
+
         results.append({
             "id": story["id"],
             "title": story["title"],
@@ -521,7 +537,7 @@ def main():
     """Entry point for hn-rerank CLI."""
     parser = argparse.ArgumentParser(description="HN Reranker")
     parser.add_argument("username", nargs="?", default=get_username())
-    parser.add_argument("-b", "--batch", action="store_true", help="Batch mode (no TUI)")
+    parser.add_argument("-b", "--batch", action="store_true", help="Batch mode")
     parser.add_argument("-n", "--count", type=int, default=20, help="Results count")
     parser.add_argument(
         "-f", "--format", choices=["text", "json", "urls"], default="text"

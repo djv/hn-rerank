@@ -30,6 +30,7 @@ dev = [
     "hypothesis>=6.92.0",
     "respx>=0.22.0",
     "ruff>=0.14.10",
+    "pytest-xdist>=3.8.0",
 ]
 
 [tool.pytest.ini_options]
@@ -37,6 +38,7 @@ pythonpath = "."
 timeout = 30
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+addopts = "-n auto --dist worksteal -q"
 
 [tool.ruff]
 line-length = 88

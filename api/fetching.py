@@ -5,7 +5,9 @@ import asyncio
 import json
 import re
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from http import HTTPStatus
 from pathlib import Path
 
 import httpx
@@ -43,7 +45,9 @@ async def fetch_article_text(url: str) -> str:
             downloaded = trafilatura.fetch_url(url)
             if downloaded:
                 # Extract text, favoring clean and concise output
-                return trafilatura.extract(downloaded, include_comments=False, include_tables=False)
+                return trafilatura.extract(
+                    downloaded, include_comments=False, include_tables=False
+                )
             return ""
 
         content = await asyncio.to_thread(_download_and_extract)
@@ -73,7 +77,7 @@ async def fetch_story_with_comments(
         async with EXTERNAL_SEM:
             resp = await client.get(f"{ALGOLIA_API_BASE}/items/{story_id}", timeout=5.0)
 
-        if resp.status_code == 200:
+        if resp.status_code == HTTPStatus.OK:
             data = resp.json()
             story = {
                 "id": data.get("id"),
@@ -175,7 +179,7 @@ async def get_best_stories(
     limit: int,
     days: int = ALGOLIA_DEFAULT_DAYS,
     exclude_ids: set[int] | None = None,
-    progress_callback: callable = None,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> list[dict]:
     if exclude_ids is None:
         exclude_ids = set()
@@ -189,7 +193,7 @@ async def get_best_stories(
             "hitsPerPage": limit,
         }
         resp = await client.get(f"{ALGOLIA_API_BASE}/search", params=params)
-        if resp.status_code != 200:
+        if resp.status_code != HTTPStatus.OK:
             return []
 
         hit_ids = [
@@ -197,7 +201,7 @@ async def get_best_stories(
             for h in resp.json().get("hits", [])
             if int(h["objectID"]) not in exclude_ids
         ]
-        
+
         results = []
         batch_size = 50
         for i in range(0, len(hit_ids), batch_size):
@@ -208,5 +212,5 @@ async def get_best_stories(
             results.extend([s for s in batch_res if s])
             if progress_callback:
                 progress_callback(len(results), len(hit_ids))
-                
+
         return results
