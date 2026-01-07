@@ -16,7 +16,11 @@ from api.constants import (
     EMBEDDING_CACHE_DIR,
     EMBEDDING_MIN_CLIP,
     HN_SCORE_POINTS_EXP,
+    HN_SCORE_TIME_EXP,
+    HN_SCORE_TIME_OFFSET,
+    RECENCY_DECAY_RATE,
     TEXT_CONTENT_MAX_LENGTH,
+    SEMANTIC_MATCH_THRESHOLD,
 )
 
 # Global singleton for the model
@@ -240,6 +244,13 @@ def rank_stories(
 
         semantic_scores = np.max(sim_pos, axis=0)
         best_fav_indices = np.argmax(sim_pos, axis=0)
+        
+        # Apply strict threshold to filter noise
+        # If the best match is < THRESHOLD, we treat it as no match (0.0)
+        # and set fav_idx to -1 so the UI doesn't show a bogus reason.
+        low_sim_mask = semantic_scores < SEMANTIC_MATCH_THRESHOLD
+        semantic_scores[low_sim_mask] = 0.0
+        best_fav_indices[low_sim_mask] = -1
 
     # 2. Negative Signal (Penalty)
     if negative_embeddings is not None and len(negative_embeddings) > 0:

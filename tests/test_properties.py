@@ -73,7 +73,8 @@ def test_ranking_invariants(num_candidates, num_favorites):
         for idx, score, fav_idx in results:
             assert 0 <= idx < num_candidates
             assert score <= last_score + 1e-7
-            assert 0 <= fav_idx < num_favorites
+            # fav_idx can be -1 if below threshold
+            assert -1 <= fav_idx < num_favorites
             last_score = score
 
 
