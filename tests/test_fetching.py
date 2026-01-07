@@ -101,6 +101,9 @@ async def test_get_best_stories_filtering():
         mock_cache = MagicMock()
         mp.setattr("api.fetching.CACHE_PATH", mock_cache)
         mock_cache.__truediv__.return_value.exists.return_value = False
+        # Mock atomic write and eviction to avoid temp file issues
+        mp.setattr("api.fetching._atomic_write_json", lambda p, d: None)
+        mp.setattr("api.fetching._evict_old_cache_files", lambda: None)
 
         stories = await get_best_stories(limit=limit, exclude_ids=exclude)
 

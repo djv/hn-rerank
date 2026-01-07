@@ -15,10 +15,8 @@ from api.constants import (
     DEFAULT_EMBEDDING_BATCH_SIZE,
     EMBEDDING_CACHE_DIR,
     EMBEDDING_MIN_CLIP,
+    EMBEDDING_MODEL_VERSION,
     HN_SCORE_POINTS_EXP,
-    HN_SCORE_TIME_EXP,
-    HN_SCORE_TIME_OFFSET,
-    RECENCY_DECAY_RATE,
     TEXT_CONTENT_MAX_LENGTH,
     SEMANTIC_MATCH_THRESHOLD,
 )
@@ -140,7 +138,8 @@ def get_embeddings(
     expected_dim: int = 768 if "base" in model.model_id.lower() else 384
 
     for idx, text in enumerate(processed_texts):
-        h: str = hashlib.sha256(text.encode()).hexdigest()
+        # Include model version in hash to invalidate cache on model change
+        h: str = hashlib.sha256(f"{EMBEDDING_MODEL_VERSION}:{text}".encode()).hexdigest()
         cache_path: Path = CACHE_DIR / f"{h}.npy"
         if cache_path.exists():
             try:
@@ -177,7 +176,7 @@ def get_embeddings(
             vec_res: NDArray[np.float32] = computed[i]
             vectors[original_idx] = vec_res
             h_res: str = hashlib.sha256(
-                processed_texts[original_idx].encode()
+                f"{EMBEDDING_MODEL_VERSION}:{processed_texts[original_idx]}".encode()
             ).hexdigest()
             np.save(CACHE_DIR / f"{h_res}.npy", vec_res)
 
@@ -217,11 +216,14 @@ def rank_stories(
     positive_embeddings: Optional[NDArray[np.float32]],
     negative_embeddings: Optional[NDArray[np.float32]] = None,
     positive_weights: Optional[NDArray[np.float32]] = None,
-    hn_weight: float = 0.25,
+    hn_weight: float = 0.05,
     neg_weight: float = 0.6,
     diversity_lambda: float = 0.3,
     progress_callback: Optional[Callable[[int, int], None]] = None,
-) -> list[tuple[int, float, int]]:
+) -> list[tuple[int, float, int, float]]:
+    """
+    Returns list of (index, hybrid_score, best_fav_index, max_sim_score).
+    """
     if not stories:
         return []
 
@@ -231,18 +233,40 @@ def rank_stories(
     )
 
     semantic_scores: NDArray[np.float32]
+    max_sim_scores: NDArray[np.float32]
     best_fav_indices: NDArray[np.int64]
+    
     if positive_embeddings is None or len(positive_embeddings) == 0:
         # If no positive signals, use HN scores primarily
         semantic_scores = np.zeros(len(stories), dtype=np.float32)
+        max_sim_scores = np.zeros(len(stories), dtype=np.float32)
         best_fav_indices = np.full(len(stories), -1, dtype=np.int64)
     else:
-        # 1. Semantic Score (MaxSim)
+        # 1. Semantic Score (Hybrid: MaxSim + Top-K Mean)
+        # We combine the single best match (MaxSim) with the average of the top 3 matches (Density).
+        # This rewards "Dense Clusters" of interest (consistent upvotes) while not completely
+        # killing "One-Off" interests (high specific match).
+        
         sim_pos: NDArray[np.float32] = cosine_similarity(positive_embeddings, cand_emb)
         if positive_weights is not None:
             sim_pos = sim_pos * positive_weights[:, np.newaxis]
 
-        semantic_scores = np.max(sim_pos, axis=0)
+        # A. MaxSim (Nearest Neighbor)
+        max_sim = np.max(sim_pos, axis=0)
+        max_sim_scores = max_sim
+        
+        # B. Top-K Mean (Robustness/Density)
+        k = 3
+        if sim_pos.shape[0] >= k:
+             # partition moves the top k elements to the end of the axis
+             top_k = np.partition(sim_pos, -k, axis=0)[-k:, :]
+             mean_top_k = np.mean(top_k, axis=0)
+        else:
+             mean_top_k = max_sim
+
+        # Combined Score
+        semantic_scores = (max_sim + mean_top_k) / 2.0
+        
         best_fav_indices = np.argmax(sim_pos, axis=0)
         
         # Apply type-based penalty (Tell/Ask HN are often chatty/marginal)
@@ -250,6 +274,7 @@ def rank_stories(
             t = str(s.get("title", "")).lower()
             if t.startswith("tell hn:") or t.startswith("ask hn:"):
                 semantic_scores[i] *= 0.85
+                max_sim_scores[i] *= 0.85
 
         # Apply strict threshold to filter noise
         # If the best match is < THRESHOLD, we treat it as no match (0.0)
@@ -257,6 +282,9 @@ def rank_stories(
         low_sim_mask = semantic_scores < SEMANTIC_MATCH_THRESHOLD
         semantic_scores[low_sim_mask] = 0.0
         best_fav_indices[low_sim_mask] = -1
+        # We also zero out the display score if it didn't pass the threshold filter
+        # so we don't show "90% match" on something we ranked as 0.0
+        max_sim_scores[low_sim_mask] = 0.0
 
     # 2. Negative Signal (Penalty)
     if negative_embeddings is not None and len(negative_embeddings) > 0:
@@ -280,7 +308,7 @@ def rank_stories(
     ) * semantic_scores + hn_weight * hn_scores
 
     # 5. Diversity (MMR)
-    results: list[tuple[int, float, int]] = []
+    results: list[tuple[int, float, int, float]] = []
     selected_mask: NDArray[np.bool_] = np.zeros(len(cand_emb), dtype=bool)
     cand_sim: NDArray[np.float32] = cosine_similarity(cand_emb, cand_emb)
 
@@ -301,7 +329,12 @@ def rank_stories(
         best_idx: int = int(unselected[np.argmax(mmr_scores)])
 
         results.append(
-            (best_idx, float(hybrid_scores[best_idx]), int(best_fav_indices[best_idx]))
+            (
+                best_idx,
+                float(hybrid_scores[best_idx]),
+                int(best_fav_indices[best_idx]),
+                float(max_sim_scores[best_idx]),
+            )
         )
         selected_mask[best_idx] = True
 
