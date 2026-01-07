@@ -6,6 +6,7 @@ import os
 import time
 import traceback
 import webbrowser
+from urllib.parse import urlparse
 from typing import ClassVar, cast
 
 from textual import on, work
@@ -56,6 +57,20 @@ def get_relative_time(timestamp: int | None) -> str:
         return f"{diff // _SECONDS_PER_DAY}d"
 
 
+def get_domain(url: str | None) -> str:
+    if not url:
+        return ""
+    try:
+        netloc = urlparse(url).netloc
+        if netloc.startswith("www."):
+            netloc = netloc[4:]
+        if netloc == "news.ycombinator.com":
+            return ""
+        return netloc
+    except Exception:
+        return ""
+
+
 class StoryItem(ListItem):
     expanded = reactive(False)
     vote_status: reactive[str | None] = reactive(None)  # 'up', 'down', None
@@ -71,8 +86,12 @@ class StoryItem(ListItem):
         with Vertical(id="wrapper"):
             with Horizontal(id="row"):
                 yield Label(f"{int(self.score_val * 100)}%", id="match-score")
+
+                domain = get_domain(self.story.get("url"))
+                domain_str = f" [dim]({domain})[/dim]" if domain else ""
+
                 yield Label(
-                    f"[@click=app.open_article]{self.story['title']}[/]",
+                    f"[@click=app.open_article]{self.story['title']}[/]{domain_str}",
                     id="story-title",
                 )
                 yield Label(f"{self.story.get('score', 0)}p", id="hn-score")
