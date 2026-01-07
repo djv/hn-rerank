@@ -138,11 +138,21 @@ def get_embeddings(
         else:
             vectors.append(None)
             to_compute_indices.append(idx)
+            
+    # Report progress for cached items immediately
+    cached_count = len(texts) - len(to_compute_indices)
+    if progress_callback and cached_count > 0:
+        progress_callback(cached_count, len(texts))
 
     if to_compute_indices:
+        # Wrap the original callback to add the offset from cached items
+        def wrapped_callback(curr, total):
+            if progress_callback:
+                progress_callback(cached_count + curr, len(texts))
+
         computed = model.encode(
             [processed_texts[i] for i in to_compute_indices],
-            progress_callback=progress_callback,
+            progress_callback=wrapped_callback,
         )
         for i, original_idx in enumerate(to_compute_indices):
             vec = computed[i]
