@@ -18,7 +18,7 @@ STORY_CACHE_DIR = ".cache/stories"
 USER_CACHE_DIR = ".cache/user"
 STORY_CACHE_TTL = 86400
 USER_CACHE_TTL = 1800  # 30 minutes
-STORY_CACHE_MAX_FILES = 500  # LRU eviction threshold
+STORY_CACHE_MAX_FILES = 2000  # LRU eviction threshold (~18MB)
 
 # Concurrency
 EXTERNAL_REQUEST_SEMAPHORE = 200
