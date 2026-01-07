@@ -70,11 +70,12 @@ def test_ranking_invariants(num_candidates, num_favorites):
         assert len(results) == num_candidates
 
         last_score = float("inf")
-        for idx, score, fav_idx in results:
+        for idx, score, fav_idx, max_sim in results:
             assert 0 <= idx < num_candidates
             assert score <= last_score + 1e-7
             # fav_idx can be -1 if below threshold
             assert -1 <= fav_idx < num_favorites
+            assert -1.0 <= max_sim <= 1.0 or max_sim == 0.0
             last_score = score
 
 
@@ -207,7 +208,7 @@ def test_hn_points_normalization(scores):
         # Sort results by original story index to check points
 
 
-        idx_to_score = {idx: score for idx, score, _ in results}
+        idx_to_score = {idx: score for idx, score, *_ in results}
 
 
         

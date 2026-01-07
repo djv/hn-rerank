@@ -49,7 +49,7 @@ async def test_generate_html_integration(tmp_path):
 
         mock_emb.return_value = np.zeros((1, 768))
         mock_weights.return_value = np.ones(1)
-        mock_rank.return_value = [(0, 0.95, 0)]  # (idx, score, fav_idx)
+        mock_rank.return_value = [(0, 0.95, 0, 0.95)]  # (idx, score, fav_idx, max_sim)
 
         # Mock sys.argv
         with patch.object(
@@ -61,6 +61,6 @@ async def test_generate_html_integration(tmp_path):
         assert output_file.exists()
         html_content = output_file.read_text()
         assert "Integrated Test" in html_content
-        assert "95% Match" in html_content
+        assert "95%" in html_content
         assert username in html_content
         assert "Integration works" in html_content

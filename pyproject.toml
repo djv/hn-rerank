@@ -1,7 +1,7 @@
 [project]
 name = "hn-rerank"
 version = "0.1.0"
-description = "Add your description here"
+description = "Personalized Hacker News reranking using local semantic embeddings"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -24,3 +24,6 @@ dependencies = [
     "types-beautifulsoup4>=4.12.0.20250516",
     "types-tqdm>=4.67.0.20250809",
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

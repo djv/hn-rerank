@@ -2,7 +2,49 @@ import pytest
 import respx
 from httpx import Response
 from unittest.mock import MagicMock
-from api.fetching import get_best_stories, ALGOLIA_BASE
+from api.fetching import get_best_stories, _clean_text, ALGOLIA_BASE, HN_BASE
+
+
+class TestCleanText:
+    """Edge case tests for _clean_text function."""
+
+    def test_empty_string(self):
+        assert _clean_text("") is None
+
+    def test_braille_only(self):
+        # Braille pattern range: U+2800-U+28FF
+        assert _clean_text("⠁⠃⠉⠙⠑") is None
+
+    def test_box_drawing_only(self):
+        # Box drawing range: U+2500-U+257F
+        assert _clean_text("─│┌┐└┘├┤") is None
+
+    def test_short_string(self):
+        # <= 20 chars should be filtered
+        assert _clean_text("Short text here.") is None
+        assert _clean_text("Exactly 20 chars!!!") is None
+
+    def test_low_alphanumeric_ratio(self):
+        # < 50% alphanumeric should be filtered
+        assert _clean_text("!@#$%^&*()!@#$%^&*()!@#$%") is None
+        assert _clean_text("--- === +++ ~~~ >>> <<<") is None
+
+    def test_excessive_punctuation(self):
+        # 3+ repeated punctuation chars like ### should be stripped
+        result = _clean_text("Hello world ### this is a test message")
+        assert result is not None
+        assert "###" not in result
+
+    def test_valid_text_passes(self):
+        text = "This is a valid comment with enough content."
+        assert _clean_text(text) == text
+
+    def test_mixed_content(self):
+        # Valid text with some braille should clean and pass
+        text = "This is valid text ⠁⠃⠉ with braille mixed in here."
+        result = _clean_text(text)
+        assert result is not None
+        assert "⠁" not in result
 
 
 @pytest.mark.asyncio
@@ -27,18 +69,26 @@ async def test_get_best_stories_filtering():
         )
     )
 
-    # Mock individual item fetches
+    # Mock individual item fetches (HN HTML)
     for sid in ["1", "2", "3", "4"]:
-        respx.get(f"{ALGOLIA_BASE}/items/{sid}").mock(
+        html_content = f"""
+        <html>
+        <body>
+            <span class="titleline"><a href="http://example.com/story/{sid}">Story {sid}</a></span>
+            <span class="score">100 points</span>
+            <span class="age" title="2020-09-13T12:26:40 1600000000"><a href="item?id={sid}">1 year ago</a></span>
+            <table>
+                <tr class="comtr">
+                    <td><div class="commtext">Comment 1 for {sid}</div></td>
+                </tr>
+            </table>
+        </body>
+        </html>
+        """
+        respx.get(f"{HN_BASE}/item?id={sid}").mock(
             return_value=Response(
                 200,
-                json={
-                    "id": int(sid),
-                    "title": f"Story {sid}",
-                    "points": 100,
-                    "created_at_i": 1600000000,
-                    "children": [],
-                },
+                text=html_content,
             )
         )
 
