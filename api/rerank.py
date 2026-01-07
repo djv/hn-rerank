@@ -245,6 +245,12 @@ def rank_stories(
         semantic_scores = np.max(sim_pos, axis=0)
         best_fav_indices = np.argmax(sim_pos, axis=0)
         
+        # Apply type-based penalty (Tell/Ask HN are often chatty/marginal)
+        for i, s in enumerate(stories):
+            t = str(s.get("title", "")).lower()
+            if t.startswith("tell hn:") or t.startswith("ask hn:"):
+                semantic_scores[i] *= 0.85
+
         # Apply strict threshold to filter noise
         # If the best match is < THRESHOLD, we treat it as no match (0.0)
         # and set fav_idx to -1 so the UI doesn't show a bogus reason.
