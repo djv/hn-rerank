@@ -17,11 +17,11 @@ EMBEDDING_CACHE_DIR = ".cache/embeddings"
 STORY_CACHE_DIR = ".cache/stories"
 USER_CACHE_DIR = ".cache/user"
 STORY_CACHE_TTL = 86400
-USER_CACHE_TTL = 1800  # 30 minutes
+USER_CACHE_TTL = 120  # 2 minutes
 STORY_CACHE_MAX_FILES = 10000  # LRU eviction threshold
 
 # Concurrency
-EXTERNAL_REQUEST_SEMAPHORE = 50  # Algolia is resilient, can increase
+EXTERNAL_REQUEST_SEMAPHORE = 10  # Reduced to avoid API throttling
 
 # Comment Pool
 MIN_STORY_COMMENTS = 10  # Filter in Algolia query + fetch validation
@@ -32,7 +32,7 @@ RANKING_DEPTH_PENALTY = 10
 MIN_COMMENT_LENGTH = 50  # Filter short low-value comments
 
 # User Limits
-MAX_USER_STORIES = 50
+MAX_USER_STORIES = 1000
 
 # Discovery Pool
 ALGOLIA_MIN_POINTS = 5

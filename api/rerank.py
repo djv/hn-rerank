@@ -219,7 +219,7 @@ def rank_stories(
     positive_weights: Optional[NDArray[np.float32]] = None,
     hn_weight: float = 0.05,
     neg_weight: float = 0.6,
-    diversity_lambda: float = 0.3,
+    diversity_lambda: float = 0.15,
     progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> list[tuple[int, float, int, float]]:
     """
@@ -269,13 +269,6 @@ def rank_stories(
         semantic_scores = (max_sim + mean_top_k) / 2.0
 
         best_fav_indices = np.argmax(sim_pos, axis=0)
-
-        # Apply type-based penalty (Tell/Ask HN are often chatty/marginal)
-        for i, s in enumerate(stories):
-            t = str(s.get("title", "")).lower()
-            if t.startswith("tell hn:") or t.startswith("ask hn:"):
-                semantic_scores[i] *= 0.85
-                max_sim_scores[i] *= 0.85
 
         # Apply strict threshold to filter noise
         # If the best match is < THRESHOLD, we treat it as no match (0.0)
