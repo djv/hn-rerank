@@ -98,15 +98,15 @@ STORY_CARD_TEMPLATE: str = """
                 <span class="px-1.5 py-0.5 rounded bg-hn/10 text-hn text-[10px] font-bold">
                     {score}%
                 </span>
-                <span class="text-[10px] text-stone-400 font-mono">{points} pts</span>
-                <span class="text-[10px] text-stone-400 font-mono">{time_ago}</span>
+                <span class="text-[10px] text-stone-500 font-mono">{points} pts</span>
+                <span class="text-[10px] text-stone-500 font-mono">{time_ago}</span>
             </div>
             <h2 class="text-sm font-semibold text-stone-900 group-hover:text-hn transition-colors leading-snug">
-                <a href="{url}" target="_blank">{title}</a>
+                <a href="{url}" target="_blank" rel="noopener noreferrer">{title}</a>
             </h2>
         </div>
-        <a href="{hn_url}" target="_blank" class="shrink-0 p-1 rounded bg-stone-100 text-stone-400 hover:bg-hn hover:text-white transition-all" title="HN">
-            <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2L2 12h3v8h6v-6h2v6h6v-8h3L12 2z"/></svg>
+        <a href="{hn_url}" target="_blank" rel="noopener noreferrer" class="shrink-0 p-1 rounded bg-stone-100 text-stone-400 hover:bg-hn hover:text-white transition-all" title="HN" aria-label="View on Hacker News">
+            <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2L2 12h3v8h6v-6h2v6h6v-8h3L12 2z"/></svg>
         </a>
     </div>
     {reason_html}
@@ -123,7 +123,7 @@ def generate_story_html(story: dict[str, Any]) -> str:
         escaped_reason: str = html.escape(str(story["reason"]), quote=False)
         reason_url: str = story.get("reason_url", "")
         if reason_url:
-            reason_html = f'<p class="text-[11px] text-emerald-600 mb-1">↳ <a href="{reason_url}" target="_blank" class="hover:underline">{escaped_reason}</a></p>'
+            reason_html = f'<p class="text-[11px] text-emerald-600 mb-1">↳ <a href="{reason_url}" target="_blank" rel="noopener noreferrer" class="hover:underline">{escaped_reason}</a></p>'
         else:
             reason_html = f'<p class="text-[11px] text-emerald-600 mb-1">↳ {escaped_reason}</p>'
 
