@@ -74,7 +74,11 @@ async def test_get_best_stories_filtering():
     for sid in ["1", "2", "3", "4"]:
         # Need 10+ comments to pass minimum threshold (50+ chars each)
         comments = [
-            {"type": "comment", "text": f"Comment {i} for story {sid} with enough text to pass the minimum length filter.", "children": []}
+            {
+                "type": "comment",
+                "text": f"Comment {i} for story {sid} with enough text to pass the minimum length filter.",
+                "children": [],
+            }
             for i in range(12)
         ]
         respx.get(f"{ALGOLIA_BASE}/items/{sid}").mock(
@@ -140,7 +144,11 @@ async def test_get_best_stories_pagination():
 
     # Mock item fetches - all return valid stories with 10+ comments
     comments = [
-        {"type": "comment", "text": f"Comment {i} with enough text to pass the minimum length filter requirement.", "children": []}
+        {
+            "type": "comment",
+            "text": f"Comment {i} with enough text to pass the minimum length filter requirement.",
+            "children": [],
+        }
         for i in range(12)
     ]
     respx.get(url__regex=rf"{ALGOLIA_BASE}/items/\d+").mock(
