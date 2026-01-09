@@ -53,7 +53,7 @@ class HNClient:
 
         return False, error_msg
 
-    async def _scrape_ids(self, path: str, max_pages: int = 3) -> set[int]:
+    async def _scrape_ids(self, path: str, max_pages: int = 10) -> set[int]:
         ids: set[int] = set()
         for p in range(1, max_pages + 1):
             url: str = f"{path}&p={p}" if "?" in path else f"{path}?p={p}"

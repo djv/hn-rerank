@@ -417,3 +417,97 @@ def test_rank_stories_hidden_penalty():
         # Penalty (sim with neg [1,0]) = 1.0 * 0.5 = 0.5
         # Final score should be roughly -0.5
         assert score_penalized == pytest.approx(score_baseline - 0.5)
+
+
+# =============================================================================
+# Additional Weight and Bound Properties
+# =============================================================================
+
+
+@given(
+    hn_weight=st.floats(min_value=0.0, max_value=1.0),
+    diversity_lambda=st.floats(min_value=0.0, max_value=1.0),
+)
+@settings(deadline=None)
+def test_weight_parameters_produce_bounded_scores(hn_weight, diversity_lambda):
+    """
+    Invariant: Final scores should always be in reasonable bounds
+    regardless of weight parameter combinations.
+    """
+    stories = [
+        {"id": i, "score": (i + 1) * 100, "time": 1000, "text_content": f"S{i}"}
+        for i in range(3)
+    ]
+    pos_emb = np.random.randn(2, 384).astype(np.float32)
+    cand_emb = np.random.randn(3, 384).astype(np.float32)
+
+    import api.rerank
+
+    with pytest.MonkeyPatch().context() as mp:
+        mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: cand_emb)
+
+        results = rank_stories(
+            stories,
+            positive_embeddings=pos_emb,
+            hn_weight=hn_weight,
+            diversity_lambda=diversity_lambda,
+        )
+
+        for idx, score, fav_idx, max_sim in results:
+            # Scores should be bounded (can go slightly negative with neg signals)
+            assert -2.0 <= score <= 2.0
+            # max_sim is cosine similarity, bounded [-1, 1]
+            assert -1.0 <= max_sim <= 1.0 or max_sim == 0.0
+
+
+@given(st.lists(st.integers(min_value=0, max_value=100000), min_size=1, max_size=20))
+def test_hn_normalization_extreme_values(scores):
+    """
+    Invariant: HN score normalization handles extreme values without overflow.
+    """
+    from api.constants import HN_SCORE_POINTS_EXP
+
+    # Simulate the normalization: max(points-1, 0)^exp, then /max
+    points = np.array(scores, dtype=np.float64)
+    hn_scores = np.power(np.maximum(points - 1, 0), HN_SCORE_POINTS_EXP)
+    if hn_scores.max() > 0:
+        hn_scores /= hn_scores.max()
+
+    # All should be in [0, 1]
+    assert np.all(hn_scores >= 0.0)
+    assert np.all(hn_scores <= 1.0)
+    # No NaN or Inf
+    assert np.all(np.isfinite(hn_scores))
+
+
+def test_mmr_with_identical_candidates():
+    """
+    Invariant: With identical candidates, MMR still returns all items.
+    """
+    # All candidates have identical embeddings
+    cand_emb = np.ones((5, 384), dtype=np.float32)
+    cand_emb = cand_emb / np.linalg.norm(cand_emb[0])
+
+    pos_emb = cand_emb[:1]  # Matches all candidates equally
+
+    stories = [
+        {"id": i, "score": 100 + i, "time": 1000, "text_content": f"S{i}"}
+        for i in range(5)
+    ]
+
+    import api.rerank
+
+    with pytest.MonkeyPatch().context() as mp:
+        mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: cand_emb)
+
+        results = rank_stories(
+            stories,
+            positive_embeddings=pos_emb,
+            diversity_lambda=0.5,
+            hn_weight=0.1,
+        )
+
+        # Should still return all items
+        assert len(results) == 5
+        # All indices present
+        assert set(r[0] for r in results) == {0, 1, 2, 3, 4}

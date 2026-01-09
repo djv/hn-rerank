@@ -204,7 +204,7 @@ async def get_best_stories(
     WINDOW_DAYS = 3  # Days per window (smaller = more queries but finer control)
     hits: set[int] = set()
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=30.0) as client:
         now = datetime.now(UTC)
 
         # Iterate through time windows from newest to oldest

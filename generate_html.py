@@ -5,6 +5,7 @@ import getpass
 import html
 import os
 import time
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -13,6 +14,8 @@ import numpy as np
 from numpy.typing import NDArray
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
 from rich.console import Console
+
+from sklearn.metrics.pairwise import cosine_similarity
 
 from api import rerank
 from api.client import HNClient
@@ -49,6 +52,7 @@ HTML_TEMPLATE: str = """
             body {{ @apply bg-stone-50 text-stone-800 antialiased; }}
         }}
         .story-card {{ @apply bg-white border border-stone-200 rounded-lg p-3 shadow-sm transition-all hover:border-hn hover:shadow-md; }}
+        .cluster-chip {{ @apply px-2 py-1 bg-white border border-stone-200 rounded-full text-xs text-stone-600 hover:border-hn hover:text-hn transition-colors cursor-default; }}
     </style>
 </head>
 <body class="p-2 md:p-4">
@@ -58,7 +62,7 @@ HTML_TEMPLATE: str = """
                 <h1 class="text-2xl font-black text-stone-900 tracking-tight">
                     HN <span class="text-hn">Rerank</span>
                 </h1>
-                <p class="text-stone-500 text-xs">@{username}</p>
+                <p class="text-stone-500 text-xs">@{username} &bull; <a href="clusters.html" class="text-hn hover:underline">{n_clusters} interest clusters</a></p>
             </div>
             <p class="text-[10px] text-stone-400 font-mono">{timestamp}</p>
         </header>
@@ -73,6 +77,81 @@ HTML_TEMPLATE: str = """
     </div>
 </body>
 </html>
+"""
+
+CLUSTERS_PAGE_TEMPLATE: str = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interest Clusters | {username}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {{
+            theme: {{
+                extend: {{
+                    colors: {{
+                        hn: '#ff6600',
+                    }}
+                }}
+            }}
+        }}
+    </script>
+    <style type="text/tailwindcss">
+        @layer base {{
+            body {{ @apply bg-stone-50 text-stone-800 antialiased; }}
+        }}
+        .cluster-card {{ @apply bg-white border border-stone-200 rounded-lg shadow-sm; }}
+    </style>
+</head>
+<body class="p-2 md:p-4">
+    <div class="max-w-5xl mx-auto">
+        <header class="mb-4 border-b border-stone-200 pb-3 flex items-end justify-between">
+            <div>
+                <h1 class="text-2xl font-black text-stone-900 tracking-tight">
+                    Interest <span class="text-hn">Clusters</span>
+                </h1>
+                <p class="text-stone-500 text-xs">@{username} &bull; {n_signals} signals &rarr; {n_clusters} clusters</p>
+            </div>
+            <p class="text-[10px] text-stone-400 font-mono">{timestamp}</p>
+        </header>
+
+        <div class="grid gap-4 md:grid-cols-2">
+            {clusters_html}
+        </div>
+
+        <footer class="mt-8 py-4 border-t border-stone-200 text-center text-stone-400 text-xs">
+            HN Rerank &bull; Multi-Interest Clustering
+        </footer>
+    </div>
+</body>
+</html>
+"""
+
+CLUSTER_CARD_TEMPLATE: str = """
+<div class="cluster-card">
+    <div class="px-3 py-2 border-b border-stone-100 flex items-center justify-between">
+        <h2 class="font-bold text-stone-700">{cluster_name}</h2>
+        <span class="text-xs text-stone-400">{count} stories</span>
+    </div>
+    <ul class="divide-y divide-stone-100">
+        {stories_html}
+    </ul>
+</div>
+"""
+
+CLUSTER_STORY_TEMPLATE: str = """
+<li class="px-3 py-2 hover:bg-stone-50">
+    <a href="{hn_url}" target="_blank" class="text-sm text-stone-700 hover:text-hn transition-colors line-clamp-2">
+        {title}
+    </a>
+    <div class="flex items-center gap-2 mt-0.5">
+        <span class="text-[10px] text-stone-400">{points} pts</span>
+        <span class="text-[10px] text-stone-400">{time_ago}</span>
+        <span class="text-[10px] text-emerald-600 font-medium">{weight:.0%}</span>
+    </div>
+</li>
 """
 
 
@@ -94,10 +173,11 @@ STORY_CARD_TEMPLATE: str = """
 <div class="story-card group">
     <div class="flex items-start justify-between gap-2 mb-1">
         <div class="flex-1 min-w-0">
-            <div class="flex items-center gap-2 mb-0.5">
+            <div class="flex items-center gap-2 mb-0.5 flex-wrap">
                 <span class="px-1.5 py-0.5 rounded bg-hn/10 text-hn text-[10px] font-bold">
                     {score}%
                 </span>
+                {cluster_chip}
                 <span class="text-[10px] text-stone-400 font-mono">{points} pts</span>
                 <span class="text-[10px] text-stone-400 font-mono">{time_ago}</span>
             </div>
@@ -110,9 +190,7 @@ STORY_CARD_TEMPLATE: str = """
         </a>
     </div>
     {reason_html}
-    <div class="mt-2 grid gap-1">
-        {comments_html}
-    </div>
+    {tldr_html}
 </div>
 """
 
@@ -120,30 +198,48 @@ STORY_CARD_TEMPLATE: str = """
 def generate_story_html(story: dict[str, Any]) -> str:
     reason_html: str = ""
     if story.get("reason"):
-        escaped_reason: str = html.escape(str(story["reason"]), quote=False)
+        escaped_reason_title: str = html.escape(str(story["reason"]), quote=False)
         reason_url: str = story.get("reason_url", "")
-        if reason_url:
-            reason_html = f'<p class="text-[11px] text-emerald-600 mb-1">↳ <a href="{reason_url}" target="_blank" class="hover:underline">{escaped_reason}</a></p>'
+        
+        # Use smart reason if available
+        display_text = story.get("smart_reason", f"Similar to: {escaped_reason_title}")
+        escaped_display = html.escape(display_text) if not story.get("smart_reason") else display_text # already clean from LLM/safe to escape? LLM output is raw text.
+        
+        # If smart reason exists, we format it: "↳ [Smart Reason] (because you liked [Title])"
+        # Or simpler: "↳ [Smart Reason]" and maybe a tooltip for the source?
+        # Let's go with: "↳ [Smart Reason]" and the link text is "Similar to: ..."
+        
+        if story.get("smart_reason"):
+            escaped_smart = html.escape(story["smart_reason"])
+            if reason_url:
+                reason_html = f'<p class="text-[11px] text-emerald-600 mb-2">↳ {escaped_smart} <span class="text-stone-400 mx-1">&middot;</span> <a href="{reason_url}" target="_blank" class="text-stone-400 hover:underline hover:text-emerald-600">Because you liked "{escaped_reason_title}"</a></p>'
+            else:
+                reason_html = f'<p class="text-[11px] text-emerald-600 mb-2">↳ {escaped_smart} <span class="text-stone-400">(from "{escaped_reason_title}")</span></p>'
         else:
-            reason_html = f'<p class="text-[11px] text-emerald-600 mb-1">↳ {escaped_reason}</p>'
+            # Fallback
+            if reason_url:
+                reason_html = f'<p class="text-[11px] text-emerald-600 mb-2">↳ <a href="{reason_url}" target="_blank" class="hover:underline">Similar to: {escaped_reason_title}</a></p>'
+            else:
+                reason_html = f'<p class="text-[11px] text-emerald-600 mb-2">↳ Similar to: {escaped_reason_title}</p>'
 
-    comments_html: str = ""
-    comments: list[Any] = story.get("comments") or []
-    for comment in comments[:3]:
-        text: str = str(comment)
-        snippet: str = text[:200] + "..." if len(text) > 200 else text
-        escaped_snippet: str = html.escape(snippet, quote=False)
-        comments_html += f'<div class="text-[11px] text-stone-500 bg-stone-50 p-1.5 rounded border border-stone-100 leading-snug">"{escaped_snippet}"</div>'
+    cluster_chip: str = ""
+    if story.get("cluster_name"):
+        cluster_chip = f'<span class="cluster-chip">{html.escape(story["cluster_name"])}</span>'
+
+    tldr_html: str = ""
+    if story.get("tldr"):
+        tldr_html = f'<div class="text-xs text-stone-600 bg-stone-50 p-2 rounded border border-stone-100 leading-relaxed whitespace-pre-line">{html.escape(story["tldr"])}</div>'
 
     return STORY_CARD_TEMPLATE.format(
         score=story["match_percent"],
+        cluster_chip=cluster_chip,
         points=story["points"],
         time_ago=story["time_ago"],
         url=story["url"] or story["hn_url"],
         title=html.escape(str(story["title"]), quote=False),
         hn_url=story["hn_url"],
         reason_html=reason_html,
-        comments_html=comments_html,
+        tldr_html=tldr_html,
     )
 
 
@@ -286,6 +382,29 @@ async def main() -> None:
         )
         progress.update(e_task, description="[green][+] Preferences embedded.")
 
+        # 2b. Clustering interests
+        cluster_labels: Optional[NDArray[np.int32]] = None
+        cluster_centroids: Optional[NDArray[np.float32]] = None
+        cluster_names: dict[int, str] = {}
+        if p_emb is not None and len(p_emb) > 0:
+            cl_task: Any = progress.add_task("[cyan]Clustering interests...", total=1)
+            cluster_centroids, cluster_labels = rerank.cluster_interests_with_labels(p_emb, p_weights)
+            progress.update(cl_task, completed=1, description="[green][+] Interests clustered.")
+
+            # Build cluster names (LLM calls)
+            clusters_for_naming: dict[int, list[tuple[dict[str, Any], float]]] = defaultdict(list)
+            for i, label in enumerate(cluster_labels):
+                weight = float(p_weights[i]) if p_weights is not None else 1.0
+                clusters_for_naming[int(label)].append((pos_stories[i], weight))
+
+            n_clusters = len(set(cluster_labels))
+            name_task: Any = progress.add_task("[cyan]Naming clusters...", total=n_clusters)
+            cluster_names = {}
+            for cid, items in clusters_for_naming.items():
+                cluster_names[cid] = rerank.generate_single_cluster_name(items)
+                progress.update(name_task, advance=1)
+            progress.update(name_task, description="[green][+] Clusters named.")
+
         # 3. Candidates
         c_task: Any = progress.add_task(
             f"[*] Fetching {args.candidates} candidates...", total=args.candidates
@@ -304,12 +423,30 @@ async def main() -> None:
 
         # 4. Reranking
         r_task: Any = progress.add_task("[*] Reranking stories...", total=100)
+
+        def rank_cb(curr: int, total: int) -> None:
+            progress.update(r_task, total=total, completed=curr)
+
         ranked: list[tuple[int, float, int, float]] = rerank.rank_stories(
-            cands, p_emb, n_emb, p_weights, progress_callback=emb_cb
+            cands,
+            p_emb,
+            n_emb,
+            p_weights,
+            progress_callback=rank_cb,
         )
         progress.update(
-            r_task, completed=100, description="[green][+] Rereranking complete."
+            r_task, completed=100, description="[green][+] Reranking complete."
         )
+
+    # Compute cluster assignments for candidates
+    cand_cluster_map: dict[int, int] = {}  # cand_idx -> cluster_id
+    if cluster_centroids is not None and len(cands) > 0:
+        cand_texts = [str(c.get("text_content", "")) for c in cands]
+        cand_emb = rerank.get_embeddings(cand_texts)
+        if len(cand_emb) > 0:
+            sim_to_clusters = cosine_similarity(cand_emb, cluster_centroids)
+            for i in range(len(cands)):
+                cand_cluster_map[i] = int(np.argmax(sim_to_clusters[i]))
 
     stories_data: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
@@ -342,11 +479,20 @@ async def main() -> None:
         if fav_idx != -1 and fav_idx < len(pos_stories):
             reason = str(pos_stories[fav_idx]["title"])
             reason_url = f"https://news.ycombinator.com/item?id={pos_stories[fav_idx]['id']}"
+
+        # Get cluster name for this candidate
+        cluster_name: str = ""
+        if idx in cand_cluster_map:
+            cid = cand_cluster_map[idx]
+            cluster_name = cluster_names.get(cid, "")
+
         stories_data.append(
             {
+                "id": int(s["id"]),
                 # Use MaxSim for the UI label because it represents the "Best Match"
                 # which is what the "Match: X" reason text implies.
                 "match_percent": int(max_sim * 100),
+                "cluster_name": cluster_name,
                 "points": int(s.get("score", 0)),
                 "time_ago": get_relative_time(int(s.get("time", 0))),
                 "url": s.get("url"),
@@ -358,18 +504,91 @@ async def main() -> None:
             }
         )
 
+    # Generate TL;DRs for stories and Smart Reasons
+    print("[*] Generating content via LLM...")
+    with progress:
+        llm_task = progress.add_task("[cyan]Generating TL;DRs & Reasons...", total=len(stories_data))
+        for sd in stories_data:
+            # TL;DR
+            sd["tldr"] = rerank.generate_story_tldr(sd["id"], sd["title"], sd.get("comments", []))
+            
+            # Smart Reason
+            if sd.get("reason"):
+                # "reason" currently holds the title of the history item
+                smart_reason = rerank.generate_similarity_reason(
+                    sd["title"], 
+                    sd.get("comments", []), 
+                    sd["reason"]
+                )
+                if smart_reason:
+                    sd["smart_reason"] = smart_reason
+
+            progress.update(llm_task, advance=1)
+        progress.update(llm_task, description="[green][+] LLM content generated.")
+
     print("[*] Generating HTML...")
+
+    # Generate full cluster cards for clusters.html
+    clusters_page_html: str = ""
+    n_clusters: int = len(cluster_names)
+    if cluster_labels is not None and len(pos_stories) > 0:
+        # Rebuild clusters dict for the clusters page (reuse cluster_names from earlier)
+        clusters: dict[int, list[tuple[dict[str, Any], float]]] = defaultdict(list)
+        for i, label in enumerate(cluster_labels):
+            weight = float(p_weights[i]) if p_weights is not None else 1.0
+            clusters[int(label)].append((pos_stories[i], weight))
+
+        # Sort each cluster by weight (recency)
+        for cid in clusters:
+            clusters[cid].sort(key=lambda x: x[1], reverse=True)
+
+        # Generate cluster cards for clusters.html
+        cluster_cards: list[str] = []
+        for cid in sorted(clusters.keys(), key=lambda c: -len(clusters[c])):
+            items = clusters[cid]
+            stories_in_cluster: str = ""
+            for story, weight in items[:15]:  # Limit display
+                stories_in_cluster += CLUSTER_STORY_TEMPLATE.format(
+                    hn_url=f"https://news.ycombinator.com/item?id={story['id']}",
+                    title=html.escape(str(story.get("title", "Untitled")), quote=False),
+                    points=int(story.get("score", 0)),
+                    time_ago=get_relative_time(int(story.get("time", 0))),
+                    weight=weight,
+                )
+            cluster_cards.append(
+                CLUSTER_CARD_TEMPLATE.format(
+                    cluster_name=html.escape(cluster_names.get(cid, f"Group {cid + 1}")),
+                    count=len(items),
+                    stories_html=stories_in_cluster,
+                )
+            )
+
+        clusters_page_html = CLUSTERS_PAGE_TEMPLATE.format(
+            username=args.username,
+            n_signals=len(pos_stories),
+            n_clusters=n_clusters,
+            timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            clusters_html="\n".join(cluster_cards),
+        )
+
     stories_html: str = "\n".join([generate_story_html(sd) for sd in stories_data])
 
     final_html: str = HTML_TEMPLATE.format(
         username=args.username,
+        n_clusters=n_clusters,
         timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         stories_html=stories_html,
     )
 
     try:
         Path(args.output).write_text(final_html)
-        print(f"[+] Done! Dashboard saved to: {os.path.abspath(args.output)}")
+        print(f"[+] Dashboard saved to: {os.path.abspath(args.output)}")
+
+        # Write clusters page
+        if clusters_page_html:
+            clusters_path = Path(args.output).with_name("clusters.html")
+            clusters_path.write_text(clusters_page_html)
+            print(f"[+] Clusters saved to: {os.path.abspath(clusters_path)}")
     except OSError as e:
         print(f"[!] Error writing output file: {e}")
         raise SystemExit(1)

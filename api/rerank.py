@@ -1,5 +1,6 @@
 from __future__ import annotations
 import hashlib
+import json
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -17,6 +18,9 @@ from api.constants import (
     EMBEDDING_MIN_CLIP,
     EMBEDDING_MODEL_VERSION,
     HN_SCORE_POINTS_EXP,
+    MAX_CLUSTERS,
+    MIN_CLUSTERS,
+    MIN_SAMPLES_PER_CLUSTER,
     TEXT_CONTENT_MAX_LENGTH,
     SEMANTIC_MATCH_THRESHOLD,
 )
@@ -187,6 +191,221 @@ def get_embeddings(
     return np.stack([v for v in vectors if v is not None]).astype(np.float32)
 
 
+def cluster_interests(
+    embeddings: NDArray[np.float32],
+    weights: Optional[NDArray[np.float32]] = None,
+) -> NDArray[np.float32]:
+    """
+    Cluster user interest embeddings into K centroids.
+    Returns centroids array of shape (n_clusters, embedding_dim).
+    """
+    centroids, _ = cluster_interests_with_labels(embeddings, weights)
+    return centroids
+
+def cluster_interests_with_labels(
+    embeddings: NDArray[np.float32],
+    weights: Optional[NDArray[np.float32]] = None,
+) -> tuple[NDArray[np.float32], NDArray[np.int32]]:
+    """
+    Cluster user interest embeddings using Agglomerative Clustering.
+    Uses silhouette score to find optimal cluster count.
+    Returns (centroids, labels) where:
+      - centroids: shape (n_clusters, embedding_dim)
+      - labels: shape (n_samples,) cluster assignment per sample
+    """
+    from sklearn.cluster import AgglomerativeClustering
+    from sklearn.metrics import silhouette_score
+
+    n_samples = len(embeddings)
+    if n_samples == 0:
+        return embeddings, np.array([], dtype=np.int32)
+
+    if n_samples < MIN_SAMPLES_PER_CLUSTER * 2:
+        # Not enough for meaningful clustering
+        labels = np.zeros(n_samples, dtype=np.int32)
+        if weights is not None:
+            centroid = np.average(embeddings, axis=0, weights=weights).reshape(1, -1)
+        else:
+            centroid = np.mean(embeddings, axis=0).reshape(1, -1)
+        return centroid.astype(np.float32), labels
+
+    # Normalize embeddings for cosine-like behavior with euclidean distance
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    norms = np.maximum(norms, 1e-9)
+    normalized = embeddings / norms
+
+    # Search for highest k with acceptable silhouette (>= 0.1)
+    # This gives more granular clusters while maintaining coherence
+    min_k = max(MIN_CLUSTERS, int(np.sqrt(n_samples) * 0.7))
+    max_k = min(MAX_CLUSTERS, int(np.sqrt(n_samples) * 2.5), n_samples // MIN_SAMPLES_PER_CLUSTER)
+
+    best_labels: NDArray[np.int32] = np.zeros(n_samples, dtype=np.int32)
+    silhouette_threshold = 0.1
+
+    # Search from high to low k, pick first that meets threshold
+    for k in range(max_k, min_k - 1, -1):
+        agg = AgglomerativeClustering(
+            n_clusters=k,
+            metric="euclidean",
+            linkage="ward",
+        )
+        labels = agg.fit_predict(normalized)
+        score = float(silhouette_score(normalized, labels))
+        if score >= silhouette_threshold:
+            best_labels = labels.astype(np.int32)
+            break
+    else:
+        # No k met threshold, use max_k anyway
+        agg = AgglomerativeClustering(n_clusters=max_k, metric="euclidean", linkage="ward")
+        best_labels = agg.fit_predict(normalized).astype(np.int32)
+
+    # Compute centroids from labels (in original embedding space)
+    unique_labels = sorted(set(best_labels))
+    centroids = []
+    for lbl in unique_labels:
+        mask = best_labels == lbl
+        if weights is not None:
+            cluster_weights = weights[mask]
+            centroid = np.average(embeddings[mask], axis=0, weights=cluster_weights)
+        else:
+            centroid = embeddings[mask].mean(axis=0)
+        centroids.append(centroid)
+
+    return np.array(centroids, dtype=np.float32), best_labels
+
+def generate_single_cluster_name(items: list[tuple[dict[str, Any], float]]) -> str:
+    """Generate a name for a single cluster using local LLM via ollama."""
+    import ollama
+
+    # Get top titles by weight
+    sorted_items = sorted(items, key=lambda x: -x[1])[:10]
+    titles = []
+    for story, _ in sorted_items:
+        title = str(story.get("title", "")).strip()
+        for prefix in ["Show HN:", "Ask HN:", "Tell HN:"]:
+            if title.startswith(prefix):
+                title = title[len(prefix):].strip()
+        if title:
+            titles.append(title)
+
+    titles_text = "\n".join(f"- {t}" for t in titles)
+
+    if not titles_text:
+        return "Misc"
+
+    prompt = f"""
+What single topic best describes these titles? Reply with ONLY 1-3 words.
+
+{titles_text}
+
+Topic:"""
+
+    try:
+        response = ollama.generate(
+            model="llama3.2:3b",
+            prompt=prompt,
+            options={"temperature": 0.3, "num_predict": 20},
+        )
+        name = response["response"].strip().strip('"').strip("'")
+        # Truncate if too long
+        words = name.split()[:4]
+        return " ".join(words) if words else "Misc"
+    except Exception:
+        return "Misc"
+
+def generate_cluster_names(
+    clusters: dict[int, list[tuple[dict[str, Any], float]]],
+) -> dict[int, str]:
+    """Generate cluster names using local LLM via ollama."""
+    if not clusters:
+        return {}
+    return {cid: generate_single_cluster_name(items) for cid, items in clusters.items()}
+
+TLDR_CACHE_PATH = Path(".cache/tldrs.json")
+
+
+def _load_tldr_cache() -> dict[str, str]:
+    """Load TL;DR cache from disk."""
+    if TLDR_CACHE_PATH.exists():
+        try:
+            return json.loads(TLDR_CACHE_PATH.read_text())
+        except Exception:
+            pass
+    return {}
+
+def _save_tldr_cache(cache: dict[str, str]) -> None:
+    """Save TL;DR cache to disk."""
+    TLDR_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    TLDR_CACHE_PATH.write_text(json.dumps(cache))
+
+def generate_story_tldr(story_id: int, title: str, comments: list[str]) -> str:
+    """Generate a 1-sentence TL;DR for a story using local LLM. Cached by story ID."""
+    import ollama
+
+    if not title:
+        return ""
+
+    # Check cache first
+    cache = _load_tldr_cache()
+    cache_key = str(story_id)
+    if cache_key in cache:
+        return cache[cache_key]
+
+    # Build context from title + top comments
+    context = f"Title: {title}"
+    if comments:
+        context += "\n\nTop comments:\n" + "\n".join(f"- {c[:400]}" for c in comments[:6])
+
+    prompt = f"""
+{context}
+
+Provide a concise summary of the story and its discussion. 
+Do NOT use introductory phrases like "This story is about", "The discussion reveals", "Here is a summary", or "The article mentions". 
+Start directly with the content.
+
+Structure:
+- Sentence 1: Core subject or project.
+- Sentence 2+: Main technical or philosophical debate and key takeaways from the comments.
+
+IMPORTANT: Put the comments summary (Sentence 2+) on a single new line directly below the first sentence (no empty line)."""
+
+    try:
+        response = ollama.generate(
+            model="llama3.2:3b",
+            prompt=prompt,
+            options={"temperature": 0.3, "num_predict": 400},
+        )
+        tldr = response["response"].strip().strip('"').strip("'")
+        
+        # Aggressive cleaning of conversational filler
+        useless_prefixes = [
+            "Here is a summary:", "Here is a 2-sentence summary:", "Here is a 3-sentence summary:",
+            "This story is about", "The story is about", "This article is about", 
+            "The discussion reveals that", "The discussion reveals", 
+            "TL;DR:", "TLDR:", "Summary:", "In this story,", "In this article,"
+        ]
+        
+        lower_tldr = tldr.lower()
+        for prefix in useless_prefixes:
+            if lower_tldr.startswith(prefix.lower()):
+                tldr = tldr[len(prefix):].lstrip(":* \n")
+                lower_tldr = tldr.lower()
+
+        # Clean up any remaining markdown or list characters
+        tldr = tldr.lstrip("*#- ")
+        
+        # Truncate if too long (extended cutoff)
+        if len(tldr) > 800:
+            tldr = tldr[:797] + "..."
+
+        # Save to cache
+        cache[cache_key] = tldr
+        _save_tldr_cache(cache)
+
+        return tldr
+    except Exception:
+        return ""
+
 def compute_recency_weights(
     timestamps: list[int], decay_rate: Optional[float] = None
 ) -> NDArray[np.float32]:
@@ -211,7 +430,6 @@ def compute_recency_weights(
 
     return np.clip(weights, 0.0, 1.0).astype(np.float32)
 
-
 def rank_stories(
     stories: list[dict[str, Any]],
     positive_embeddings: Optional[NDArray[np.float32]],
@@ -219,11 +437,13 @@ def rank_stories(
     positive_weights: Optional[NDArray[np.float32]] = None,
     hn_weight: float = 0.05,
     neg_weight: float = 0.6,
-    diversity_lambda: float = 0.15,
+    diversity_lambda: float = 0.35,  # Literature: 0.3-0.5 for discovery
     progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> list[tuple[int, float, int, float]]:
     """
     Returns list of (index, hybrid_score, best_fav_index, max_sim_score).
+
+    Uses multi-interest clustering and MMR diversity reranking.
     """
     if not stories:
         return []
@@ -243,65 +463,61 @@ def rank_stories(
         max_sim_scores = np.zeros(len(stories), dtype=np.float32)
         best_fav_indices = np.full(len(stories), -1, dtype=np.int64)
     else:
-        # 1. Semantic Score (Hybrid: MaxSim + Top-K Mean)
-        # We combine the single best match (MaxSim) with the average of the top 3 matches (Density).
-        # This rewards "Dense Clusters" of interest (consistent upvotes) while not completely
-        # killing "One-Off" interests (high specific match).
+        # 1. Multi-Interest Clustering
+        # Cluster positive embeddings into K interest centroids to capture diverse interests
+        interest_centroids: NDArray[np.float32] = cluster_interests(
+            positive_embeddings, weights=positive_weights
+        )
 
+        # 2. Semantic Score using interest centroids
+        # For each candidate, find similarity to each interest cluster
+        sim_centroids: NDArray[np.float32] = cosine_similarity(
+            interest_centroids, cand_emb
+        )
+
+        # MaxSim across interest clusters (best matching interest)
+        cluster_max_sim = np.max(sim_centroids, axis=0)
+
+        # Mean across all clusters (broad appeal)
+        cluster_mean_sim = np.mean(sim_centroids, axis=0)
+
+        # Combined: weight MaxSim higher to preserve niche interests
+        semantic_scores = 0.7 * cluster_max_sim + 0.3 * cluster_mean_sim
+
+        # For display score and best_fav_index, use original embeddings (not clusters)
+        # This preserves interpretable "match to specific story" display
         sim_pos: NDArray[np.float32] = cosine_similarity(positive_embeddings, cand_emb)
         if positive_weights is not None:
             sim_pos = sim_pos * positive_weights[:, np.newaxis]
-
-        # A. MaxSim (Nearest Neighbor)
-        max_sim = np.max(sim_pos, axis=0)
-        max_sim_scores = max_sim
-
-        # B. Top-K Mean (Robustness/Density)
-        k = 3
-        if sim_pos.shape[0] >= k:
-            # partition moves the top k elements to the end of the axis
-            top_k = np.partition(sim_pos, -k, axis=0)[-k:, :]
-            mean_top_k = np.mean(top_k, axis=0)
-        else:
-            mean_top_k = max_sim
-
-        # Combined Score
-        semantic_scores = (max_sim + mean_top_k) / 2.0
-
+        max_sim_scores = np.max(sim_pos, axis=0)
         best_fav_indices = np.argmax(sim_pos, axis=0)
 
-        # Apply strict threshold to filter noise
-        # If the best match is < THRESHOLD, we treat it as no match (0.0)
-        # and set fav_idx to -1 so the UI doesn't show a bogus reason.
-        low_sim_mask = semantic_scores < SEMANTIC_MATCH_THRESHOLD
+        # Apply threshold based on original MaxSim (more interpretable)
+        low_sim_mask = max_sim_scores < SEMANTIC_MATCH_THRESHOLD
         semantic_scores[low_sim_mask] = 0.0
         best_fav_indices[low_sim_mask] = -1
-        # We also zero out the display score if it didn't pass the threshold filter
-        # so we don't show "90% match" on something we ranked as 0.0
         max_sim_scores[low_sim_mask] = 0.0
 
-    # 2. Negative Signal (Penalty)
+    # 3. Negative Signal (Penalty)
     if negative_embeddings is not None and len(negative_embeddings) > 0:
         sim_neg: NDArray[np.float32] = np.max(
             cosine_similarity(negative_embeddings, cand_emb), axis=0
         )
         semantic_scores -= neg_weight * sim_neg
 
-    # 3. HN Gravity Score (Now just based on points, no recency bias for candidates)
+    # 4. HN Gravity Score
     points: NDArray[Any] = np.array([int(s.get("score", 0)) for s in stories])
-
-    # We removed the hours/time decay denominator.
     hn_scores: NDArray[Any] = np.power(np.maximum(points - 1, 0), HN_SCORE_POINTS_EXP)
 
     if hn_scores.max() > 0:
         hn_scores /= hn_scores.max()
 
-    # 4. Hybrid Score
+    # 5. Hybrid Score
     hybrid_scores: NDArray[np.float32] = (
         1 - hn_weight
     ) * semantic_scores + hn_weight * hn_scores
 
-    # 5. Diversity (MMR)
+    # 6. Diversity (MMR)
     results: list[tuple[int, float, int, float]] = []
     selected_mask: NDArray[np.bool_] = np.zeros(len(cand_emb), dtype=bool)
     cand_sim: NDArray[np.float32] = cosine_similarity(cand_emb, cand_emb)
@@ -333,3 +549,60 @@ def rank_stories(
         selected_mask[best_idx] = True
 
     return results
+
+REASON_CACHE_PATH = Path(".cache/reasons.json")
+
+
+def _load_reason_cache() -> dict[str, str]:
+    if REASON_CACHE_PATH.exists():
+        try:
+            return json.loads(REASON_CACHE_PATH.read_text())
+        except Exception:
+            pass
+    return {}
+
+def _save_reason_cache(cache: dict[str, str]) -> None:
+    REASON_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    REASON_CACHE_PATH.write_text(json.dumps(cache))
+
+def generate_similarity_reason(cand_title: str, cand_comments: list[str], history_title: str) -> str:
+    """Generate a short reason why two stories are similar."""
+    import ollama
+
+    # Create a unique key for the pair
+    key = hashlib.sha256(f"{cand_title}|{history_title}".encode()).hexdigest()
+    
+    cache = _load_reason_cache()
+    if key in cache:
+        return cache[key]
+
+    comments_text = "\\n".join(f"- {c[:200]}" for c in cand_comments[:3])
+    
+    prompt = f"""
+Candidate Story: "{cand_title}"
+User's Past Interest: "{history_title}"
+
+Context from Candidate:
+{comments_text}
+
+Identify the specific shared technical topic or theme.
+Reply with ONE short phrase (max 10 words) starting with a lowercase verb (e.g. "discusses...", "explores...", "relates to...").
+"""
+
+    try:
+        response = ollama.generate(
+            model="llama3.2:3b",
+            prompt=prompt,
+            options={"temperature": 0.1, "num_predict": 30},
+        )
+        reason = response["response"].strip().strip('"').strip("'")
+        
+        # Ensure it starts lowercase if it's a verb phrase
+        if reason and reason[0].isupper() and " " in reason:
+             reason = reason[0].lower() + reason[1:]
+
+        cache[key] = reason
+        _save_reason_cache(cache)
+        return reason
+    except Exception:
+        return ""

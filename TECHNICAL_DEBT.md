@@ -13,9 +13,12 @@
     - *Optimization*: For massive scale, this should run in a `ProcessPoolExecutor`, but for <1000 items, the overhead is negligible compared to network I/O.
 
 ## Code Quality
-- **Type Safety**: The codebase uses `typing` extensively (`mypy`/`pyright` compliant).
-- **Testing**: `pytest` coverage exists for core logic.
+- **Type Safety**: The codebase uses `typing` extensively (`ty` / Red Knot for type checking).
+- **Testing**: `pytest` + `hypothesis` for property-based testing. 76% coverage.
 - **Linting**: `ruff` checks pass.
+
+## Resolved Items
+- **Cross-Encoder Reranking**: Removed after ablation study showed it hurt metrics.
 
 ## Future Refactoring
 - **Signal Support**: Currently, favorited *comments* are treated as invalid stories and negatively cached.
