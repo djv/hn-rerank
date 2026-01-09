@@ -125,7 +125,9 @@ def generate_story_html(story: dict[str, Any]) -> str:
         if reason_url:
             reason_html = f'<p class="text-[11px] text-emerald-600 mb-1">↳ <a href="{reason_url}" target="_blank" class="hover:underline">{escaped_reason}</a></p>'
         else:
-            reason_html = f'<p class="text-[11px] text-emerald-600 mb-1">↳ {escaped_reason}</p>'
+            reason_html = (
+                f'<p class="text-[11px] text-emerald-600 mb-1">↳ {escaped_reason}</p>'
+            )
 
     comments_html: str = ""
     comments: list[Any] = story.get("comments") or []
@@ -300,7 +302,9 @@ async def main() -> None:
             ),
             days=args.days,
         )
-        progress.update(c_task, description=f"[green][+] Candidates fetched.   ({len(cands)} valid)")
+        progress.update(
+            c_task, description=f"[green][+] Candidates fetched.   ({len(cands)} valid)"
+        )
 
         # 4. Reranking
         r_task: Any = progress.add_task("[*] Reranking stories...", total=100)
@@ -341,7 +345,9 @@ async def main() -> None:
         reason_url: str = ""
         if fav_idx != -1 and fav_idx < len(pos_stories):
             reason = str(pos_stories[fav_idx]["title"])
-            reason_url = f"https://news.ycombinator.com/item?id={pos_stories[fav_idx]['id']}"
+            reason_url = (
+                f"https://news.ycombinator.com/item?id={pos_stories[fav_idx]['id']}"
+            )
         stories_data.append(
             {
                 # Use MaxSim for the UI label because it represents the "Best Match"

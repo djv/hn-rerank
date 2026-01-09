@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import heapq
 import html
 import json
 import os
@@ -167,8 +168,10 @@ async def fetch_story(client: httpx.AsyncClient, sid: int) -> Optional[dict[str,
                 return None
 
             # Sort by score (position + depth penalty), lower = better
-            all_comments.sort(key=lambda x: x["score"])
-            selected = all_comments[:TOP_COMMENTS_FOR_RANKING]
+            # Use heapq.nsmallest for O(N log K) instead of O(N log N) sort
+            selected = heapq.nsmallest(
+                TOP_COMMENTS_FOR_RANKING, all_comments, key=lambda x: x["score"]
+            )
             top_for_rank = " ".join([c["text"] for c in selected])
             ui_comments = [c["text"] for c in selected[:TOP_COMMENTS_FOR_UI]]
 

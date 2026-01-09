@@ -10,7 +10,10 @@ HN_SCORE_TIME_OFFSET = 2
 # Content Limits
 ARTICLE_RANKING_LENGTH = 3000
 ARTICLE_SNIPPET_LENGTH = 1000
-TEXT_CONTENT_MAX_LENGTH = 8000
+# Reduced from 8000 to 3000 to match embedding model context window (512 tokens).
+# 512 tokens * ~4 chars/token = ~2048 chars. 3000 provides a safe buffer while
+# avoiding expensive tokenization of text that will be truncated anyway.
+TEXT_CONTENT_MAX_LENGTH = 3000
 
 # Cache Paths
 EMBEDDING_CACHE_DIR = ".cache/embeddings"
