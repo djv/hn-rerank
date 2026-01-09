@@ -11,6 +11,7 @@ wheels/
 
 # Project specific
 .cache/
+.coverage
 .hypothesis/
 .pytest_cache/
 .ruff_cache/
