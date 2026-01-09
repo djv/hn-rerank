@@ -278,7 +278,15 @@ async def main() -> None:
         action="store_true",
         help="Disable recency weighting for user profile (default: False)",
     )
+    parser.add_argument(
+        "--gpu",
+        action="store_true",
+        help="Enable GPU (CUDA) support for embedding model (default: False)",
+    )
     args: argparse.Namespace = parser.parse_args()
+
+    # Initialize model early to respect GPU preference
+    rerank.init_model(use_gpu=args.gpu)
 
     with Progress(
         SpinnerColumn(),

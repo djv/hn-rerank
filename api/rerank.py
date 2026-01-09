@@ -33,7 +33,7 @@ CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class ONNXEmbeddingModel:
-    def __init__(self, model_dir: str = "onnx_model") -> None:
+    def __init__(self, model_dir: str = "onnx_model", use_gpu: bool = False) -> None:
         self.model_dir: str = model_dir
         if not Path(f"{model_dir}/model.onnx").exists():
             raise FileNotFoundError(
@@ -41,8 +41,18 @@ class ONNXEmbeddingModel:
             )
 
         self.tokenizer: Any = AutoTokenizer.from_pretrained(model_dir)
+        
+        providers = ["CPUExecutionProvider"]
+        if use_gpu:
+            if "CUDAExecutionProvider" in ort.get_available_providers():
+                providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+                print("[+] Using CUDA Execution Provider")
+            else:
+                print("[!] CUDA requested but not available. Falling back to CPU.")
+
         self.session: ort.InferenceSession = ort.InferenceSession(
-            f"{model_dir}/model.onnx"
+            f"{model_dir}/model.onnx",
+            providers=providers
         )
         self.model_id: str = "bge-base-en-v1.5"
 
@@ -112,11 +122,15 @@ class ONNXEmbeddingModel:
         )
 
 
-def get_model() -> ONNXEmbeddingModel:
+def init_model(use_gpu: bool = False) -> ONNXEmbeddingModel:
     global _model
     if _model is None:
-        _model = ONNXEmbeddingModel()
+        _model = ONNXEmbeddingModel(use_gpu=use_gpu)
     return _model
+
+
+def get_model() -> ONNXEmbeddingModel:
+    return init_model(use_gpu=False)
 
 
 def get_embeddings(
