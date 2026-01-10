@@ -282,8 +282,13 @@ def cluster_interests_with_labels(
     return np.array(centroids, dtype=np.float32), best_labels
 
 def generate_single_cluster_name(items: list[tuple[dict[str, Any], float]]) -> str:
-    """Generate a name for a single cluster using local LLM via ollama."""
-    import ollama
+    """Generate a name for a single cluster using Gemini API."""
+    import os
+    from google import genai
+
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        return "Misc"
 
     # Get top titles by weight
     sorted_items = sorted(items, key=lambda x: -x[1])[:10]
@@ -309,12 +314,17 @@ What single topic best describes these titles? Reply with ONLY 1-3 words.
 Topic:"""
 
     try:
-        response = ollama.generate(
-            model="llama3.2:3b",
-            prompt=prompt,
-            options={"temperature": 0.3, "num_predict": 20},
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=prompt,
+            config={"temperature": 0.3, "max_output_tokens": 20},
         )
-        name = response["response"].strip().strip('"').strip("'")
+        name = response.text
+        if not name:
+            return "Misc"
+        
+        name = name.strip().strip('"').strip("'")
         # Truncate if too long
         words = name.split()[:4]
         return " ".join(words) if words else "Misc"
@@ -324,7 +334,7 @@ Topic:"""
 def generate_cluster_names(
     clusters: dict[int, list[tuple[dict[str, Any], float]]],
 ) -> dict[int, str]:
-    """Generate cluster names using local LLM via ollama."""
+    """Generate cluster names using Gemini API."""
     if not clusters:
         return {}
     return {cid: generate_single_cluster_name(items) for cid, items in clusters.items()}
@@ -347,8 +357,9 @@ def _save_tldr_cache(cache: dict[str, str]) -> None:
     TLDR_CACHE_PATH.write_text(json.dumps(cache))
 
 def generate_story_tldr(story_id: int, title: str, comments: list[str]) -> str:
-    """Generate a 1-sentence TL;DR for a story using local LLM. Cached by story ID."""
-    import ollama
+    """Generate a 1-sentence TL;DR for a story using Gemini API. Cached by story ID."""
+    import os
+    from google import genai
 
     if not title:
         return ""
@@ -358,6 +369,10 @@ def generate_story_tldr(story_id: int, title: str, comments: list[str]) -> str:
     cache_key = str(story_id)
     if cache_key in cache:
         return cache[cache_key]
+
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        return ""
 
     # Build context from title + top comments
     context = f"Title: {title}"
@@ -378,12 +393,17 @@ Structure:
 IMPORTANT: Put the comments summary (Sentence 2+) on a single new line directly below the first sentence (no empty line)."""
 
     try:
-        response = ollama.generate(
-            model="llama3.2:3b",
-            prompt=prompt,
-            options={"temperature": 0.3, "num_predict": 400},
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=prompt,
+            config={"temperature": 0.3, "max_output_tokens": 400},
         )
-        tldr = response["response"].strip().strip('"').strip("'")
+        tldr = response.text
+        if not tldr:
+            return ""
+
+        tldr = tldr.strip().strip('"').strip("'")
         
         # Aggressive cleaning of conversational filler
         useless_prefixes = [
@@ -575,7 +595,12 @@ def _save_reason_cache(cache: dict[str, str]) -> None:
 
 def generate_similarity_reason(cand_title: str, cand_comments: list[str], history_title: str) -> str:
     """Generate a short reason why two stories are similar."""
-    import ollama
+    import os
+    from google import genai
+
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        return ""
 
     # Create a unique key for the pair
     key = hashlib.sha256(f"{cand_title}|{history_title}".encode()).hexdigest()
@@ -598,12 +623,17 @@ Reply with ONE short phrase (max 10 words) starting with a lowercase verb (e.g. 
 """
 
     try:
-        response = ollama.generate(
-            model="llama3.2:3b",
-            prompt=prompt,
-            options={"temperature": 0.1, "num_predict": 30},
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=prompt,
+            config={"temperature": 0.1, "max_output_tokens": 30},
         )
-        reason = response["response"].strip().strip('"').strip("'")
+        reason = response.text
+        if not reason:
+            return ""
+
+        reason = reason.strip().strip('"').strip("'")
         
         # Ensure it starts lowercase if it's a verb phrase
         if reason and reason[0].isupper() and " " in reason:
