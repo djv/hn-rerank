@@ -398,7 +398,7 @@ async def main() -> None:
             def name_cb(curr: int, total: int) -> None:
                 progress.update(name_task, completed=curr)
             
-            cluster_names = rerank.generate_batch_cluster_names(
+            cluster_names = await rerank.generate_batch_cluster_names(
                 clusters_for_naming, progress_callback=name_cb
             )
             progress.update(name_task, description="[green][+] Clusters named.")
@@ -505,29 +505,36 @@ async def main() -> None:
     # Generate TL;DRs for stories and Smart Reasons
     print("[*] Generating content via LLM...")
     with progress:
-        llm_task = progress.add_task("[cyan]Generating TL;DRs & Reasons...", total=len(stories_data))
+        llm_task = progress.add_task("[cyan]Generating TL;DRs & Reasons...", total=len(stories_data) * 2)
         
         # Batch TL;DR generation
-        tldrs = rerank.generate_batch_tldrs(
+        tldrs = await rerank.generate_batch_tldrs(
             stories_data, 
             progress_callback=lambda curr, tot: progress.update(llm_task, completed=curr)
         )
         
+        # Collect pairs for batch similarity reasons
+        pairs_to_gen = []
+        for sd in stories_data:
+            if sd.get("reason"):
+                pairs_to_gen.append((sd["title"], sd["reason"], sd.get("comments", [])))
+        
+        reasons = await rerank.generate_batch_similarity_reasons(
+            pairs_to_gen,
+            progress_callback=None # progress handled manually below for simplicity or we can add it
+        )
+        
+        reason_idx = 0
         for sd in stories_data:
             # Assign batched TL;DR
             sd["tldr"] = tldrs.get(sd["id"], "")
             
-            # Smart Reason (still individual for now, but usually fewer calls)
+            # Smart Reason
             if sd.get("reason"):
-                smart_reason = rerank.generate_similarity_reason(
-                    sd["title"], 
-                    sd.get("comments", []), 
-                    sd["reason"]
-                )
-                if smart_reason:
-                    sd["smart_reason"] = smart_reason
+                sd["smart_reason"] = reasons[reason_idx]
+                reason_idx += 1
 
-        progress.update(llm_task, description="[green][+] LLM content generated.")
+        progress.update(llm_task, completed=len(stories_data) * 2, description="[green][+] LLM content generated.")
 
     print("[*] Generating HTML...")
 

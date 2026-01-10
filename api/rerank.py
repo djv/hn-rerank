@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 import hashlib
 import json
 import time
@@ -293,12 +294,13 @@ _last_call_time: float = 0.0
 # Conservative rate limit: 1 call per 10 seconds (~6 RPM) to stay safely within free tier limits
 _min_interval: float = 10.0
 
-def _rate_limit() -> None:
-    """Enforce rate limiting for API calls."""
+
+async def _rate_limit() -> None:
+    """Enforce rate limiting for API calls (non-blocking)."""
     global _last_call_time
     elapsed = time.time() - _last_call_time
     if elapsed < _min_interval:
-        time.sleep(_min_interval - elapsed)
+        await asyncio.sleep(_min_interval - elapsed)
     _last_call_time = time.time()
 
 
@@ -319,7 +321,7 @@ def _save_cluster_name_cache(cache: dict[str, str]) -> None:
     CLUSTER_NAME_CACHE_PATH.write_text(json.dumps(cache))
 
 
-def generate_single_cluster_name(items: list[tuple[dict[str, Any], float]]) -> str:
+async def generate_single_cluster_name(items: list[tuple[dict[str, Any], float]]) -> str:
     """Generate a name for a single cluster using Gemini API."""
     import os
     from google import genai
@@ -360,7 +362,7 @@ What single topic best describes these titles? Reply with ONLY 1-3 words.
 Topic:"""
 
     try:
-        _rate_limit()
+        await _rate_limit()
         client = genai.Client(api_key=api_key)
         response = client.models.generate_content(
             model="gemini-flash-latest",
@@ -383,7 +385,8 @@ Topic:"""
     except Exception:
         return "Misc"
 
-def generate_batch_cluster_names(
+
+async def generate_batch_cluster_names(
     clusters: dict[int, list[tuple[dict[str, Any], float]]],
     progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> dict[int, str]:
@@ -411,7 +414,7 @@ def generate_batch_cluster_names(
     if not to_generate:
         if progress_callback:
             progress_callback(len(clusters), len(clusters))
-        return results
+        return {cid: results.get(cid, "Misc") for cid in clusters}
 
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
@@ -442,7 +445,7 @@ Groups:
 JSON Output:"""
 
         try:
-            _rate_limit()
+            await _rate_limit()
             client = genai.Client(api_key=api_key)
             response = client.models.generate_content(
                 model="gemini-flash-latest",
@@ -476,11 +479,11 @@ JSON Output:"""
     return {cid: results.get(cid, "Misc") for cid in clusters}
 
 
-def generate_cluster_names(
+async def generate_cluster_names(
     clusters: dict[int, list[tuple[dict[str, Any], float]]],
 ) -> dict[int, str]:
     """Generate cluster names using Gemini API."""
-    return generate_batch_cluster_names(clusters)
+    return await generate_batch_cluster_names(clusters)
 
 
 TLDR_CACHE_PATH = Path(".cache/tldrs.json")
@@ -502,7 +505,7 @@ def _save_tldr_cache(cache: dict[str, str]) -> None:
     TLDR_CACHE_PATH.write_text(json.dumps(cache))
 
 
-def generate_batch_tldrs(
+async def generate_batch_tldrs(
     stories: list[dict[str, Any]],
     progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> dict[int, str]:
@@ -527,11 +530,11 @@ def generate_batch_tldrs(
     if not to_generate:
         if progress_callback:
             progress_callback(len(stories), len(stories))
-        return results
+        return {int(s["id"]): results.get(int(s["id"]), cache.get(str(s["id"]), "")) for s in stories}
 
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
-        return results
+        return {int(s["id"]): results.get(int(s["id"]), cache.get(str(s["id"]), "")) for s in stories}
 
     # Chunking: 5 stories per request
     BATCH_SIZE = 5
@@ -566,7 +569,7 @@ Stories:
 JSON Output:"""
 
         try:
-            _rate_limit()
+            await _rate_limit()
             client = genai.Client(api_key=api_key)
             response = client.models.generate_content(
                 model="gemini-flash-latest",
@@ -592,11 +595,10 @@ JSON Output:"""
             pass
 
     _save_tldr_cache(cache)
-    # Ensure all requested IDs are in results
-    return {int(s["id"]): results.get(int(s["id"]), "") for s in stories if int(s["id"]) in results or str(s["id"]) in cache}
+    return {int(s["id"]): results.get(int(s["id"]), cache.get(str(s["id"]), "")) for s in stories}
 
 
-def generate_story_tldr(story_id: int, title: str, comments: list[str]) -> str:
+async def generate_story_tldr(story_id: int, title: str, comments: list[str]) -> str:
     """Generate a 1-sentence TL;DR for a story using Gemini API. Cached by story ID."""
     import os
     from google import genai
@@ -830,11 +832,87 @@ def _load_reason_cache() -> dict[str, str]:
             pass
     return {}
 
+
 def _save_reason_cache(cache: dict[str, str]) -> None:
     REASON_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
     REASON_CACHE_PATH.write_text(json.dumps(cache))
 
-def generate_similarity_reason(cand_title: str, cand_comments: list[str], history_title: str) -> str:
+
+async def generate_batch_similarity_reasons(
+    pairs: list[tuple[str, str, list[str]]],
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+) -> list[str]:
+    """Generate similarity reasons in batches."""
+    import os
+    from google import genai
+
+    if not pairs:
+        return []
+
+    cache = _load_reason_cache()
+    results_map: dict[str, str] = {}
+    to_generate: list[tuple[str, str, list[str], str]] = []
+
+    for cand_title, history_title, comments in pairs:
+        key = hashlib.sha256(f"{cand_title}|{history_title}".encode()).hexdigest()
+        if key in cache:
+            results_map[key] = cache[key]
+        else:
+            to_generate.append((cand_title, history_title, comments, key))
+
+    if to_generate:
+        api_key = os.environ.get("GEMINI_API_KEY")
+        if api_key:
+            BATCH_SIZE = 10
+            for i in range(0, len(to_generate), BATCH_SIZE):
+                batch = to_generate[i : i + BATCH_SIZE]
+                prompts = []
+                for ct, ht, cm, k in batch:
+                    comments_text = ", ".join([c[:100] for c in cm[:2]])
+                    prompts.append(f'Key: {k}\nStory: "{ct}"\nPast: "{ht}"\nContext: {comments_text}')
+                
+                full_prompt = f"""
+Identify the specific shared technical topic or theme for each pair.
+Reply with a JSON object where keys are the Keys provided and values are ONE short phrase (max 8 words) starting with a lowercase verb.
+
+Pairs:
+{chr(10).join(prompts)}
+
+JSON Output:"""
+
+                try:
+                    await _rate_limit()
+                    client = genai.Client(api_key=api_key)
+                    response = client.models.generate_content(
+                        model="gemini-flash-latest",
+                        contents=full_prompt,
+                        config={
+                            "temperature": 0.1,
+                            "response_mime_type": "application/json",
+                        },
+                    )
+                    if response.text:
+                        batch_res = json.loads(response.text)
+                        for key, reason in batch_res.items():
+                            reason_clean = reason.strip().strip('"').strip("'")
+                            if reason_clean and reason_clean[0].isupper() and " " in reason_clean:
+                                reason_clean = reason_clean[0].lower() + reason_clean[1:]
+                            results_map[key] = reason_clean
+                            cache[key] = reason_clean
+                except Exception:
+                    pass
+            
+            _save_reason_cache(cache)
+
+    final_results = []
+    for cand_title, history_title, _ in pairs:
+        key = hashlib.sha256(f"{cand_title}|{history_title}".encode()).hexdigest()
+        final_results.append(results_map.get(key, ""))
+    
+    return final_results
+
+
+async def generate_similarity_reason(cand_title: str, cand_comments: list[str], history_title: str) -> str:
     """Generate a short reason why two stories are similar."""
     import os
     from google import genai
@@ -864,7 +942,7 @@ Reply with ONE short phrase (max 10 words) starting with a lowercase verb (e.g. 
 """
 
     try:
-        _rate_limit()
+        await _rate_limit()
         client = genai.Client(api_key=api_key)
         response = client.models.generate_content(
             model="gemini-flash-latest",

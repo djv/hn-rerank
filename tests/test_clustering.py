@@ -1,6 +1,7 @@
 """Property-based tests for clustering functions."""
 from __future__ import annotations
 
+import pytest
 import numpy as np
 from unittest.mock import patch
 from hypothesis import given, settings, assume
@@ -158,7 +159,8 @@ def test_cluster_interests_returns_centroids_only():
 # =============================================================================
 
 
-def test_cluster_names_non_empty():
+@pytest.mark.asyncio
+async def test_cluster_names_non_empty():
     """Every cluster gets a non-empty name."""
     clusters = {
         0: [
@@ -175,14 +177,15 @@ def test_cluster_names_non_empty():
     with patch("google.genai.Client") as MockClient:
         instance = MockClient.return_value
         instance.models.generate_content.return_value.text = "Technology"
-        names = generate_cluster_names(clusters)
+        names = await generate_cluster_names(clusters)
 
     assert len(names) == 2
     assert all(isinstance(name, str) for name in names.values())
     assert all(len(name) > 0 for name in names.values())
 
 
-def test_fallback_group_name_on_empty_titles():
+@pytest.mark.asyncio
+async def test_fallback_group_name_on_empty_titles():
     """Empty titles → 'Misc' fallback."""
     clusters = {
         0: [
@@ -191,19 +194,21 @@ def test_fallback_group_name_on_empty_titles():
         ],
     }
 
-    names = generate_cluster_names(clusters)
+    names = await generate_cluster_names(clusters)
 
     assert len(names) == 1
     assert names[0] == "Misc"
 
 
-def test_empty_clusters_returns_empty():
+@pytest.mark.asyncio
+async def test_empty_clusters_returns_empty():
     """Empty clusters dict → empty names dict."""
-    names = generate_cluster_names({})
+    names = await generate_cluster_names({})
     assert names == {}
 
 
-def test_names_stripped_of_hn_prefixes():
+@pytest.mark.asyncio
+async def test_names_stripped_of_hn_prefixes():
     """Show HN:, Ask HN:, Tell HN: prefixes are stripped before TF-IDF."""
     clusters = {
         0: [
@@ -217,6 +222,6 @@ def test_names_stripped_of_hn_prefixes():
     with patch("google.genai.Client") as MockClient:
         instance = MockClient.return_value
         instance.models.generate_content.return_value.text = "Projects"
-        names = generate_cluster_names(clusters)
+        names = await generate_cluster_names(clusters)
 
     assert "Show" not in names[0] or "Hn" not in names[0]

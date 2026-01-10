@@ -32,12 +32,15 @@ async def test_generate_html_integration(tmp_path):
         patch("generate_html.rerank.get_embeddings") as mock_emb,
         patch("generate_html.rerank.compute_recency_weights") as mock_weights,
         patch("generate_html.rerank.rank_stories") as mock_rank,
-        patch("generate_html.rerank.generate_story_tldr") as mock_tldr,
-        patch("generate_html.rerank.generate_similarity_reason") as mock_reason,
+        patch("generate_html.rerank.generate_batch_tldrs", new_callable=AsyncMock) as mock_batch_tldrs,
+        patch("generate_html.rerank.generate_batch_cluster_names", new_callable=AsyncMock) as mock_batch_names,
+        patch("generate_html.rerank.generate_batch_similarity_reasons", new_callable=AsyncMock) as mock_batch_reasons,
     ):
         # Mock LLM functions
-        mock_tldr.return_value = "This is a test TL;DR summary."
-        mock_reason.return_value = ""
+        mock_batch_tldrs.return_value = {1: "This is a test TL;DR summary."}
+        mock_batch_names.return_value = {0: "Technology"}
+        mock_batch_reasons.return_value = ["Similarity reason"]
+
         # Mock API behavior
         client_instance = mock_client_class.return_value.__aenter__.return_value
         # Mock login check - simulate logged in state

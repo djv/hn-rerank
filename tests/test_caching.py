@@ -11,7 +11,8 @@ def temp_cache_file(tmp_path):
     with patch("api.rerank.CLUSTER_NAME_CACHE_PATH", cache_file):
         yield cache_file
 
-def test_cluster_name_cache_hit(temp_cache_file):
+@pytest.mark.asyncio
+async def test_cluster_name_cache_hit(temp_cache_file):
     """Test that cached name is returned if present."""
     items = [({"id": 123, "title": "Story 1"}, 1.0)]
     
@@ -24,11 +25,12 @@ def test_cluster_name_cache_hit(temp_cache_file):
     temp_cache_file.write_text(json.dumps(cache_content))
     
     # Call function
-    name = rerank.generate_single_cluster_name(items)
+    name = await rerank.generate_single_cluster_name(items)
     
     assert name == "Cached Cluster Name"
 
-def test_cluster_name_cache_miss_and_save(temp_cache_file):
+@pytest.mark.asyncio
+async def test_cluster_name_cache_miss_and_save(temp_cache_file):
     """Test that name is generated and saved on cache miss."""
     items = [({"id": 456, "title": "Story 2"}, 1.0)]
     
@@ -42,7 +44,7 @@ def test_cluster_name_cache_miss_and_save(temp_cache_file):
         mock_client.models.generate_content.return_value = mock_response
         
         # Call function
-        name = rerank.generate_single_cluster_name(items)
+        name = await rerank.generate_single_cluster_name(items)
         
         assert name == "New Cluster Name"
         
@@ -55,12 +57,13 @@ def test_cluster_name_cache_miss_and_save(temp_cache_file):
         assert cache_key in cache_content
         assert cache_content[cache_key] == "New Cluster Name"
 
-def test_cluster_name_cache_miss_no_api_key(temp_cache_file):
+@pytest.mark.asyncio
+async def test_cluster_name_cache_miss_no_api_key(temp_cache_file):
     """Test that 'Misc' is returned and NOT cached if API key is missing."""
     items = [({"id": 789, "title": "Story 3"}, 1.0)]
     
     with patch.dict("os.environ", {}, clear=True):
-        name = rerank.generate_single_cluster_name(items)
+        name = await rerank.generate_single_cluster_name(items)
         
         assert name == "Misc"
         
