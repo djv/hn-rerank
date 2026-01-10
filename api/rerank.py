@@ -7,6 +7,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Optional, cast
 
+import httpx
 import numpy as np
 import onnxruntime as ort
 from numpy.typing import NDArray
@@ -18,7 +19,6 @@ from api.constants import (
     EMBEDDING_CACHE_DIR,
     EMBEDDING_MIN_CLIP,
     EMBEDDING_MODEL_VERSION,
-    HN_SCORE_POINTS_EXP,
     MAX_CLUSTERS,
     MIN_CLUSTERS,
     MIN_SAMPLES_PER_CLUSTER,
@@ -289,18 +289,32 @@ def cluster_interests_with_labels(
     return np.array(centroids, dtype=np.float32), best_labels
 
 # Global rate limiter state
-_last_call_time: float = 0.0
-# Conservative rate limit: 1 call per 15 seconds (~4 RPM) to stay safely within free tier limits
-_min_interval: float = 15.0
-
+_token_bucket: float = 1.0
+_last_refill: float = time.time()
+# Conservative rate limit: 1 call per 4 seconds (~15 RPM)
+_refill_rate: float = 1.0 / 4.0
+_max_tokens: float = 1.0
 
 async def _rate_limit() -> None:
-    """Enforce rate limiting for API calls (non-blocking)."""
-    global _last_call_time
-    elapsed = time.time() - _last_call_time
-    if elapsed < _min_interval:
-        await asyncio.sleep(_min_interval - elapsed)
-    _last_call_time = time.time()
+    """Enforce rate limiting using a Token Bucket algorithm."""
+    global _token_bucket, _last_refill
+    
+    while True:
+        now = time.time()
+        # Refill tokens based on time passed
+        elapsed = now - _last_refill
+        _token_bucket = min(_max_tokens, _token_bucket + elapsed * _refill_rate)
+        _last_refill = now
+        
+        if _token_bucket >= 1.0:
+            _token_bucket -= 1.0
+            return
+        
+        # Calculate wait time needed for next token
+        wait_time = (1.0 - _token_bucket) / _refill_rate
+        # Add a small buffer and jitter to prevent thundering herds
+        import random
+        await asyncio.sleep(wait_time + 0.1 + random.uniform(0, 0.5))
 
 
 CLUSTER_NAME_CACHE_PATH = Path(".cache/cluster_names.json")
@@ -331,7 +345,7 @@ def _safe_json_loads(text: str) -> dict[Any, Any]:
         lines = clean_text.split("\n")
         # Find first line with { or [ after the first ```
         start_idx = 1
-        while start_idx < len(lines) and not (lines[start_idx].strip().startswith("{") or lines[start_idx].strip().startswith("[")):
+        while start_idx < len(lines) and not (lines[start_idx].strip().startswith("{}") or lines[start_idx].strip().startswith("[")):
             start_idx += 1
         
         # Find the last line with } or ] before the last ```
@@ -357,43 +371,76 @@ def _safe_json_loads(text: str) -> dict[Any, Any]:
 
 
 async def _generate_with_retry(
-    model: str,
-    contents: Any,
-    config: dict[str, Any],
+    model: str = "llama-3.3-70b-versatile",
+    contents: Any = None,
+    config: dict[str, Any] = None,
     max_retries: int = 3,
 ) -> Optional[str]:
-    """Call Gemini API with exponential backoff retry logic."""
+    """Call Groq API with exponential backoff retry logic using httpx."""
     import os
-    from google import genai
-
-    api_key = os.environ.get("GEMINI_API_KEY")
+    
+    api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
         return None
 
-    client = genai.Client(api_key=api_key)
+    # Handle Gemini-style 'contents' to OpenAI-style 'messages'
+    messages = []
+    if isinstance(contents, str):
+        messages = [{"role": "user", "content": contents}]
+    elif isinstance(contents, list):
+        for item in contents:
+            if isinstance(item, str):
+                messages.append({"role": "user", "content": item})
+            elif isinstance(item, dict) and "parts" in item:
+                text = "".join([p.get("text", "") for p in item["parts"]])
+                messages.append({"role": "user", "content": text})
 
-    for attempt in range(max_retries):
-        try:
-            await _rate_limit()
-            response = client.models.generate_content(
-                model=model,
-                contents=contents,
-                config=config,
-            )
-            if response and response.text:
-                return response.text
-            return None
-        except Exception:
-            if attempt == max_retries - 1:
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": config.get("temperature", 0.2) if config else 0.2,
+    }
+    
+    if config and config.get("response_mime_type") == "application/json":
+        payload["response_format"] = {"type": "json_object"}
+
+    async with httpx.AsyncClient() as client:
+        for attempt in range(max_retries):
+            try:
+                await _rate_limit()
+                resp = await client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                    timeout=30.0,
+                )
+                
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return data["choices"][0]["message"]["content"]
+                
+                if resp.status_code == 429:
+                    print(f"[DEBUG] Groq Rate Limit hit (429). Attempt {attempt+1}/{max_retries}")
+                    await asyncio.sleep(20.0 * (2 ** attempt))
+                    continue
+                
+                print(f"[ERROR] Groq API error {resp.status_code}: {resp.text}")
                 return None
-            # Exponential backoff starting at 10s (our rate limit)
-            delay = 10.0 * (2 ** attempt)
-            await asyncio.sleep(delay)
+                
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    print(f"[ERROR] Groq API call failed after {max_retries} retries: {e}")
+                    return None
+                delay = 10.0 * (2 ** attempt)
+                await asyncio.sleep(delay)
     return None
 
 
 async def generate_single_cluster_name(items: list[tuple[dict[str, Any], float]]) -> str:
-    """Generate a name for a single cluster using Gemini API."""
+    """Generate a name for a single cluster using Groq API."""
 
     # Generate cache key based on sorted story IDs
     story_ids = sorted([str(s.get("id", s.get("objectID", ""))) for s, _ in items])
@@ -428,7 +475,7 @@ Topic:"""
 
     try:
         text = await _generate_with_retry(
-            model="gemini-flash-latest",
+            model="llama-3.3-70b-versatile",
             contents=prompt,
             config={"temperature": 0.3, "max_output_tokens": 20},
         )
@@ -453,8 +500,6 @@ async def generate_batch_cluster_names(
     progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> dict[int, str]:
     """Generate names for multiple clusters in a single API call to save quota."""
-    import os
-
     if not clusters:
         return {}
 
@@ -476,10 +521,6 @@ async def generate_batch_cluster_names(
     if not to_generate:
         if progress_callback:
             progress_callback(len(clusters), len(clusters))
-        return {cid: results.get(cid, "Misc") for cid in clusters}
-
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
         return {cid: results.get(cid, "Misc") for cid in clusters}
 
     # Batch clusters together (max 10 per request)
@@ -512,7 +553,7 @@ JSON Output:"""
 
         try:
             text = await _generate_with_retry(
-                model="gemini-flash-latest",
+                model="llama-3.3-70b-versatile",
                 contents=full_prompt,
                 config={
                     "temperature": 0.2,
@@ -552,16 +593,18 @@ JSON Output:"""
         else:
             # Fallback to the top story title if LLM naming failed
             sorted_items = sorted(items, key=lambda x: -x[1])
+            fallback_name = "Misc"
             if sorted_items:
-                top_title = str(sorted_items[0][0].get("title", "Misc")).strip()
+                top_title = str(sorted_items[0][0].get("title", "")).strip()
                 # Clean up HN prefixes
                 for prefix in ["Show HN:", "Ask HN:", "Tell HN:"]:
                     if top_title.startswith(prefix):
                         top_title = top_title[len(prefix):].strip()
-                # Truncate to reasonable length
-                final_results[cid] = (top_title[:30] + "...") if len(top_title) > 33 else top_title
-            else:
-                final_results[cid] = "Misc"
+                
+                if top_title:
+                    fallback_name = (top_title[:30] + "...") if len(top_title) > 33 else top_title
+            
+            final_results[cid] = fallback_name
                 
     return final_results
 
@@ -569,7 +612,7 @@ JSON Output:"""
 async def generate_cluster_names(
     clusters: dict[int, list[tuple[dict[str, Any], float]]],
 ) -> dict[int, str]:
-    """Generate cluster names using Gemini API."""
+    """Generate cluster names using Groq API."""
     return await generate_batch_cluster_names(clusters)
 
 
@@ -597,8 +640,6 @@ async def generate_batch_tldrs(
     progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> dict[int, str]:
     """Generate TL;DRs for multiple stories in batches to save API quota."""
-    import os
-
     if not stories:
         return {}
 
@@ -617,10 +658,6 @@ async def generate_batch_tldrs(
     if not to_generate:
         if progress_callback:
             progress_callback(len(stories), len(stories))
-        return {int(s["id"]): results.get(int(s["id"]), cache.get(str(s["id"]), "")) for s in stories}
-
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
         return {int(s["id"]): results.get(int(s["id"]), cache.get(str(s["id"]), "")) for s in stories}
 
     # Chunking: 5 stories per request
@@ -643,12 +680,10 @@ async def generate_batch_tldrs(
         batch_context = "\n\n---\n\n".join(stories_formatted)
         
         prompt = f"""
-Summarize these {len(batch)} Hacker News stories. 
-For each story:
-- Sentence 1: Core subject.
-- Sentence 2: Main debate/takeaway.
-
+For each story below, provide a 2-sentence summary (core subject, and key takeaway).
 Return ONLY a JSON object where keys are the story IDs (strings) and values are the summaries.
+
+Example: {{ "123": "Story is about X. Key takeaway is Y." }}
 
 Stories:
 {batch_context}
@@ -657,7 +692,7 @@ JSON Output:"""
 
         try:
             text = await _generate_with_retry(
-                model="gemini-flash-latest",
+                model="llama-3.3-70b-versatile",
                 contents=prompt,
                 config={
                     "temperature": 0.2,
@@ -688,9 +723,7 @@ JSON Output:"""
 
 
 async def generate_story_tldr(story_id: int, title: str, comments: list[str]) -> str:
-    """Generate a 1-sentence TL;DR for a story using Gemini API. Cached by story ID."""
-    import os
-
+    """Generate a 1-sentence TL;DR for a story using Groq API. Cached by story ID."""
     if not title:
         return ""
 
@@ -699,10 +732,6 @@ async def generate_story_tldr(story_id: int, title: str, comments: list[str]) ->
     cache_key = str(story_id)
     if cache_key in cache:
         return cache[cache_key]
-
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        return ""
 
     # Build context from title + top comments
     context = f"Title: {title}"
@@ -713,7 +742,7 @@ async def generate_story_tldr(story_id: int, title: str, comments: list[str]) ->
 {context}
 
 Provide a concise summary of the story and its discussion. 
-Do NOT use introductory phrases like "This story is about", "The discussion reveals", "Here is a summary", or "The article mentions". 
+Do NOT use introductory phrases. 
 Start directly with the content.
 
 Structure:
@@ -724,7 +753,7 @@ IMPORTANT: Put the comments summary (Sentence 2+) on a single new line directly 
 
     try:
         text = await _generate_with_retry(
-            model="gemini-flash-latest",
+            model="llama-3.3-70b-versatile",
             contents=prompt,
             config={"temperature": 0.3, "max_output_tokens": 400},
         )
@@ -763,24 +792,18 @@ IMPORTANT: Put the comments summary (Sentence 2+) on a single new line directly 
         return ""
 
 def compute_recency_weights(
-    timestamps: list[int], decay_rate: Optional[float] = None
+    timestamps: list[int],
+    decay_rate: Optional[float] = None
 ) -> NDArray[np.float32]:
-    # decay_rate arg is kept for compatibility but we default to the "Long Term" sigmoid
-    # if it is explicitly passed as None or a positive value.
-    # If 0.0 is passed, we still return uniform weights.
-
     if decay_rate is not None and decay_rate <= 0:
         return np.ones(len(timestamps), dtype=np.float32)
 
     now: float = time.time()
     ages_days: NDArray[Any] = (now - np.array(timestamps)) / 86400
 
-    # Sigmoid parameters for "1 day ~= 1 month, 1 year = 0.5"
     k = 0.01
     inflection = 365
 
-    # 1 / (1 + exp(k * (age - inflection)))
-    # We clip exponent to avoid overflow, though ages shouldn't be that huge
     exponent = np.clip(k * (ages_days - inflection), -50, 50)
     weights: NDArray[Any] = 1.0 / (1.0 + np.exp(exponent))
 
@@ -837,8 +860,9 @@ def rank_stories(
         # Mean across all clusters (broad appeal)
         cluster_mean_sim = np.mean(sim_centroids, axis=0)
 
-        # Combined: weight MaxSim higher to preserve niche interests
-        semantic_scores = 0.7 * cluster_max_sim + 0.3 * cluster_mean_sim
+        # Combined: weight MaxSim much higher to preserve niche interests and avoid noise dilution
+        # 0.9 MaxSim + 0.1 MeanSim balances specific match with broad appeal
+        semantic_scores = 0.9 * cluster_max_sim + 0.1 * cluster_mean_sim
 
         # For display score and best_fav_index, use original embeddings (not clusters)
         # This preserves interpretable "match to specific story" display
@@ -854,28 +878,30 @@ def rank_stories(
         k = 15.0
         threshold = 0.45
         semantic_scores = 1.0 / (1.0 + np.exp(-k * (semantic_scores - threshold)))
-        
-        # Normalize to 0-1 range roughly, though sigmoid does this naturally
-        # We don't force zeroing out anymore, allowing high-point items to surface
 
     # 3. Negative Signal (Penalty)
     if negative_embeddings is not None and len(negative_embeddings) > 0:
         sim_neg: NDArray[np.float32] = np.max(
-            cosine_similarity(negative_embeddings, cand_emb), axis=0
+            cosine_similarity(negative_embeddings, cand_emb),
+            axis=0
         )
         semantic_scores -= neg_weight * sim_neg
 
-    # 4. HN Gravity Score
-    points: NDArray[Any] = np.array([int(s.get("score", 0)) for s in stories])
-    hn_scores: NDArray[Any] = np.power(np.maximum(points - 1, 0), HN_SCORE_POINTS_EXP)
+    # 4. HN Gravity Score (Log-scaled)
+    # We use a log scale so that 500+ points punch through without dominating everything
+    points: NDArray[Any] = np.array([float(s.get("score", 0)) for s in stories])
+    hn_scores = np.log1p(points) / np.log1p(max(points.max(), 500))
 
-    if hn_scores.max() > 0:
-        hn_scores /= hn_scores.max()
+    # 5. Hybrid Score with Dynamic HN Weight
+    # High-point stories get a slightly higher weight to ensure discovery of "Viral" news
+    # Stories with 500+ points get up to 15% weight, others stay at 5%
+    viral_mask = points > 300
+    dynamic_hn_weight = np.full(len(stories), hn_weight)
+    dynamic_hn_weight[viral_mask] = np.clip(hn_weight * 3, 0.05, 0.15)
 
-    # 5. Hybrid Score
     hybrid_scores: NDArray[np.float32] = (
-        1 - hn_weight
-    ) * semantic_scores + hn_weight * hn_scores
+        1 - dynamic_hn_weight
+    ) * semantic_scores + dynamic_hn_weight * hn_scores
 
     # 6. Diversity (MMR)
     results: list[tuple[int, float, int, float]] = []
@@ -932,8 +958,6 @@ async def generate_batch_similarity_reasons(
     progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> list[str]:
     """Generate similarity reasons in batches."""
-    import os
-
     if not pairs:
         return []
 
@@ -949,17 +973,15 @@ async def generate_batch_similarity_reasons(
             to_generate.append((cand_title, history_title, comments, key))
 
     if to_generate:
-        api_key = os.environ.get("GEMINI_API_KEY")
-        if api_key:
-            BATCH_SIZE = 10
-            for i in range(0, len(to_generate), BATCH_SIZE):
-                batch = to_generate[i : i + BATCH_SIZE]
-                prompts = []
-                for ct, ht, cm, k in batch:
-                    comments_text = ", ".join([c[:100] for c in cm[:2]])
-                    prompts.append(f'Key: {k}\nStory: "{ct}"\nPast: "{ht}"\nContext: {comments_text}')
-                
-                full_prompt = f"""
+        BATCH_SIZE = 10
+        for i in range(0, len(to_generate), BATCH_SIZE):
+            batch = to_generate[i : i + BATCH_SIZE]
+            prompts = []
+            for ct, ht, cm, k in batch:
+                comments_text = ", ".join([c[:100] for c in cm[:2]])
+                prompts.append(f'Key: {k}\nStory: "{ct}"\nPast: "{ht}"\nContext: {comments_text}')
+            
+            full_prompt = f"""
 Identify the specific shared technical topic or theme for each pair.
 Reply with a JSON object where keys are the Keys provided and values are ONE short phrase (max 8 words) starting with a lowercase verb.
 
@@ -968,27 +990,27 @@ Pairs:
 
 JSON Output:"""
 
-                try:
-                    text = await _generate_with_retry(
-                        model="gemini-flash-latest",
-                        contents=full_prompt,
-                        config={
-                            "temperature": 0.1,
-                            "response_mime_type": "application/json",
-                        },
-                    )
-                    if text:
-                        batch_res = _safe_json_loads(text)
-                        for key, reason in batch_res.items():
-                            reason_clean = str(reason).strip().strip('"').strip("'")
-                            if reason_clean and reason_clean[0].isupper() and " " in reason_clean:
-                                reason_clean = reason_clean[0].lower() + reason_clean[1:]
-                            results_map[key] = reason_clean
-                            cache[key] = reason_clean
-                except Exception:
-                    pass
-            
-            _save_reason_cache(cache)
+            try:
+                text = await _generate_with_retry(
+                    model="llama-3.3-70b-versatile",
+                    contents=full_prompt,
+                    config={
+                        "temperature": 0.1,
+                        "response_mime_type": "application/json",
+                    },
+                )
+                if text:
+                    batch_res = _safe_json_loads(text)
+                    for key, reason in batch_res.items():
+                        reason_clean = str(reason).strip().strip('"').strip("'")
+                        if reason_clean and reason_clean[0].isupper() and " " in reason_clean:
+                            reason_clean = reason_clean[0].lower() + reason_clean[1:]
+                        results_map[key] = reason_clean
+                        cache[key] = reason_clean
+            except Exception:
+                pass
+        
+        _save_reason_cache(cache)
 
     final_results = []
     for cand_title, history_title, _ in pairs:
@@ -1000,12 +1022,6 @@ JSON Output:"""
 
 async def generate_similarity_reason(cand_title: str, cand_comments: list[str], history_title: str) -> str:
     """Generate a short reason why two stories are similar."""
-    import os
-
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        return ""
-
     # Create a unique key for the pair
     key = hashlib.sha256(f"{cand_title}|{history_title}".encode()).hexdigest()
     
@@ -1028,7 +1044,7 @@ Reply with ONE short phrase (max 10 words) starting with a lowercase verb (e.g. 
 
     try:
         text = await _generate_with_retry(
-            model="gemini-flash-latest",
+            model="llama-3.3-70b-versatile",
             contents=prompt,
             config={"temperature": 0.1, "max_output_tokens": 30},
         )
@@ -1037,7 +1053,6 @@ Reply with ONE short phrase (max 10 words) starting with a lowercase verb (e.g. 
 
         reason = text.strip().strip('"').strip("'")
         
-        # Ensure it starts lowercase if it's a verb phrase
         if reason and reason[0].isupper() and " " in reason:
              reason = reason[0].lower() + reason[1:]
 
