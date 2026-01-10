@@ -294,10 +294,36 @@ def _rate_limit() -> None:
         time.sleep(_min_interval - elapsed)
     _last_call_time = time.time()
 
+
+CLUSTER_NAME_CACHE_PATH = Path(".cache/cluster_names.json")
+
+
+def _load_cluster_name_cache() -> dict[str, str]:
+    if CLUSTER_NAME_CACHE_PATH.exists():
+        try:
+            return json.loads(CLUSTER_NAME_CACHE_PATH.read_text())
+        except Exception:
+            pass
+    return {}
+
+
+def _save_cluster_name_cache(cache: dict[str, str]) -> None:
+    CLUSTER_NAME_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CLUSTER_NAME_CACHE_PATH.write_text(json.dumps(cache))
+
+
 def generate_single_cluster_name(items: list[tuple[dict[str, Any], float]]) -> str:
     """Generate a name for a single cluster using Gemini API."""
     import os
     from google import genai
+
+    # Generate cache key based on sorted story IDs
+    story_ids = sorted([str(s.get("id", s.get("objectID", ""))) for s, _ in items])
+    cache_key = hashlib.sha256(",".join(story_ids).encode()).hexdigest()
+
+    cache = _load_cluster_name_cache()
+    if cache_key in cache:
+        return cache[cache_key]
 
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
@@ -341,7 +367,12 @@ Topic:"""
         name = name.strip().strip('"').strip("'")
         # Truncate if too long
         words = name.split()[:4]
-        return " ".join(words) if words else "Misc"
+        final_name = " ".join(words) if words else "Misc"
+        
+        cache[cache_key] = final_name
+        _save_cluster_name_cache(cache)
+        
+        return final_name
     except Exception:
         return "Misc"
 
