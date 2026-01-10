@@ -21,6 +21,7 @@ HN Rerank is a local-first application that personalizes Hacker News content usi
 ### 3. Content Fetching (`api/fetching.py`)
 - **Hybrid Approach**:
     - **Discovery**: Uses Algolia API to find candidate stories (search by date/points).
+    - **Time Windows**: Fetches candidates in **7-day windows** to stay under Algolia's 1000-hit limit while minimizing API calls.
     - **Detail**: Uses HTML Scraping (`BeautifulSoup`) against `news.ycombinator.com` to fetch story details and *ranked comments*.
 - **Smart Scraping**:
     - **Breadth-First Selection**: Prioritizes root comments to capture diverse viewpoints.
@@ -33,8 +34,8 @@ HN Rerank is a local-first application that personalizes Hacker News content usi
 ### 4. Reranking Engine (`api/rerank.py`)
 - **Model**: Uses a local ONNX embedding model (`bge-base-en-v1.5`).
 - **Multi-Interest Clustering**:
-    - Uses Agglomerative Clustering (Ward linkage) to discover interest groups.
-    - Silhouette score threshold (≥0.1) ensures coherent clusters.
+    - Uses **Agglomerative Clustering** with **Average Linkage** and **Cosine Metric** (better for irregular semantic shapes than Ward/Euclidean).
+    - Silhouette score threshold (≥0.14) ensures coherent clusters while allowing semantic merges.
     - Searches from high k to low to maximize granularity.
     - `cluster_interests_with_labels(embeddings, weights)` returns `(centroids, labels)`.
 - **Cluster Naming** (`generate_batch_cluster_names()` via Groq API):
@@ -45,8 +46,8 @@ HN Rerank is a local-first application that personalizes Hacker News content usi
     - Cached by cluster content hash in `.cache/cluster_names.json`.
     - Progress bar shows per-cluster naming progress.
 - **Scoring Algorithm**:
-    - **Cluster MaxSim**: Best match to any interest cluster centroid (70% weight).
-    - **Cluster MeanSim**: Broad appeal across all clusters (30% weight).
+    - **Cluster MaxSim**: Best match to any interest cluster centroid (95% weight).
+    - **Cluster MeanSim**: Broad appeal across all clusters (5% weight).
     - **Display Score**: Raw MaxSim to individual stories for interpretable "reason" links.
     - **Weighting**: Semantic (95%) + HN Popularity (5%).
 - **Diversity**: Applies Maximal Marginal Relevance (MMR, λ=0.35) to prevent redundant results.
@@ -70,12 +71,12 @@ HN Rerank is a local-first application that personalizes Hacker News content usi
 1. Login/Profile     → Fetch user's upvoted and hidden IDs
 2. Signal Fetching   → Scrape content for these IDs, cache locally
 3. Embedding         → Generate vectors for user's history (BGE-base)
-4. Clustering        → Group signals into clusters (Agglomerative + Ward)
+4. Clustering        → Group signals into clusters (Agglomerative + Average Linkage)
 5. Cluster Naming    → Generate names via Groq API
-6. Candidate Fetch   → Get top N stories from Algolia (last 30 days)
+6. Candidate Fetch   → Get top N stories from Algolia (last 30 days, 7-day windows)
 7. Candidate Embed   → Generate vectors for candidates
-8. Cluster Assign    → Map each candidate to best-matching cluster centroid
-9. Ranking           → Compute similarity to centroids, apply MMR diversity
+8. Reranking         → Compute similarity to centroids, apply MMR diversity
+9. UI Clustering     → Candidate chips show the User Interest Cluster that triggered the match
 10. TL;DR Generation → Generate 1-sentence summaries via Groq API
 11. Render           → Generate index.html + clusters.html
 ```
