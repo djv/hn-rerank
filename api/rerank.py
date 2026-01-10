@@ -25,18 +25,7 @@ from api.constants import (
     TEXT_CONTENT_MAX_LENGTH,
 )
 
-from api.logging_config import get_logger
 
-from api.constants import (
-    DEFAULT_EMBEDDING_BATCH_SIZE,
-    EMBEDDING_CACHE_DIR,
-    EMBEDDING_MIN_CLIP,
-    EMBEDDING_MODEL_VERSION,
-    MAX_CLUSTERS,
-    MIN_CLUSTERS,
-    MIN_SAMPLES_PER_CLUSTER,
-    TEXT_CONTENT_MAX_LENGTH,
-)
 
 # Global singleton for the model
 _model: Optional[ONNXEmbeddingModel] = None
@@ -952,10 +941,13 @@ def rank_stories(
 
     # 5. Hybrid Score with Dynamic HN Weight
     # High-point stories get a slightly higher weight to ensure discovery of "Viral" news
-    # Stories with 500+ points get up to 15% weight, others stay at 5%
+    # Stories with 300+ points get 3x weight (capped at 0.5 to prevent domination)
     viral_mask = points > 300
     dynamic_hn_weight = np.full(len(stories), hn_weight)
-    dynamic_hn_weight[viral_mask] = np.clip(hn_weight * 3, 0.05, 0.15)
+    if np.any(viral_mask):
+        # Cap at 0.5 unless the base weight is already higher
+        upper_bound = max(0.5, hn_weight)
+        dynamic_hn_weight[viral_mask] = np.clip(hn_weight * 3.0, hn_weight, upper_bound)
 
     hybrid_scores: NDArray[np.float32] = (
         1 - dynamic_hn_weight
