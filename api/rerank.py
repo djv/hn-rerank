@@ -473,8 +473,12 @@ async def generate_batch_cluster_names(
             batch_prompts.append(f"Cluster {cid}: {titles_text}")
 
         full_prompt = f"""
-Identify a 1-3 word topic for each of these {len(batch_cids)} story groups.
-Return ONLY a JSON object where keys are the Cluster IDs and values are the topics.
+Identify a highly specific 1-3 word technical topic for each of these {len(batch_cids)} story groups.
+Avoid generic terms like "Technology" or "News". Be specific (e.g. "Rust Concurrency", "LLM Quantization").
+
+Return ONLY a JSON object where keys are the EXACT Cluster IDs provided and values are the topics.
+
+Example: {{ "0": "React Hooks", "1": "Postgres Indexing" }}
 
 Groups:
 {chr(10).join(batch_prompts)}
@@ -516,7 +520,27 @@ JSON Output:"""
             pass
 
     _save_cluster_name_cache(cache)
-    return {cid: results.get(cid, "Misc") for cid in clusters}
+    
+    # Final results with better fallback than "Misc"
+    final_results = {}
+    for cid, items in clusters.items():
+        if cid in results:
+            final_results[cid] = results[cid]
+        else:
+            # Fallback to the top story title if LLM naming failed
+            sorted_items = sorted(items, key=lambda x: -x[1])
+            if sorted_items:
+                top_title = str(sorted_items[0][0].get("title", "Misc")).strip()
+                # Clean up HN prefixes
+                for prefix in ["Show HN:", "Ask HN:", "Tell HN:"]:
+                    if top_title.startswith(prefix):
+                        top_title = top_title[len(prefix):].strip()
+                # Truncate to reasonable length
+                final_results[cid] = (top_title[:30] + "...") if len(top_title) > 33 else top_title
+            else:
+                final_results[cid] = "Misc"
+                
+    return final_results
 
 
 async def generate_cluster_names(
