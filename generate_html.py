@@ -492,9 +492,13 @@ async def main() -> None:
             reason = str(pos_stories[fav_idx]["title"])
             reason_url = f"https://news.ycombinator.com/item?id={pos_stories[fav_idx]['id']}"
 
-        # Get cluster name for this candidate
+        # Get cluster name for this candidate based on the matching history item
         cluster_name: str = ""
-        if idx in cand_cluster_map:
+        if fav_idx != -1 and fav_idx < len(pos_stories) and cluster_labels is not None:
+            cid = int(cluster_labels[fav_idx])
+            cluster_name = cluster_names.get(cid, "")
+        elif idx in cand_cluster_map:
+            # Fallback to candidate's own cluster if no specific favorite match
             cid = cand_cluster_map[idx]
             cluster_name = cluster_names.get(cid, "")
 
