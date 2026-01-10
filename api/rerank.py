@@ -251,8 +251,9 @@ def cluster_interests_with_labels(
 
     # Search for highest k with acceptable silhouette (>= 0.1)
     # This gives more granular clusters while maintaining coherence
-    min_k = max(MIN_CLUSTERS, int(np.sqrt(n_samples) * 0.7))
-    max_k = min(MAX_CLUSTERS, int(np.sqrt(n_samples) * 3.5), n_samples // MIN_SAMPLES_PER_CLUSTER)
+    # Increased multipliers to force finer-grained clustering
+    min_k = max(MIN_CLUSTERS, int(np.sqrt(n_samples) * 1.5))
+    max_k = min(MAX_CLUSTERS, int(np.sqrt(n_samples) * 4.5), n_samples // MIN_SAMPLES_PER_CLUSTER)
 
     best_labels: NDArray[np.int32] = np.zeros(n_samples, dtype=np.int32)
     silhouette_threshold = 0.25
