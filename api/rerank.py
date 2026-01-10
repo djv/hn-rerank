@@ -330,7 +330,7 @@ Topic:"""
         _rate_limit()
         client = genai.Client(api_key=api_key)
         response = client.models.generate_content(
-            model="gemini-2.5-flash-lite-preview-09-2025",
+            model="gemini-flash-latest",
             contents=prompt,
             config={"temperature": 0.3, "max_output_tokens": 20},
         )
@@ -410,7 +410,7 @@ IMPORTANT: Put the comments summary (Sentence 2+) on a single new line directly 
         _rate_limit()
         client = genai.Client(api_key=api_key)
         response = client.models.generate_content(
-            model="gemini-2.5-flash-lite-preview-09-2025",
+            model="gemini-flash-latest",
             contents=prompt,
             config={"temperature": 0.3, "max_output_tokens": 400},
         )
@@ -641,7 +641,7 @@ Reply with ONE short phrase (max 10 words) starting with a lowercase verb (e.g. 
         _rate_limit()
         client = genai.Client(api_key=api_key)
         response = client.models.generate_content(
-            model="gemini-2.5-flash-lite-preview-09-2025",
+            model="gemini-flash-latest",
             contents=prompt,
             config={"temperature": 0.1, "max_output_tokens": 30},
         )
