@@ -37,8 +37,8 @@ HN Rerank is a local-first application that personalizes Hacker News content usi
     - Silhouette score threshold (≥0.1) ensures coherent clusters.
     - Searches from high k to low to maximize granularity.
     - `cluster_interests_with_labels(embeddings, weights)` returns `(centroids, labels)`.
-- **Cluster Naming** (`generate_batch_cluster_names()` via Gemini API):
-    - Uses Google Gemini API (`gemini-flash-latest`) to generate contextual 1-3 word labels.
+- **Cluster Naming** (`generate_batch_cluster_names()` via Groq API):
+    - Uses Google Groq API (`llama-3.3-70b-versatile`) to generate contextual 1-3 word labels.
     - Batches naming requests (10 per call) to optimize quota.
     - Strips HN prefixes (Show HN:, Ask HN:, Tell HN:) before sending to LLM.
     - Falls back to "Misc" if API unavailable.
@@ -50,13 +50,13 @@ HN Rerank is a local-first application that personalizes Hacker News content usi
     - **Display Score**: Raw MaxSim to individual stories for interpretable "reason" links.
     - **Weighting**: Semantic (95%) + HN Popularity (5%).
 - **Diversity**: Applies Maximal Marginal Relevance (MMR, λ=0.35) to prevent redundant results.
-- **Story TL;DR** (`generate_batch_tldrs()` via Gemini API):
-    - Generates concise summaries using `gemini-flash-latest`.
+- **Story TL;DR** (`generate_batch_tldrs()` via Groq API):
+    - Generates concise summaries using `llama-3.3-70b-versatile`.
     - Batches requests (5 per call) to minimize API quota consumption.
     - Format: Story summary, followed by a newline and key discussion points/debates.
     - Replaces the raw comments section in the story card for a cleaner UI.
     - Cached by story ID in `.cache/tldrs.json`.
-- **Smart Reasons** (`generate_batch_similarity_reasons()` via Gemini API):
+- **Smart Reasons** (`generate_batch_similarity_reasons()` via Groq API):
     - Generates short phrases explaining the semantic link between stories.
     - Batches requests (10 per call).
     - Cached in `.cache/reasons.json`.
@@ -71,12 +71,12 @@ HN Rerank is a local-first application that personalizes Hacker News content usi
 2. Signal Fetching   → Scrape content for these IDs, cache locally
 3. Embedding         → Generate vectors for user's history (BGE-base)
 4. Clustering        → Group signals into clusters (Agglomerative + Ward)
-5. Cluster Naming    → Generate names via Gemini API
+5. Cluster Naming    → Generate names via Groq API
 6. Candidate Fetch   → Get top N stories from Algolia (last 30 days)
 7. Candidate Embed   → Generate vectors for candidates
 8. Cluster Assign    → Map each candidate to best-matching cluster centroid
 9. Ranking           → Compute similarity to centroids, apply MMR diversity
-10. TL;DR Generation → Generate 1-sentence summaries via Gemini API
+10. TL;DR Generation → Generate 1-sentence summaries via Groq API
 11. Render           → Generate index.html + clusters.html
 ```
 
@@ -122,7 +122,7 @@ Each story card shows:
 ```
 
 ## Key Invariants
-- **Hybrid Privacy**: Embeddings and reranking are local (ONNX). LLM features (naming, summaries) use Gemini API.
+- **Hybrid Privacy**: Embeddings and reranking are local (ONNX). LLM features (naming, summaries) use Groq API.
 - **Privacy**: Cookies and data live in `.cache/` inside the project.
 - **Robustness**: Negative caching prevents API hammering on invalid IDs.
 - **Determinism**: Same input → same clustering output (fixed random state).

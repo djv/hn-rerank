@@ -20,6 +20,7 @@ class HNClient:
             base_url=self.BASE_URL,
             follow_redirects=True,
             headers={"User-Agent": "Mozilla/5.0"},
+            timeout=httpx.Timeout(15.0, connect=10.0),
         )
         self._load_cookies()
 

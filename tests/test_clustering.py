@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 import numpy as np
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 from hypothesis import given, settings, assume
 from hypothesis import strategies as st
 from hypothesis.extra.numpy import arrays
@@ -173,10 +173,13 @@ async def test_cluster_names_non_empty():
         ],
     }
 
-    # Mock Gemini API to return a fixed string
-    with patch("google.genai.Client") as MockClient:
-        instance = MockClient.return_value
-        instance.models.generate_content.return_value.text = "Technology"
+    # Mock Groq API via httpx
+    with patch("httpx.AsyncClient.post") as mock_post:
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"choices": [{"message": {"content": "Technology"}}]}
+        mock_post.return_value = mock_resp
+        
         names = await generate_cluster_names(clusters)
 
     assert len(names) == 2
@@ -218,10 +221,13 @@ async def test_names_stripped_of_hn_prefixes():
         ],
     }
     
-    # We can inspect the prompt if we want, or just ensure it runs
-    with patch("google.genai.Client") as MockClient:
-        instance = MockClient.return_value
-        instance.models.generate_content.return_value.text = "Projects"
+    # Mock API via httpx
+    with patch("httpx.AsyncClient.post") as mock_post:
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"choices": [{"message": {"content": "Projects"}}]}
+        mock_post.return_value = mock_resp
+        
         names = await generate_cluster_names(clusters)
 
     assert "Show" not in names[0] or "Hn" not in names[0]

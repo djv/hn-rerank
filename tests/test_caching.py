@@ -34,14 +34,14 @@ async def test_cluster_name_cache_miss_and_save(temp_cache_file):
     """Test that name is generated and saved on cache miss."""
     items = [({"id": 456, "title": "Story 2"}, 1.0)]
     
-    # Mock API
-    with patch.dict("os.environ", {"GEMINI_API_KEY": "fake_key"}), \
-         patch("google.genai.Client") as mock_client_cls:
+    # Mock API via httpx
+    with patch.dict("os.environ", {"GROQ_API_KEY": "fake_key"}), \
+         patch("httpx.AsyncClient.post") as mock_post:
         
-        mock_client = mock_client_cls.return_value
-        mock_response = MagicMock()
-        mock_response.text = '"New Cluster Name"'
-        mock_client.models.generate_content.return_value = mock_response
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"choices": [{"message": {"content": "New Cluster Name"}}]}
+        mock_post.return_value = mock_resp
         
         # Call function
         name = await rerank.generate_single_cluster_name(items)
