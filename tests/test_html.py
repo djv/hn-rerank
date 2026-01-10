@@ -5,7 +5,7 @@ from generate_html import generate_story_html, get_relative_time
 
 def test_generate_story_html_special_chars():
     """
-    Ensure that story titles or comments containing curly braces don't crash the generator.
+    Ensure that story titles or tldrs containing curly braces don't crash the generator.
     This validates the robustness of the string formatting logic.
     """
     story = {
@@ -16,7 +16,7 @@ def test_generate_story_html_special_chars():
         "title": "React {hooks} vs [brackets]",
         "hn_url": "https://news.ycombinator.com/item?id=123",
         "reason": "Interest in {technology}",
-        "comments": ["This is a {comment}"],
+        "tldr": "This is a {comment}",
     }
 
     # This should not raise a KeyError or ValueError
@@ -39,13 +39,44 @@ def test_generate_story_html_missing_fields():
         "title": "Untitled",
         "hn_url": "https://news.ycombinator.com/item?id=456",
         "reason": "",  # Empty reason
-        "comments": [],
+        "tldr": "",
     }
     html = generate_story_html(story)
     assert "Untitled" in html
     assert "https://news.ycombinator.com/item?id=456" in html
     # Should use HN URL as primary link if URL is missing
     assert 'href="https://news.ycombinator.com/item?id=456"' in html
+
+
+def test_story_card_accessibility():
+    """
+    Verify that the story card contains appropriate accessibility attributes
+    for the HN link button.
+    """
+    story = {
+        "match_percent": 95,
+        "points": 100,
+        "time_ago": "2h",
+        "url": "https://example.com",
+        "title": "Test Title",
+        "hn_url": "https://news.ycombinator.com/item?id=123",
+        "reason": None,
+        "tldr": None,
+    }
+
+    html = generate_story_html(story)
+
+    # Check for aria-label on the link
+    assert 'aria-label="View on Hacker News"' in html
+
+    # Check for security attribute
+    assert 'rel="noopener noreferrer"' in html
+
+    # Check for updated title
+    assert 'title="View on Hacker News"' in html
+
+    # Check for aria-hidden on the SVG icon
+    assert '<svg class="w-3.5 h-3.5" aria-hidden="true"' in html
 
 
 class TestRelativeTime:
@@ -81,66 +112,6 @@ class TestRelativeTime:
         assert get_relative_time(int(time.time()) - 86400 * 30) == "30d"
 
 
-class TestCommentTruncation:
-    """Tests for comment display truncation."""
-
-    def test_short_comment_no_truncation(self):
-        story = {
-            "match_percent": 80,
-            "points": 50,
-            "time_ago": "1h",
-            "url": "https://example.com",
-            "title": "Test",
-            "hn_url": "https://news.ycombinator.com/item?id=1",
-            "reason": None,
-            "comments": ["Short comment here"],
-        }
-        html = generate_story_html(story)
-        assert "Short comment here" in html
-        assert "..." not in html
-
-    def test_long_comment_truncated(self):
-        long_comment = "A" * 250
-        story = {
-            "match_percent": 80,
-            "points": 50,
-            "time_ago": "1h",
-            "url": "https://example.com",
-            "title": "Test",
-            "hn_url": "https://news.ycombinator.com/item?id=1",
-            "reason": None,
-            "comments": [long_comment],
-        }
-        html = generate_story_html(story)
-        assert "A" * 200 in html
-        assert "..." in html
-        assert "A" * 250 not in html
-
-    def test_max_three_comments(self):
-        story = {
-            "match_percent": 80,
-            "points": 50,
-            "time_ago": "1h",
-            "url": "https://example.com",
-            "title": "Test",
-            "hn_url": "https://news.ycombinator.com/item?id=1",
-            "reason": None,
-            "comments": [
-                "Comment 1",
-                "Comment 2",
-                "Comment 3",
-                "Comment 4",
-                "Comment 5",
-            ],
-        }
-        html = generate_story_html(story)
-        assert "Comment 1" in html
-        assert "Comment 2" in html
-        assert "Comment 3" in html
-        assert "Comment 4" not in html
-        assert "Comment 5" not in html
-
-
 class TestHtmlEscaping:
     """Tests for HTML injection prevention."""
 
@@ -153,13 +124,13 @@ class TestHtmlEscaping:
             "title": "<script>alert('xss')</script>",
             "hn_url": "https://news.ycombinator.com/item?id=1",
             "reason": None,
-            "comments": [],
+            "tldr": "",
         }
         html = generate_story_html(story)
         assert "<script>" not in html
         assert "&lt;script&gt;" in html
 
-    def test_comment_escaped(self):
+    def test_tldr_escaped(self):
         story = {
             "match_percent": 80,
             "points": 50,
@@ -168,7 +139,7 @@ class TestHtmlEscaping:
             "title": "Safe Title",
             "hn_url": "https://news.ycombinator.com/item?id=1",
             "reason": None,
-            "comments": ["<img src=x onerror=alert(1)>"],
+            "tldr": "<img src=x onerror=alert(1)>",
         }
         html = generate_story_html(story)
         assert "<img" not in html
@@ -183,7 +154,7 @@ class TestHtmlEscaping:
             "title": "Safe Title",
             "hn_url": "https://news.ycombinator.com/item?id=1",
             "reason": "<b>Bold</b> reason",
-            "comments": [],
+            "tldr": "",
         }
         html = generate_story_html(story)
         assert "<b>" not in html
