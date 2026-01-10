@@ -291,8 +291,8 @@ def cluster_interests_with_labels(
 
 # Global rate limiter state
 _last_call_time: float = 0.0
-# Conservative rate limit: 1 call per 10 seconds (~6 RPM) to stay safely within free tier limits
-_min_interval: float = 10.0
+# Conservative rate limit: 1 call per 15 seconds (~4 RPM) to stay safely within free tier limits
+_min_interval: float = 15.0
 
 
 async def _rate_limit() -> None:
