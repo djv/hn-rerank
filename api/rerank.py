@@ -23,7 +23,6 @@ from api.constants import (
     MIN_CLUSTERS,
     MIN_SAMPLES_PER_CLUSTER,
     TEXT_CONTENT_MAX_LENGTH,
-    SEMANTIC_MATCH_THRESHOLD,
 )
 
 # Global singleton for the model
@@ -849,11 +848,15 @@ def rank_stories(
         max_sim_scores = np.max(sim_pos, axis=0)
         best_fav_indices = np.argmax(sim_pos, axis=0)
 
-        # Apply threshold based on original MaxSim (more interpretable)
-        low_sim_mask = max_sim_scores < SEMANTIC_MATCH_THRESHOLD
-        semantic_scores[low_sim_mask] = 0.0
-        best_fav_indices[low_sim_mask] = -1
-        max_sim_scores[low_sim_mask] = 0.0
+        # Apply soft sigmoid activation instead of hard threshold
+        # This suppresses noise (<0.4) while preserving strong signals
+        # k=15 makes the transition reasonably steep around the threshold
+        k = 15.0
+        threshold = 0.45
+        semantic_scores = 1.0 / (1.0 + np.exp(-k * (semantic_scores - threshold)))
+        
+        # Normalize to 0-1 range roughly, though sigmoid does this naturally
+        # We don't force zeroing out anymore, allowing high-point items to surface
 
     # 3. Negative Signal (Penalty)
     if negative_embeddings is not None and len(negative_embeddings) > 0:
