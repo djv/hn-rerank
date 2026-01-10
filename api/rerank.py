@@ -321,6 +321,42 @@ def _save_cluster_name_cache(cache: dict[str, str]) -> None:
     CLUSTER_NAME_CACHE_PATH.write_text(json.dumps(cache))
 
 
+def _safe_json_loads(text: str) -> dict[Any, Any]:
+    """Safely load JSON, handling potential markdown blocks."""
+    if not text:
+        return {}
+    
+    clean_text = text.strip()
+    if clean_text.startswith("```"):
+        # Extract content between triple backticks
+        lines = clean_text.split("\n")
+        # Find first line with { or [ after the first ```
+        start_idx = 1
+        while start_idx < len(lines) and not (lines[start_idx].strip().startswith("{") or lines[start_idx].strip().startswith("[")):
+            start_idx += 1
+        
+        # Find the last line with } or ] before the last ```
+        end_idx = len(lines) - 1
+        while end_idx > start_idx and not (lines[end_idx].strip().endswith("}") or lines[end_idx].strip().endswith("]")):
+            end_idx -= 1
+            
+        if end_idx >= start_idx:
+            clean_text = "\n".join(lines[start_idx : end_idx + 1])
+    
+    try:
+        return json.loads(clean_text)
+    except json.JSONDecodeError:
+        # Fallback: try to find anything between { and }
+        import re
+        match = re.search(r"({.*})", clean_text, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group(1))
+            except Exception:
+                pass
+        return {}
+
+
 async def generate_single_cluster_name(items: list[tuple[dict[str, Any], float]]) -> str:
     """Generate a name for a single cluster using Gemini API."""
     import os
@@ -457,18 +493,21 @@ JSON Output:"""
             )
             
             if response.text:
-                batch_results = json.loads(response.text)
+                batch_results = _safe_json_loads(response.text)
                 for cid_str, name in batch_results.items():
-                    cid = int(cid_str)
-                    final_name = str(name).strip().split()[:4]
-                    final_name = " ".join(final_name)
-                    
-                    results[cid] = final_name
-                    # Save to cache
-                    items = to_generate[cid]
-                    story_ids = sorted([str(s.get("id", s.get("objectID", ""))) for s, _ in items])
-                    cache_key = hashlib.sha256(",".join(story_ids).encode()).hexdigest()
-                    cache[cache_key] = final_name
+                    try:
+                        cid = int(cid_str)
+                        final_name = str(name).strip().split()[:4]
+                        final_name = " ".join(final_name)
+                        
+                        results[cid] = final_name
+                        # Save to cache
+                        items = to_generate[cid]
+                        story_ids = sorted([str(s.get("id", s.get("objectID", ""))) for s, _ in items])
+                        cache_key = hashlib.sha256(",".join(story_ids).encode()).hexdigest()
+                        cache[cache_key] = final_name
+                    except (ValueError, TypeError):
+                        continue
             
             if progress_callback:
                 progress_callback(len(results), len(clusters))
@@ -576,17 +615,21 @@ JSON Output:"""
                 contents=prompt,
                 config={
                     "temperature": 0.2,
+                    "max_output_tokens": 2000,
                     "response_mime_type": "application/json",
                 },
             )
             
             if response.text:
-                batch_results = json.loads(response.text)
+                batch_results = _safe_json_loads(response.text)
                 for sid_str, tldr in batch_results.items():
-                    sid = int(sid_str)
-                    tldr_clean = tldr.strip().strip('"').strip("'")
-                    results[sid] = tldr_clean
-                    cache[str(sid)] = tldr_clean
+                    try:
+                        sid = int(sid_str)
+                        tldr_clean = tldr.strip().strip('"').strip("'")
+                        results[sid] = tldr_clean
+                        cache[str(sid)] = tldr_clean
+                    except (ValueError, TypeError):
+                        continue
             
             if progress_callback:
                 progress_callback(completed_initial + i + len(batch), len(stories))
@@ -635,7 +678,7 @@ Structure:
 IMPORTANT: Put the comments summary (Sentence 2+) on a single new line directly below the first sentence (no empty line)."""
 
     try:
-        _rate_limit()
+        await _rate_limit()
         client = genai.Client(api_key=api_key)
         response = client.models.generate_content(
             model="gemini-flash-latest",
@@ -892,9 +935,9 @@ JSON Output:"""
                         },
                     )
                     if response.text:
-                        batch_res = json.loads(response.text)
+                        batch_res = _safe_json_loads(response.text)
                         for key, reason in batch_res.items():
-                            reason_clean = reason.strip().strip('"').strip("'")
+                            reason_clean = str(reason).strip().strip('"').strip("'")
                             if reason_clean and reason_clean[0].isupper() and " " in reason_clean:
                                 reason_clean = reason_clean[0].lower() + reason_clean[1:]
                             results_map[key] = reason_clean
