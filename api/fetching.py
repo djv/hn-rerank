@@ -201,7 +201,7 @@ async def get_best_stories(
 
     # Algolia limits to 1000 results per query, so use time windows
     ALGOLIA_MAX_PER_QUERY = 1000
-    WINDOW_DAYS = 3  # Days per window (smaller = more queries but finer control)
+    WINDOW_DAYS = 7  # Increased from 3 to 7 to reduce API calls (safe: ~700 hits/week < 1000)
     hits: set[int] = set()
 
     async with httpx.AsyncClient(timeout=30.0) as client:
