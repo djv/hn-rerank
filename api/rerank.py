@@ -262,8 +262,8 @@ def cluster_interests_with_labels(
     for k in range(max_k, min_k - 1, -1):
         agg = AgglomerativeClustering(
             n_clusters=k,
-            metric="euclidean",
-            linkage="ward",
+            metric="cosine",
+            linkage="average",
         )
         labels = agg.fit_predict(normalized)
         score = float(silhouette_score(normalized, labels))
@@ -272,7 +272,7 @@ def cluster_interests_with_labels(
             break
     else:
         # No k met threshold, use max_k anyway
-        agg = AgglomerativeClustering(n_clusters=max_k, metric="euclidean", linkage="ward")
+        agg = AgglomerativeClustering(n_clusters=max_k, metric="cosine", linkage="average")
         best_labels = agg.fit_predict(normalized).astype(np.int32)
 
     # Compute centroids from labels (in original embedding space)
