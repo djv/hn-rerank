@@ -251,12 +251,12 @@ def cluster_interests_with_labels(
 
     # Search for highest k with acceptable silhouette (>= 0.1)
     # This gives more granular clusters while maintaining coherence
-    # Increased multipliers to force finer-grained clustering
-    min_k = max(MIN_CLUSTERS, int(np.sqrt(n_samples) * 1.5))
-    max_k = min(MAX_CLUSTERS, int(np.sqrt(n_samples) * 4.5), n_samples // MIN_SAMPLES_PER_CLUSTER)
+    # Tuned to balance granularity (Z80 vs Space) vs coherence (Transport Maps)
+    min_k = max(MIN_CLUSTERS, int(np.sqrt(n_samples) * 1.0))
+    max_k = min(MAX_CLUSTERS, int(np.sqrt(n_samples) * 4.0), n_samples // MIN_SAMPLES_PER_CLUSTER)
 
     best_labels: NDArray[np.int32] = np.zeros(n_samples, dtype=np.int32)
-    silhouette_threshold = 0.25
+    silhouette_threshold = 0.18
 
     # Search from high to low k, pick first that meets threshold
     for k in range(max_k, min_k - 1, -1):
