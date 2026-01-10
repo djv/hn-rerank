@@ -172,8 +172,8 @@ async def fetch_story(client: httpx.AsyncClient, sid: int) -> Optional[dict[str,
             top_for_rank = " ".join([c["text"] for c in selected])
             ui_comments = [c["text"] for c in selected[:TOP_COMMENTS_FOR_UI]]
 
-            # Repeat title 4x to weight it higher than comments in embeddings
-            title_weighted = f"{title}. {title}. {title}. {title}."
+            # Weight title naturally (modern models handle this better)
+            title_weighted = f"{title}."
             story: dict[str, Any] = {
                 "id": sid,
                 "title": title,
