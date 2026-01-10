@@ -174,7 +174,7 @@ def test_hn_points_normalization(scores):
 
         for i in range(len(stories)):
             for j in range(len(stories)):
-                if stories[i]["score"] > stories[j]["score"]:
+                if int(stories[i]["score"]) > int(stories[j]["score"]):
                     assert idx_to_score[i] >= idx_to_score[j]
 
 

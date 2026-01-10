@@ -9,7 +9,7 @@ dependencies = [
     "einops>=0.8.1",
     "httpx>=0.28.1",
     "hypothesis>=6.150.0",
-    "ollama>=0.4.0",
+    "google-genai>=0.1.0",
     "numba>=0.59.0",
     "numpy<2.4.0",
     "onnxruntime>=1.23.2",

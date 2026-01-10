@@ -198,7 +198,7 @@ def test_none_positive_embeddings():
 
     assert len(results) == 2
     # Higher HN score should rank first
-    assert stories[results[0][0]]["score"] >= stories[results[1][0]]["score"]
+    assert int(stories[results[0][0]]["score"]) >= int(stories[results[1][0]]["score"])
 
 
 def test_empty_positive_embeddings_array():

@@ -201,14 +201,6 @@ def generate_story_html(story: dict[str, Any]) -> str:
         escaped_reason_title: str = html.escape(str(story["reason"]), quote=False)
         reason_url: str = story.get("reason_url", "")
         
-        # Use smart reason if available
-        display_text = story.get("smart_reason", f"Similar to: {escaped_reason_title}")
-        escaped_display = html.escape(display_text) if not story.get("smart_reason") else display_text # already clean from LLM/safe to escape? LLM output is raw text.
-        
-        # If smart reason exists, we format it: "↳ [Smart Reason] (because you liked [Title])"
-        # Or simpler: "↳ [Smart Reason]" and maybe a tooltip for the source?
-        # Let's go with: "↳ [Smart Reason]" and the link text is "Similar to: ..."
-        
         if story.get("smart_reason"):
             escaped_smart = html.escape(story["smart_reason"])
             if reason_url:
@@ -278,15 +270,10 @@ async def main() -> None:
         action="store_true",
         help="Disable recency weighting for user profile (default: False)",
     )
-    parser.add_argument(
-        "--gpu",
-        action="store_true",
-        help="Enable GPU (CUDA) support for embedding model (default: False)",
-    )
     args: argparse.Namespace = parser.parse_args()
 
-    # Initialize model early to respect GPU preference
-    rerank.init_model(use_gpu=args.gpu)
+    # Initialize model early
+    rerank.init_model()
 
     with Progress(
         SpinnerColumn(),

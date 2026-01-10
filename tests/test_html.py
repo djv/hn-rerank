@@ -24,7 +24,7 @@ def test_generate_story_html_special_chars():
         html = generate_story_html(story)
         assert "React {hooks}" in html
         assert "Interest in {technology}" in html
-        assert "This is a {comment}" in html
+        # Comments are no longer displayed directly; TL;DR replaces them
     except (KeyError, ValueError) as e:
         pytest.fail(f"generate_story_html crashed with special characters: {e}")
 
@@ -81,66 +81,6 @@ class TestRelativeTime:
         assert get_relative_time(int(time.time()) - 86400 * 30) == "30d"
 
 
-class TestCommentTruncation:
-    """Tests for comment display truncation."""
-
-    def test_short_comment_no_truncation(self):
-        story = {
-            "match_percent": 80,
-            "points": 50,
-            "time_ago": "1h",
-            "url": "https://example.com",
-            "title": "Test",
-            "hn_url": "https://news.ycombinator.com/item?id=1",
-            "reason": None,
-            "comments": ["Short comment here"],
-        }
-        html = generate_story_html(story)
-        assert "Short comment here" in html
-        assert "..." not in html
-
-    def test_long_comment_truncated(self):
-        long_comment = "A" * 250
-        story = {
-            "match_percent": 80,
-            "points": 50,
-            "time_ago": "1h",
-            "url": "https://example.com",
-            "title": "Test",
-            "hn_url": "https://news.ycombinator.com/item?id=1",
-            "reason": None,
-            "comments": [long_comment],
-        }
-        html = generate_story_html(story)
-        assert "A" * 200 in html
-        assert "..." in html
-        assert "A" * 250 not in html
-
-    def test_max_three_comments(self):
-        story = {
-            "match_percent": 80,
-            "points": 50,
-            "time_ago": "1h",
-            "url": "https://example.com",
-            "title": "Test",
-            "hn_url": "https://news.ycombinator.com/item?id=1",
-            "reason": None,
-            "comments": [
-                "Comment 1",
-                "Comment 2",
-                "Comment 3",
-                "Comment 4",
-                "Comment 5",
-            ],
-        }
-        html = generate_story_html(story)
-        assert "Comment 1" in html
-        assert "Comment 2" in html
-        assert "Comment 3" in html
-        assert "Comment 4" not in html
-        assert "Comment 5" not in html
-
-
 class TestHtmlEscaping:
     """Tests for HTML injection prevention."""
 
@@ -159,7 +99,8 @@ class TestHtmlEscaping:
         assert "<script>" not in html
         assert "&lt;script&gt;" in html
 
-    def test_comment_escaped(self):
+    def test_tldr_escaped(self):
+        """TL;DR content should be HTML-escaped."""
         story = {
             "match_percent": 80,
             "points": 50,
@@ -168,11 +109,12 @@ class TestHtmlEscaping:
             "title": "Safe Title",
             "hn_url": "https://news.ycombinator.com/item?id=1",
             "reason": None,
-            "comments": ["<img src=x onerror=alert(1)>"],
+            "comments": [],
+            "tldr": "<script>alert('xss')</script>",
         }
         html = generate_story_html(story)
-        assert "<img" not in html
-        assert "&lt;img" in html
+        assert "<script>" not in html
+        assert "&lt;script&gt;" in html
 
     def test_reason_escaped(self):
         story = {

@@ -5,11 +5,11 @@ HN Rerank is a local-first application that personalizes Hacker News content usi
 
 ## Core Components
 
-### 1. CLI Entrypoint (`generate_html.py` / `tui_app.py`)
+### 1. CLI Entrypoint (`generate_html.py`)
 - **Orchestrator**: Manages the flow of fetching user data, embedding, clustering, fetching candidates, reranking, and generating the dashboard.
 - **UI Generation**: Produces two self-contained HTML files:
-    - `index.html` - Ranked recommendations with per-story cluster chips
-    - `clusters.html` - Full interest cluster visualization with stories per cluster
+    - `index.html` - Ranked recommendations with per-story cluster chips and LLM-generated TL;DRs.
+    - `clusters.html` - Full interest cluster visualization with stories per cluster.
 - **Concurrency**: Uses `asyncio` for parallel fetching of stories.
 
 ### 2. Client API (`api/client.py`)
@@ -49,8 +49,9 @@ HN Rerank is a local-first application that personalizes Hacker News content usi
     - **Weighting**: Semantic (95%) + HN Popularity (5%).
 - **Diversity**: Applies Maximal Marginal Relevance (MMR, λ=0.35) to prevent redundant results.
 - **Story TL;DR** (`generate_story_tldr()` via local LLM):
-    - Generates 2-sentence summaries: story topic + discussion insights.
-    - Uses ollama with `llama3.2:3b`.
+    - Generates concise summaries (up to 800 chars) using `llama3.2:3b`.
+    - Format: Story summary, followed by a newline and key discussion points/debates.
+    - Replaces the raw comments section in the story card for a cleaner UI.
     - Cached by story ID in `.cache/tldrs.json`.
 
 ### 5. Constants (`api/constants.py`)

@@ -32,7 +32,12 @@ async def test_generate_html_integration(tmp_path):
         patch("generate_html.rerank.get_embeddings") as mock_emb,
         patch("generate_html.rerank.compute_recency_weights") as mock_weights,
         patch("generate_html.rerank.rank_stories") as mock_rank,
+        patch("generate_html.rerank.generate_story_tldr") as mock_tldr,
+        patch("generate_html.rerank.generate_similarity_reason") as mock_reason,
     ):
+        # Mock LLM functions
+        mock_tldr.return_value = "This is a test TL;DR summary."
+        mock_reason.return_value = ""
         # Mock API behavior
         client_instance = mock_client_class.return_value.__aenter__.return_value
         # Mock login check - simulate logged in state
@@ -67,4 +72,5 @@ async def test_generate_html_integration(tmp_path):
         assert "Integrated Test" in html_content
         assert "95%" in html_content
         assert username in html_content
-        assert "Integration works" in html_content
+        # TL;DR replaces raw comments
+        assert "This is a test TL;DR summary." in html_content
