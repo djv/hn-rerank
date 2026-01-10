@@ -357,10 +357,44 @@ def _safe_json_loads(text: str) -> dict[Any, Any]:
         return {}
 
 
-async def generate_single_cluster_name(items: list[tuple[dict[str, Any], float]]) -> str:
-    """Generate a name for a single cluster using Gemini API."""
+async def _generate_with_retry(
+    model: str,
+    contents: Any,
+    config: dict[str, Any],
+    max_retries: int = 3,
+) -> Optional[str]:
+    """Call Gemini API with exponential backoff retry logic."""
     import os
     from google import genai
+
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        return None
+
+    client = genai.Client(api_key=api_key)
+
+    for attempt in range(max_retries):
+        try:
+            await _rate_limit()
+            response = client.models.generate_content(
+                model=model,
+                contents=contents,
+                config=config,
+            )
+            if response and response.text:
+                return response.text
+            return None
+        except Exception:
+            if attempt == max_retries - 1:
+                return None
+            # Exponential backoff starting at 10s (our rate limit)
+            delay = 10.0 * (2 ** attempt)
+            await asyncio.sleep(delay)
+    return None
+
+
+async def generate_single_cluster_name(items: list[tuple[dict[str, Any], float]]) -> str:
+    """Generate a name for a single cluster using Gemini API."""
 
     # Generate cache key based on sorted story IDs
     story_ids = sorted([str(s.get("id", s.get("objectID", ""))) for s, _ in items])
@@ -369,10 +403,6 @@ async def generate_single_cluster_name(items: list[tuple[dict[str, Any], float]]
     cache = _load_cluster_name_cache()
     if cache_key in cache:
         return cache[cache_key]
-
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        return "Misc"
 
     # Get top titles by weight
     sorted_items = sorted(items, key=lambda x: -x[1])[:10]
@@ -398,18 +428,15 @@ What single topic best describes these titles? Reply with ONLY 1-3 words.
 Topic:"""
 
     try:
-        await _rate_limit()
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
+        text = await _generate_with_retry(
             model="gemini-flash-latest",
             contents=prompt,
             config={"temperature": 0.3, "max_output_tokens": 20},
         )
-        name = response.text
-        if not name:
+        if not text:
             return "Misc"
         
-        name = name.strip().strip('"').strip("'")
+        name = text.strip().strip('"').strip("'")
         # Truncate if too long
         words = name.split()[:4]
         final_name = " ".join(words) if words else "Misc"
@@ -428,7 +455,6 @@ async def generate_batch_cluster_names(
 ) -> dict[int, str]:
     """Generate names for multiple clusters in a single API call to save quota."""
     import os
-    from google import genai
 
     if not clusters:
         return {}
@@ -486,9 +512,7 @@ Groups:
 JSON Output:"""
 
         try:
-            await _rate_limit()
-            client = genai.Client(api_key=api_key)
-            response = client.models.generate_content(
+            text = await _generate_with_retry(
                 model="gemini-flash-latest",
                 contents=full_prompt,
                 config={
@@ -497,8 +521,8 @@ JSON Output:"""
                 },
             )
             
-            if response.text:
-                batch_results = _safe_json_loads(response.text)
+            if text:
+                batch_results = _safe_json_loads(text)
                 for cid_str, name in batch_results.items():
                     try:
                         cid = int(cid_str)
@@ -575,7 +599,6 @@ async def generate_batch_tldrs(
 ) -> dict[int, str]:
     """Generate TL;DRs for multiple stories in batches to save API quota."""
     import os
-    from google import genai
 
     if not stories:
         return {}
@@ -634,9 +657,7 @@ Stories:
 JSON Output:"""
 
         try:
-            await _rate_limit()
-            client = genai.Client(api_key=api_key)
-            response = client.models.generate_content(
+            text = await _generate_with_retry(
                 model="gemini-flash-latest",
                 contents=prompt,
                 config={
@@ -646,8 +667,8 @@ JSON Output:"""
                 },
             )
             
-            if response.text:
-                batch_results = _safe_json_loads(response.text)
+            if text:
+                batch_results = _safe_json_loads(text)
                 for sid_str, tldr in batch_results.items():
                     try:
                         sid = int(sid_str)
@@ -670,7 +691,6 @@ JSON Output:"""
 async def generate_story_tldr(story_id: int, title: str, comments: list[str]) -> str:
     """Generate a 1-sentence TL;DR for a story using Gemini API. Cached by story ID."""
     import os
-    from google import genai
 
     if not title:
         return ""
@@ -704,18 +724,15 @@ Structure:
 IMPORTANT: Put the comments summary (Sentence 2+) on a single new line directly below the first sentence (no empty line)."""
 
     try:
-        await _rate_limit()
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
+        text = await _generate_with_retry(
             model="gemini-flash-latest",
             contents=prompt,
             config={"temperature": 0.3, "max_output_tokens": 400},
         )
-        tldr = response.text
-        if not tldr:
+        if not text:
             return ""
 
-        tldr = tldr.strip().strip('"').strip("'")
+        tldr = text.strip().strip('"').strip("'")
         
         # Aggressive cleaning of conversational filler
         useless_prefixes = [
@@ -913,7 +930,6 @@ async def generate_batch_similarity_reasons(
 ) -> list[str]:
     """Generate similarity reasons in batches."""
     import os
-    from google import genai
 
     if not pairs:
         return []
@@ -950,9 +966,7 @@ Pairs:
 JSON Output:"""
 
                 try:
-                    await _rate_limit()
-                    client = genai.Client(api_key=api_key)
-                    response = client.models.generate_content(
+                    text = await _generate_with_retry(
                         model="gemini-flash-latest",
                         contents=full_prompt,
                         config={
@@ -960,8 +974,8 @@ JSON Output:"""
                             "response_mime_type": "application/json",
                         },
                     )
-                    if response.text:
-                        batch_res = _safe_json_loads(response.text)
+                    if text:
+                        batch_res = _safe_json_loads(text)
                         for key, reason in batch_res.items():
                             reason_clean = str(reason).strip().strip('"').strip("'")
                             if reason_clean and reason_clean[0].isupper() and " " in reason_clean:
@@ -984,7 +998,6 @@ JSON Output:"""
 async def generate_similarity_reason(cand_title: str, cand_comments: list[str], history_title: str) -> str:
     """Generate a short reason why two stories are similar."""
     import os
-    from google import genai
 
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
@@ -1011,18 +1024,15 @@ Reply with ONE short phrase (max 10 words) starting with a lowercase verb (e.g. 
 """
 
     try:
-        await _rate_limit()
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
+        text = await _generate_with_retry(
             model="gemini-flash-latest",
             contents=prompt,
             config={"temperature": 0.1, "max_output_tokens": 30},
         )
-        reason = response.text
-        if not reason:
+        if not text:
             return ""
 
-        reason = reason.strip().strip('"').strip("'")
+        reason = text.strip().strip('"').strip("'")
         
         # Ensure it starts lowercase if it's a verb phrase
         if reason and reason[0].isupper() and " " in reason:
