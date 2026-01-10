@@ -154,18 +154,24 @@ def get_embeddings(
         h: str = hashlib.sha256(
             f"{EMBEDDING_MODEL_VERSION}:{text}".encode()
         ).hexdigest()
-        cache_path: Path = CACHE_DIR / f"{h}.npy"
-        if cache_path.exists():
+        cache_path_npz: Path = CACHE_DIR / f"{h}.npz"
+        cache_path_npy: Path = CACHE_DIR / f"{h}.npy"
+        
+        vec: Optional[NDArray[np.float32]] = None
+        if cache_path_npz.exists():
             try:
-                vec: NDArray[np.float32] = np.load(cache_path)
-                if vec.shape == (expected_dim,):
-                    vectors.append(vec)
-                else:
-                    vectors.append(None)
-                    to_compute_indices.append(idx)
+                data = np.load(cache_path_npz)
+                vec = data["embedding"]
             except Exception:
-                vectors.append(None)
-                to_compute_indices.append(idx)
+                pass
+        elif cache_path_npy.exists():
+            try:
+                vec = np.load(cache_path_npy)
+            except Exception:
+                pass
+
+        if vec is not None and vec.shape == (expected_dim,):
+            vectors.append(vec)
         else:
             vectors.append(None)
             to_compute_indices.append(idx)
@@ -191,7 +197,8 @@ def get_embeddings(
             h_res: str = hashlib.sha256(
                 f"{EMBEDDING_MODEL_VERSION}:{processed_texts[original_idx]}".encode()
             ).hexdigest()
-            np.save(CACHE_DIR / f"{h_res}.npy", vec_res)
+            # Use compressed format for cache efficiency
+            np.savez_compressed(CACHE_DIR / f"{h_res}.npz", embedding=vec_res)
 
     if not vectors or all(v is None for v in vectors):
         return np.zeros((0, expected_dim), dtype=np.float32)
@@ -376,13 +383,105 @@ Topic:"""
     except Exception:
         return "Misc"
 
+def generate_batch_cluster_names(
+    clusters: dict[int, list[tuple[dict[str, Any], float]]],
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+) -> dict[int, str]:
+    """Generate names for multiple clusters in a single API call to save quota."""
+    import os
+    from google import genai
+
+    if not clusters:
+        return {}
+
+    cache = _load_cluster_name_cache()
+    results: dict[int, str] = {}
+    to_generate: dict[int, list[tuple[dict[str, Any], float]]] = {}
+
+    for cid, items in clusters.items():
+        # Generate cache key based on sorted story IDs
+        story_ids = sorted([str(s.get("id", s.get("objectID", ""))) for s, _ in items])
+        cache_key = hashlib.sha256(",".join(story_ids).encode()).hexdigest()
+        
+        if cache_key in cache:
+            results[cid] = cache[cache_key]
+        else:
+            to_generate[cid] = items
+
+    if not to_generate:
+        if progress_callback:
+            progress_callback(len(clusters), len(clusters))
+        return results
+
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        return {cid: results.get(cid, "Misc") for cid in clusters}
+
+    # Batch clusters together (max 10 per request)
+    BATCH_SIZE = 10
+    cid_list = list(to_generate.keys())
+    
+    for i in range(0, len(cid_list), BATCH_SIZE):
+        batch_cids = cid_list[i : i + BATCH_SIZE]
+        batch_prompts = []
+        
+        for cid in batch_cids:
+            items = to_generate[cid]
+            sorted_items = sorted(items, key=lambda x: -x[1])[:8]
+            titles = [str(s.get("title", "")).strip() for s, _ in sorted_items]
+            titles_text = ", ".join(f'"{t}"' for t in titles if t)
+            batch_prompts.append(f"Cluster {cid}: {titles_text}")
+
+        full_prompt = f"""
+Identify a 1-3 word topic for each of these {len(batch_cids)} story groups.
+Return ONLY a JSON object where keys are the Cluster IDs and values are the topics.
+
+Groups:
+{chr(10).join(batch_prompts)}
+
+JSON Output:"""
+
+        try:
+            _rate_limit()
+            client = genai.Client(api_key=api_key)
+            response = client.models.generate_content(
+                model="gemini-flash-latest",
+                contents=full_prompt,
+                config={
+                    "temperature": 0.2,
+                    "response_mime_type": "application/json",
+                },
+            )
+            
+            if response.text:
+                batch_results = json.loads(response.text)
+                for cid_str, name in batch_results.items():
+                    cid = int(cid_str)
+                    final_name = str(name).strip().split()[:4]
+                    final_name = " ".join(final_name)
+                    
+                    results[cid] = final_name
+                    # Save to cache
+                    items = to_generate[cid]
+                    story_ids = sorted([str(s.get("id", s.get("objectID", ""))) for s, _ in items])
+                    cache_key = hashlib.sha256(",".join(story_ids).encode()).hexdigest()
+                    cache[cache_key] = final_name
+            
+            if progress_callback:
+                progress_callback(len(results), len(clusters))
+        except Exception:
+            pass
+
+    _save_cluster_name_cache(cache)
+    return {cid: results.get(cid, "Misc") for cid in clusters}
+
+
 def generate_cluster_names(
     clusters: dict[int, list[tuple[dict[str, Any], float]]],
 ) -> dict[int, str]:
     """Generate cluster names using Gemini API."""
-    if not clusters:
-        return {}
-    return {cid: generate_single_cluster_name(items) for cid, items in clusters.items()}
+    return generate_batch_cluster_names(clusters)
+
 
 TLDR_CACHE_PATH = Path(".cache/tldrs.json")
 
@@ -396,10 +495,106 @@ def _load_tldr_cache() -> dict[str, str]:
             pass
     return {}
 
+
 def _save_tldr_cache(cache: dict[str, str]) -> None:
     """Save TL;DR cache to disk."""
     TLDR_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
     TLDR_CACHE_PATH.write_text(json.dumps(cache))
+
+
+def generate_batch_tldrs(
+    stories: list[dict[str, Any]],
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+) -> dict[int, str]:
+    """Generate TL;DRs for multiple stories in batches to save API quota."""
+    import os
+    from google import genai
+
+    if not stories:
+        return {}
+
+    cache = _load_tldr_cache()
+    results: dict[int, str] = {}
+    to_generate: list[dict[str, Any]] = []
+
+    for s in stories:
+        sid = int(s["id"])
+        if str(sid) in cache:
+            results[sid] = cache[str(sid)]
+        else:
+            to_generate.append(s)
+
+    if not to_generate:
+        if progress_callback:
+            progress_callback(len(stories), len(stories))
+        return results
+
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        return results
+
+    # Chunking: 5 stories per request
+    BATCH_SIZE = 5
+    total_to_gen = len(to_generate)
+    completed_initial = len(stories) - total_to_gen
+    
+    for i in range(0, total_to_gen, BATCH_SIZE):
+        batch = to_generate[i : i + BATCH_SIZE]
+        
+        stories_formatted = []
+        for s in batch:
+            title = s.get("title", "Untitled")
+            comments = s.get("comments", [])
+            context = f"ID: {s['id']}\nTitle: {title}"
+            if comments:
+                context += "\nComments:\n" + "\n".join(f"- {c[:300]}" for c in comments[:4])
+            stories_formatted.append(context)
+
+        batch_context = "\n\n---\n\n".join(stories_formatted)
+        
+        prompt = f"""
+Summarize these {len(batch)} Hacker News stories. 
+For each story:
+- Sentence 1: Core subject.
+- Sentence 2: Main debate/takeaway.
+
+Return ONLY a JSON object where keys are the story IDs (strings) and values are the summaries.
+
+Stories:
+{batch_context}
+
+JSON Output:"""
+
+        try:
+            _rate_limit()
+            client = genai.Client(api_key=api_key)
+            response = client.models.generate_content(
+                model="gemini-flash-latest",
+                contents=prompt,
+                config={
+                    "temperature": 0.2,
+                    "response_mime_type": "application/json",
+                },
+            )
+            
+            if response.text:
+                batch_results = json.loads(response.text)
+                for sid_str, tldr in batch_results.items():
+                    sid = int(sid_str)
+                    tldr_clean = tldr.strip().strip('"').strip("'")
+                    results[sid] = tldr_clean
+                    cache[str(sid)] = tldr_clean
+            
+            if progress_callback:
+                progress_callback(completed_initial + i + len(batch), len(stories))
+                
+        except Exception:
+            pass
+
+    _save_tldr_cache(cache)
+    # Ensure all requested IDs are in results
+    return {int(s["id"]): results.get(int(s["id"]), "") for s in stories if int(s["id"]) in results or str(s["id"]) in cache}
+
 
 def generate_story_tldr(story_id: int, title: str, comments: list[str]) -> str:
     """Generate a 1-sentence TL;DR for a story using Gemini API. Cached by story ID."""

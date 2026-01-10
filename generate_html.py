@@ -394,10 +394,13 @@ async def main() -> None:
 
             n_clusters = len(set(cluster_labels))
             name_task: Any = progress.add_task("[cyan]Naming clusters...", total=n_clusters)
-            cluster_names = {}
-            for cid, items in clusters_for_naming.items():
-                cluster_names[cid] = rerank.generate_single_cluster_name(items)
-                progress.update(name_task, advance=1)
+            
+            def name_cb(curr: int, total: int) -> None:
+                progress.update(name_task, completed=curr)
+            
+            cluster_names = rerank.generate_batch_cluster_names(
+                clusters_for_naming, progress_callback=name_cb
+            )
             progress.update(name_task, description="[green][+] Clusters named.")
 
         # 3. Candidates
@@ -503,13 +506,19 @@ async def main() -> None:
     print("[*] Generating content via LLM...")
     with progress:
         llm_task = progress.add_task("[cyan]Generating TL;DRs & Reasons...", total=len(stories_data))
+        
+        # Batch TL;DR generation
+        tldrs = rerank.generate_batch_tldrs(
+            stories_data, 
+            progress_callback=lambda curr, tot: progress.update(llm_task, completed=curr)
+        )
+        
         for sd in stories_data:
-            # TL;DR
-            sd["tldr"] = rerank.generate_story_tldr(sd["id"], sd["title"], sd.get("comments", []))
+            # Assign batched TL;DR
+            sd["tldr"] = tldrs.get(sd["id"], "")
             
-            # Smart Reason
+            # Smart Reason (still individual for now, but usually fewer calls)
             if sd.get("reason"):
-                # "reason" currently holds the title of the history item
                 smart_reason = rerank.generate_similarity_reason(
                     sd["title"], 
                     sd.get("comments", []), 
@@ -518,7 +527,6 @@ async def main() -> None:
                 if smart_reason:
                     sd["smart_reason"] = smart_reason
 
-            progress.update(llm_task, advance=1)
         progress.update(llm_task, description="[green][+] LLM content generated.")
 
     print("[*] Generating HTML...")
