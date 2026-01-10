@@ -172,8 +172,8 @@ async def fetch_story(client: httpx.AsyncClient, sid: int) -> Optional[dict[str,
             top_for_rank = " ".join([c["text"] for c in selected])
             ui_comments = [c["text"] for c in selected[:TOP_COMMENTS_FOR_UI]]
 
-            # Weight title naturally (modern models handle this better)
-            title_weighted = f"{title}."
+            # Use natural title weighting
+            title_context = f"{title}."
             story: dict[str, Any] = {
                 "id": sid,
                 "title": title,
@@ -181,7 +181,7 @@ async def fetch_story(client: httpx.AsyncClient, sid: int) -> Optional[dict[str,
                 "score": score,
                 "time": created_at,
                 "comments": ui_comments,
-                "text_content": f"{title_weighted} {top_for_rank}",
+                "text_content": f"{title_context} {top_for_rank}",
             }
             _atomic_write_json(cache_file, {"ts": time.time(), "story": story})
             _evict_old_cache_files()
