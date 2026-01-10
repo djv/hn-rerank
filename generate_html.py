@@ -185,8 +185,8 @@ STORY_CARD_TEMPLATE: str = """
                 <a href="{url}" target="_blank">{title}</a>
             </h2>
         </div>
-        <a href="{hn_url}" target="_blank" class="shrink-0 p-1 rounded bg-stone-100 text-stone-400 hover:bg-hn hover:text-white transition-all" title="HN">
-            <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2L2 12h3v8h6v-6h2v6h6v-8h3L12 2z"/></svg>
+        <a href="{hn_url}" target="_blank" rel="noopener noreferrer" class="shrink-0 p-1 rounded bg-stone-100 text-stone-400 hover:bg-hn hover:text-white transition-all" aria-label="View on Hacker News" title="View on Hacker News">
+            <svg class="w-3.5 h-3.5" aria-hidden="true" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2L2 12h3v8h6v-6h2v6h6v-8h3L12 2z"/></svg>
         </a>
     </div>
     {reason_html}
