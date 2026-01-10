@@ -252,10 +252,10 @@ def cluster_interests_with_labels(
     # Search for highest k with acceptable silhouette (>= 0.1)
     # This gives more granular clusters while maintaining coherence
     min_k = max(MIN_CLUSTERS, int(np.sqrt(n_samples) * 0.7))
-    max_k = min(MAX_CLUSTERS, int(np.sqrt(n_samples) * 2.5), n_samples // MIN_SAMPLES_PER_CLUSTER)
+    max_k = min(MAX_CLUSTERS, int(np.sqrt(n_samples) * 3.5), n_samples // MIN_SAMPLES_PER_CLUSTER)
 
     best_labels: NDArray[np.int32] = np.zeros(n_samples, dtype=np.int32)
-    silhouette_threshold = 0.1
+    silhouette_threshold = 0.25
 
     # Search from high to low k, pick first that meets threshold
     for k in range(max_k, min_k - 1, -1):
@@ -540,11 +540,13 @@ async def generate_batch_cluster_names(
 
         full_prompt = f"""
 Identify a highly specific 1-3 word technical topic for each of these {len(batch_cids)} story groups.
-Avoid generic terms like "Technology" or "News". Be specific (e.g. "Rust Concurrency", "LLM Quantization").
+- If a group contains distinct/unrelated topics (e.g. Space AND Biology), list them: "Space, Bio & AI".
+- Avoid generic terms like "Technology", "News", or "Interesting".
+- Be specific (e.g. "Rust Concurrency", "LLM Quantization").
 
 Return ONLY a JSON object where keys are the EXACT Cluster IDs provided and values are the topics.
 
-Example: {{ "0": "React Hooks", "1": "Postgres Indexing" }}
+Example: {{ "0": "React Hooks", "1": "Space, Bio & AI" }}
 
 Groups:
 {chr(10).join(batch_prompts)}
@@ -861,8 +863,8 @@ def rank_stories(
         cluster_mean_sim = np.mean(sim_centroids, axis=0)
 
         # Combined: weight MaxSim much higher to preserve niche interests and avoid noise dilution
-        # 0.9 MaxSim + 0.1 MeanSim balances specific match with broad appeal
-        semantic_scores = 0.9 * cluster_max_sim + 0.1 * cluster_mean_sim
+        # 0.95 MaxSim + 0.05 MeanSim balances specific match with broad appeal
+        semantic_scores = 0.95 * cluster_max_sim + 0.05 * cluster_mean_sim
 
         # For display score and best_fav_index, use original embeddings (not clusters)
         # This preserves interpretable "match to specific story" display
