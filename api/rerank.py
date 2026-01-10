@@ -442,8 +442,9 @@ async def generate_batch_cluster_names(
         story_ids = sorted([str(s.get("id", s.get("objectID", ""))) for s, _ in items])
         cache_key = hashlib.sha256(",".join(story_ids).encode()).hexdigest()
         
-        if cache_key in cache:
-            results[cid] = cache[cache_key]
+        cached_val = cache.get(cache_key)
+        if cached_val and cached_val != "Misc" and len(cached_val.strip()) > 0:
+            results[cid] = cached_val
         else:
             to_generate[cid] = items
 
@@ -561,8 +562,9 @@ async def generate_batch_tldrs(
 
     for s in stories:
         sid = int(s["id"])
-        if str(sid) in cache:
-            results[sid] = cache[str(sid)]
+        cached_val = cache.get(str(sid))
+        if cached_val and len(cached_val.strip()) > 0:
+            results[sid] = cached_val
         else:
             to_generate.append(s)
 

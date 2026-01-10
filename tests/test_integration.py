@@ -26,6 +26,7 @@ async def test_generate_html_integration(tmp_path):
 
     # Setup mocks
     with (
+        patch.dict("os.environ", {"GEMINI_API_KEY": "fake_key"}),
         patch("generate_html.HNClient") as mock_client_class,
         patch("generate_html.get_best_stories", new_callable=AsyncMock) as mock_best,
         patch("generate_html.fetch_story", new_callable=AsyncMock) as mock_fetch,

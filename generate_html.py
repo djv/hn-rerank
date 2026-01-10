@@ -275,6 +275,16 @@ async def main() -> None:
     # Initialize model early
     rerank.init_model()
 
+    if not os.environ.get("GEMINI_API_KEY"):
+        console.print(
+            "[red][bold][-] Error:[/bold] GEMINI_API_KEY not found in environment.[/red]"
+        )
+        console.print(
+            "[yellow][!] This key is required for cluster naming and story TL;DRs.[/yellow]"
+        )
+        console.print("    Please run: [cyan]export GEMINI_API_KEY='your-key'[/cyan]")
+        raise SystemExit(1)
+
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
