@@ -25,6 +25,19 @@ from api.constants import (
     TEXT_CONTENT_MAX_LENGTH,
 )
 
+from api.logging_config import get_logger
+
+from api.constants import (
+    DEFAULT_EMBEDDING_BATCH_SIZE,
+    EMBEDDING_CACHE_DIR,
+    EMBEDDING_MIN_CLIP,
+    EMBEDDING_MODEL_VERSION,
+    MAX_CLUSTERS,
+    MIN_CLUSTERS,
+    MIN_SAMPLES_PER_CLUSTER,
+    TEXT_CONTENT_MAX_LENGTH,
+)
+
 # Global singleton for the model
 _model: Optional[ONNXEmbeddingModel] = None
 
@@ -41,12 +54,11 @@ class ONNXEmbeddingModel:
             )
 
         self.tokenizer: Any = AutoTokenizer.from_pretrained(model_dir)
-        
+
         providers = ["CPUExecutionProvider"]
 
         self.session: ort.InferenceSession = ort.InferenceSession(
-            f"{model_dir}/model.onnx",
-            providers=providers
+            f"{model_dir}/model.onnx", providers=providers
         )
         self.model_id: str = "bge-base-en-v1.5"
 
@@ -156,7 +168,7 @@ def get_embeddings(
         ).hexdigest()
         cache_path_npz: Path = CACHE_DIR / f"{h}.npz"
         cache_path_npy: Path = CACHE_DIR / f"{h}.npy"
-        
+
         vec: Optional[NDArray[np.float32]] = None
         if cache_path_npz.exists():
             try:
@@ -217,6 +229,7 @@ def cluster_interests(
     centroids, _ = cluster_interests_with_labels(embeddings, weights)
     return centroids
 
+
 def cluster_interests_with_labels(
     embeddings: NDArray[np.float32],
     weights: Optional[NDArray[np.float32]] = None,
@@ -251,12 +264,12 @@ def cluster_interests_with_labels(
 
     # Search for highest k with acceptable silhouette (>= 0.1)
     # This gives more granular clusters while maintaining coherence
-    # Tuned to balance granularity (Z80 vs Space) vs coherence (Transport Maps)
-    min_k = max(MIN_CLUSTERS, int(np.sqrt(n_samples) * 1.0))
-    max_k = min(MAX_CLUSTERS, int(np.sqrt(n_samples) * 4.0), n_samples // MIN_SAMPLES_PER_CLUSTER)
+    # Tuned to favor slightly fewer, broader clusters
+    min_k = max(MIN_CLUSTERS, int(np.sqrt(n_samples) * 0.8))
+    max_k = min(MAX_CLUSTERS, int(np.sqrt(n_samples) * 2.5), n_samples // MIN_SAMPLES_PER_CLUSTER)
 
     best_labels: NDArray[np.int32] = np.zeros(n_samples, dtype=np.int32)
-    silhouette_threshold = 0.18
+    silhouette_threshold = 0.14
 
     # Search from high to low k, pick first that meets threshold
     for k in range(max_k, min_k - 1, -1):
@@ -272,7 +285,9 @@ def cluster_interests_with_labels(
             break
     else:
         # No k met threshold, use max_k anyway
-        agg = AgglomerativeClustering(n_clusters=max_k, metric="cosine", linkage="average")
+        agg = AgglomerativeClustering(
+            n_clusters=max_k, metric="cosine", linkage="average"
+        )
         best_labels = agg.fit_predict(normalized).astype(np.int32)
 
     # Compute centroids from labels (in original embedding space)
@@ -289,6 +304,7 @@ def cluster_interests_with_labels(
 
     return np.array(centroids, dtype=np.float32), best_labels
 
+
 # Global rate limiter state
 _token_bucket: float = 1.0
 _last_refill: float = time.time()
@@ -296,25 +312,27 @@ _last_refill: float = time.time()
 _refill_rate: float = 1.0 / 4.0
 _max_tokens: float = 1.0
 
+
 async def _rate_limit() -> None:
     """Enforce rate limiting using a Token Bucket algorithm."""
     global _token_bucket, _last_refill
-    
+
     while True:
         now = time.time()
         # Refill tokens based on time passed
         elapsed = now - _last_refill
         _token_bucket = min(_max_tokens, _token_bucket + elapsed * _refill_rate)
         _last_refill = now
-        
+
         if _token_bucket >= 1.0:
             _token_bucket -= 1.0
             return
-        
+
         # Calculate wait time needed for next token
         wait_time = (1.0 - _token_bucket) / _refill_rate
         # Add a small buffer and jitter to prevent thundering herds
         import random
+
         await asyncio.sleep(wait_time + 0.1 + random.uniform(0, 0.5))
 
 
@@ -339,29 +357,35 @@ def _safe_json_loads(text: str) -> dict[Any, Any]:
     """Safely load JSON, handling potential markdown blocks."""
     if not text:
         return {}
-    
+
     clean_text = text.strip()
     if clean_text.startswith("```"):
         # Extract content between triple backticks
         lines = clean_text.split("\n")
         # Find first line with { or [ after the first ```
         start_idx = 1
-        while start_idx < len(lines) and not (lines[start_idx].strip().startswith("{}") or lines[start_idx].strip().startswith("[")):
+        while start_idx < len(lines) and not (
+            lines[start_idx].strip().startswith("{}")
+            or lines[start_idx].strip().startswith("[")
+        ):
             start_idx += 1
-        
+
         # Find the last line with } or ] before the last ```
         end_idx = len(lines) - 1
-        while end_idx > start_idx and not (lines[end_idx].strip().endswith("}") or lines[end_idx].strip().endswith("]")):
+        while end_idx > start_idx and not (
+            lines[end_idx].strip().endswith("}") or lines[end_idx].strip().endswith("]")
+        ):
             end_idx -= 1
-            
+
         if end_idx >= start_idx:
             clean_text = "\n".join(lines[start_idx : end_idx + 1])
-    
+
     try:
         return json.loads(clean_text)
     except json.JSONDecodeError:
         # Fallback: try to find anything between { and }
         import re
+
         match = re.search(r"({.*})", clean_text, re.DOTALL)
         if match:
             try:
@@ -379,7 +403,7 @@ async def _generate_with_retry(
 ) -> Optional[str]:
     """Call Groq API with exponential backoff retry logic using httpx."""
     import os
-    
+
     api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
         return None
@@ -401,7 +425,7 @@ async def _generate_with_retry(
         "messages": messages,
         "temperature": config.get("temperature", 0.2) if config else 0.2,
     }
-    
+
     if config and config.get("response_mime_type") == "application/json":
         payload["response_format"] = {"type": "json_object"}
 
@@ -418,29 +442,35 @@ async def _generate_with_retry(
                     json=payload,
                     timeout=30.0,
                 )
-                
+
                 if resp.status_code == 200:
                     data = resp.json()
                     return data["choices"][0]["message"]["content"]
-                
+
                 if resp.status_code == 429:
-                    print(f"[DEBUG] Groq Rate Limit hit (429). Attempt {attempt+1}/{max_retries}")
-                    await asyncio.sleep(20.0 * (2 ** attempt))
+                    print(
+                        f"[DEBUG] Groq Rate Limit hit (429). Attempt {attempt + 1}/{max_retries}"
+                    )
+                    await asyncio.sleep(20.0 * (2**attempt))
                     continue
-                
+
                 print(f"[ERROR] Groq API error {resp.status_code}: {resp.text}")
                 return None
-                
+
             except Exception as e:
                 if attempt == max_retries - 1:
-                    print(f"[ERROR] Groq API call failed after {max_retries} retries: {e}")
+                    print(
+                        f"[ERROR] Groq API call failed after {max_retries} retries: {e}"
+                    )
                     return None
-                delay = 10.0 * (2 ** attempt)
+                delay = 10.0 * (2**attempt)
                 await asyncio.sleep(delay)
     return None
 
 
-async def generate_single_cluster_name(items: list[tuple[dict[str, Any], float]]) -> str:
+async def generate_single_cluster_name(
+    items: list[tuple[dict[str, Any], float]],
+) -> str:
     """Generate a name for a single cluster using Groq API."""
 
     # Generate cache key based on sorted story IDs
@@ -458,7 +488,7 @@ async def generate_single_cluster_name(items: list[tuple[dict[str, Any], float]]
         title = str(story.get("title", "")).strip()
         for prefix in ["Show HN:", "Ask HN:", "Tell HN:"]:
             if title.startswith(prefix):
-                title = title[len(prefix):].strip()
+                title = title[len(prefix) :].strip()
         if title:
             titles.append(title)
 
@@ -482,15 +512,15 @@ Topic:"""
         )
         if not text:
             return "Misc"
-        
+
         name = text.strip().strip('"').strip("'")
         # Truncate if too long
         words = name.split()[:4]
         final_name = " ".join(words) if words else "Misc"
-        
+
         cache[cache_key] = final_name
         _save_cluster_name_cache(cache)
-        
+
         return final_name
     except Exception:
         return "Misc"
@@ -512,7 +542,7 @@ async def generate_batch_cluster_names(
         # Generate cache key based on sorted story IDs
         story_ids = sorted([str(s.get("id", s.get("objectID", ""))) for s, _ in items])
         cache_key = hashlib.sha256(",".join(story_ids).encode()).hexdigest()
-        
+
         cached_val = cache.get(cache_key)
         if cached_val and cached_val != "Misc" and len(cached_val.strip()) > 0:
             results[cid] = cached_val
@@ -527,11 +557,11 @@ async def generate_batch_cluster_names(
     # Batch clusters together (max 10 per request)
     BATCH_SIZE = 10
     cid_list = list(to_generate.keys())
-    
+
     for i in range(0, len(cid_list), BATCH_SIZE):
         batch_cids = cid_list[i : i + BATCH_SIZE]
         batch_prompts = []
-        
+
         for cid in batch_cids:
             items = to_generate[cid]
             sorted_items = sorted(items, key=lambda x: -x[1])[:8]
@@ -563,7 +593,7 @@ JSON Output:"""
                     "response_mime_type": "application/json",
                 },
             )
-            
+
             if text:
                 batch_results = _safe_json_loads(text)
                 for cid_str, name in batch_results.items():
@@ -571,23 +601,27 @@ JSON Output:"""
                         cid = int(cid_str)
                         final_name = str(name).strip().split()[:4]
                         final_name = " ".join(final_name)
-                        
+
                         results[cid] = final_name
                         # Save to cache
                         items = to_generate[cid]
-                        story_ids = sorted([str(s.get("id", s.get("objectID", ""))) for s, _ in items])
-                        cache_key = hashlib.sha256(",".join(story_ids).encode()).hexdigest()
+                        story_ids = sorted(
+                            [str(s.get("id", s.get("objectID", ""))) for s, _ in items]
+                        )
+                        cache_key = hashlib.sha256(
+                            ",".join(story_ids).encode()
+                        ).hexdigest()
                         cache[cache_key] = final_name
                     except (ValueError, TypeError):
                         continue
-            
+
             if progress_callback:
                 progress_callback(len(results), len(clusters))
         except Exception:
             pass
 
     _save_cluster_name_cache(cache)
-    
+
     # Final results with better fallback than "Misc"
     final_results = {}
     for cid, items in clusters.items():
@@ -602,13 +636,15 @@ JSON Output:"""
                 # Clean up HN prefixes
                 for prefix in ["Show HN:", "Ask HN:", "Tell HN:"]:
                     if top_title.startswith(prefix):
-                        top_title = top_title[len(prefix):].strip()
-                
+                        top_title = top_title[len(prefix) :].strip()
+
                 if top_title:
-                    fallback_name = (top_title[:30] + "...") if len(top_title) > 33 else top_title
-            
+                    fallback_name = (
+                        (top_title[:30] + "...") if len(top_title) > 33 else top_title
+                    )
+
             final_results[cid] = fallback_name
-                
+
     return final_results
 
 
@@ -661,27 +697,32 @@ async def generate_batch_tldrs(
     if not to_generate:
         if progress_callback:
             progress_callback(len(stories), len(stories))
-        return {int(s["id"]): results.get(int(s["id"]), cache.get(str(s["id"]), "")) for s in stories}
+        return {
+            int(s["id"]): results.get(int(s["id"]), cache.get(str(s["id"]), ""))
+            for s in stories
+        }
 
     # Chunking: 5 stories per request
     BATCH_SIZE = 5
     total_to_gen = len(to_generate)
     completed_initial = len(stories) - total_to_gen
-    
+
     for i in range(0, total_to_gen, BATCH_SIZE):
         batch = to_generate[i : i + BATCH_SIZE]
-        
+
         stories_formatted = []
         for s in batch:
             title = s.get("title", "Untitled")
             comments = s.get("comments", [])
             context = f"ID: {s['id']}\nTitle: {title}"
             if comments:
-                context += "\nComments:\n" + "\n".join(f"- {c[:300]}" for c in comments[:4])
+                context += "\nComments:\n" + "\n".join(
+                    f"- {c[:300]}" for c in comments[:4]
+                )
             stories_formatted.append(context)
 
         batch_context = "\n\n---\n\n".join(stories_formatted)
-        
+
         prompt = f"""
 For each story below, provide a 2-sentence summary (core subject, and key takeaway).
 Return ONLY a JSON object where keys are the story IDs (strings) and values are the summaries.
@@ -703,7 +744,7 @@ JSON Output:"""
                     "response_mime_type": "application/json",
                 },
             )
-            
+
             if text:
                 batch_results = _safe_json_loads(text)
                 for sid_str, tldr in batch_results.items():
@@ -714,15 +755,18 @@ JSON Output:"""
                         cache[str(sid)] = tldr_clean
                     except (ValueError, TypeError):
                         continue
-            
+
             if progress_callback:
                 progress_callback(completed_initial + i + len(batch), len(stories))
-                
+
         except Exception:
             pass
 
     _save_tldr_cache(cache)
-    return {int(s["id"]): results.get(int(s["id"]), cache.get(str(s["id"]), "")) for s in stories}
+    return {
+        int(s["id"]): results.get(int(s["id"]), cache.get(str(s["id"]), ""))
+        for s in stories
+    }
 
 
 async def generate_story_tldr(story_id: int, title: str, comments: list[str]) -> str:
@@ -739,7 +783,9 @@ async def generate_story_tldr(story_id: int, title: str, comments: list[str]) ->
     # Build context from title + top comments
     context = f"Title: {title}"
     if comments:
-        context += "\n\nTop comments:\n" + "\n".join(f"- {c[:400]}" for c in comments[:6])
+        context += "\n\nTop comments:\n" + "\n".join(
+            f"- {c[:400]}" for c in comments[:6]
+        )
 
     prompt = f"""
 {context}
@@ -764,24 +810,33 @@ IMPORTANT: Put the comments summary (Sentence 2+) on a single new line directly 
             return ""
 
         tldr = text.strip().strip('"').strip("'")
-        
+
         # Aggressive cleaning of conversational filler
         useless_prefixes = [
-            "Here is a summary:", "Here is a 2-sentence summary:", "Here is a 3-sentence summary:",
-            "This story is about", "The story is about", "This article is about", 
-            "The discussion reveals that", "The discussion reveals", 
-            "TL;DR:", "TLDR:", "Summary:", "In this story,", "In this article,"
+            "Here is a summary:",
+            "Here is a 2-sentence summary:",
+            "Here is a 3-sentence summary:",
+            "This story is about",
+            "The story is about",
+            "This article is about",
+            "The discussion reveals that",
+            "The discussion reveals",
+            "TL;DR:",
+            "TLDR:",
+            "Summary:",
+            "In this story,",
+            "In this article,",
         ]
-        
+
         lower_tldr = tldr.lower()
         for prefix in useless_prefixes:
             if lower_tldr.startswith(prefix.lower()):
-                tldr = tldr[len(prefix):].lstrip(":* \n")
+                tldr = tldr[len(prefix) :].lstrip(":* \n")
                 lower_tldr = tldr.lower()
 
         # Clean up any remaining markdown or list characters
         tldr = tldr.lstrip("*#- ")
-        
+
         # Truncate if too long (extended cutoff)
         if len(tldr) > 800:
             tldr = tldr[:797] + "..."
@@ -794,9 +849,9 @@ IMPORTANT: Put the comments summary (Sentence 2+) on a single new line directly 
     except Exception:
         return ""
 
+
 def compute_recency_weights(
-    timestamps: list[int],
-    decay_rate: Optional[float] = None
+    timestamps: list[int], decay_rate: Optional[float] = None
 ) -> NDArray[np.float32]:
     if decay_rate is not None and decay_rate <= 0:
         return np.ones(len(timestamps), dtype=np.float32)
@@ -811,6 +866,7 @@ def compute_recency_weights(
     weights: NDArray[Any] = 1.0 / (1.0 + np.exp(exponent))
 
     return np.clip(weights, 0.0, 1.0).astype(np.float32)
+
 
 def rank_stories(
     stories: list[dict[str, Any]],
@@ -885,8 +941,7 @@ def rank_stories(
     # 3. Negative Signal (Penalty)
     if negative_embeddings is not None and len(negative_embeddings) > 0:
         sim_neg: NDArray[np.float32] = np.max(
-            cosine_similarity(negative_embeddings, cand_emb),
-            axis=0
+            cosine_similarity(negative_embeddings, cand_emb), axis=0
         )
         semantic_scores -= neg_weight * sim_neg
 
@@ -939,6 +994,7 @@ def rank_stories(
 
     return results
 
+
 REASON_CACHE_PATH = Path(".cache/reasons.json")
 
 
@@ -982,8 +1038,10 @@ async def generate_batch_similarity_reasons(
             prompts = []
             for ct, ht, cm, k in batch:
                 comments_text = ", ".join([c[:100] for c in cm[:2]])
-                prompts.append(f'Key: {k}\nStory: "{ct}"\nPast: "{ht}"\nContext: {comments_text}')
-            
+                prompts.append(
+                    f'Key: {k}\nStory: "{ct}"\nPast: "{ht}"\nContext: {comments_text}'
+                )
+
             full_prompt = f"""
 Identify the specific shared technical topic or theme for each pair.
 Reply with a JSON object where keys are the Keys provided and values are ONE short phrase (max 8 words) starting with a lowercase verb.
@@ -1006,34 +1064,40 @@ JSON Output:"""
                     batch_res = _safe_json_loads(text)
                     for key, reason in batch_res.items():
                         reason_clean = str(reason).strip().strip('"').strip("'")
-                        if reason_clean and reason_clean[0].isupper() and " " in reason_clean:
+                        if (
+                            reason_clean
+                            and reason_clean[0].isupper()
+                            and " " in reason_clean
+                        ):
                             reason_clean = reason_clean[0].lower() + reason_clean[1:]
                         results_map[key] = reason_clean
                         cache[key] = reason_clean
             except Exception:
                 pass
-        
+
         _save_reason_cache(cache)
 
     final_results = []
     for cand_title, history_title, _ in pairs:
         key = hashlib.sha256(f"{cand_title}|{history_title}".encode()).hexdigest()
         final_results.append(results_map.get(key, ""))
-    
+
     return final_results
 
 
-async def generate_similarity_reason(cand_title: str, cand_comments: list[str], history_title: str) -> str:
+async def generate_similarity_reason(
+    cand_title: str, cand_comments: list[str], history_title: str
+) -> str:
     """Generate a short reason why two stories are similar."""
     # Create a unique key for the pair
     key = hashlib.sha256(f"{cand_title}|{history_title}".encode()).hexdigest()
-    
+
     cache = _load_reason_cache()
     if key in cache:
         return cache[key]
 
     comments_text = "\\n".join(f"- {c[:200]}" for c in cand_comments[:3])
-    
+
     prompt = f"""
 Candidate Story: "{cand_title}"
 User's Past Interest: "{history_title}"
@@ -1055,9 +1119,9 @@ Reply with ONE short phrase (max 10 words) starting with a lowercase verb (e.g. 
             return ""
 
         reason = text.strip().strip('"').strip("'")
-        
+
         if reason and reason[0].isupper() and " " in reason:
-             reason = reason[0].lower() + reason[1:]
+            reason = reason[0].lower() + reason[1:]
 
         cache[key] = reason
         _save_reason_cache(cache)
