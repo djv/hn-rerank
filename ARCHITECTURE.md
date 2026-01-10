@@ -10,7 +10,7 @@ HN Rerank is a local-first application that personalizes Hacker News content usi
 - **UI Generation**: Produces two self-contained HTML files:
     - `index.html` - Ranked recommendations with per-story cluster chips and LLM-generated TL;DRs.
     - `clusters.html` - Full interest cluster visualization with stories per cluster.
-- **Concurrency**: Uses `asyncio` for parallel fetching of stories.
+- **Concurrency**: Uses `asyncio` for parallel fetching of stories and non-blocking rate-limited LLM calls.
 
 ### 2. Client API (`api/client.py`)
 - **HN Client**: Handles authentication and user profile scraping.
@@ -37,10 +37,12 @@ HN Rerank is a local-first application that personalizes Hacker News content usi
     - Silhouette score threshold (≥0.1) ensures coherent clusters.
     - Searches from high k to low to maximize granularity.
     - `cluster_interests_with_labels(embeddings, weights)` returns `(centroids, labels)`.
-- **Cluster Naming** (`generate_single_cluster_name()` via Gemini API):
-    - Uses Google Gemini API (`gemini-2.0-flash`) to generate contextual 1-3 word labels.
+- **Cluster Naming** (`generate_batch_cluster_names()` via Gemini API):
+    - Uses Google Gemini API (`gemini-flash-latest`) to generate contextual 1-3 word labels.
+    - Batches naming requests (10 per call) to optimize quota.
     - Strips HN prefixes (Show HN:, Ask HN:, Tell HN:) before sending to LLM.
     - Falls back to "Misc" if API unavailable.
+    - Cached by cluster content hash in `.cache/cluster_names.json`.
     - Progress bar shows per-cluster naming progress.
 - **Scoring Algorithm**:
     - **Cluster MaxSim**: Best match to any interest cluster centroid (70% weight).
@@ -48,11 +50,16 @@ HN Rerank is a local-first application that personalizes Hacker News content usi
     - **Display Score**: Raw MaxSim to individual stories for interpretable "reason" links.
     - **Weighting**: Semantic (95%) + HN Popularity (5%).
 - **Diversity**: Applies Maximal Marginal Relevance (MMR, λ=0.35) to prevent redundant results.
-- **Story TL;DR** (`generate_story_tldr()` via Gemini API):
-    - Generates concise summaries (up to 800 chars) using `gemini-2.0-flash`.
+- **Story TL;DR** (`generate_batch_tldrs()` via Gemini API):
+    - Generates concise summaries using `gemini-flash-latest`.
+    - Batches requests (5 per call) to minimize API quota consumption.
     - Format: Story summary, followed by a newline and key discussion points/debates.
     - Replaces the raw comments section in the story card for a cleaner UI.
     - Cached by story ID in `.cache/tldrs.json`.
+- **Smart Reasons** (`generate_batch_similarity_reasons()` via Gemini API):
+    - Generates short phrases explaining the semantic link between stories.
+    - Batches requests (10 per call).
+    - Cached in `.cache/reasons.json`.
 
 ### 5. Constants (`api/constants.py`)
 - Centralized configuration for cache TTLs, scoring weights, clustering parameters, and limits.
