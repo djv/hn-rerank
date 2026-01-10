@@ -324,10 +324,15 @@ async def main() -> None:
                 ids: list[int], label: str
             ) -> list[dict[str, Any]]:
                 results: list[dict[str, Any]] = []
-                sub_task: Any = progress.add_task(f"  > {label}", total=len(ids))
+                # Don't create a new task, just update the main one's description
+                progress.update(p_task, description=f"[*] Fetching {label} ({len(ids)} items)...")
+                
                 if not ids:
-                    progress.remove_task(sub_task)
                     return []
+
+                # Calculate step size to reach 100% (allocated 20-100 range = 80%)
+                # We have two batches (pos + neg), so each gets ~40%
+                step = 40.0 / len(ids)
 
                 for res in asyncio.as_completed(
                     [fetch_story(hn.client, sid) for sid in ids]
@@ -335,8 +340,7 @@ async def main() -> None:
                     s: Optional[dict[str, Any]] = await res
                     if s:
                         results.append(s)
-                    progress.update(sub_task, advance=1)
-                progress.remove_task(sub_task)
+                    progress.update(p_task, advance=step)
                 return results
 
             # Positive signals = Upvoted only (requires login)
