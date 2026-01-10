@@ -281,6 +281,19 @@ def cluster_interests_with_labels(
 
     return np.array(centroids, dtype=np.float32), best_labels
 
+# Global rate limiter state
+_last_call_time: float = 0.0
+# Conservative rate limit: 1 call per 4 seconds (~15 RPM) to stay safely within free tier limits
+_min_interval: float = 4.0
+
+def _rate_limit() -> None:
+    """Enforce rate limiting for API calls."""
+    global _last_call_time
+    elapsed = time.time() - _last_call_time
+    if elapsed < _min_interval:
+        time.sleep(_min_interval - elapsed)
+    _last_call_time = time.time()
+
 def generate_single_cluster_name(items: list[tuple[dict[str, Any], float]]) -> str:
     """Generate a name for a single cluster using Gemini API."""
     import os
@@ -314,6 +327,7 @@ What single topic best describes these titles? Reply with ONLY 1-3 words.
 Topic:"""
 
     try:
+        _rate_limit()
         client = genai.Client(api_key=api_key)
         response = client.models.generate_content(
             model="gemini-2.0-flash",
@@ -393,6 +407,7 @@ Structure:
 IMPORTANT: Put the comments summary (Sentence 2+) on a single new line directly below the first sentence (no empty line)."""
 
     try:
+        _rate_limit()
         client = genai.Client(api_key=api_key)
         response = client.models.generate_content(
             model="gemini-2.0-flash",
@@ -623,6 +638,7 @@ Reply with ONE short phrase (max 10 words) starting with a lowercase verb (e.g. 
 """
 
     try:
+        _rate_limit()
         client = genai.Client(api_key=api_key)
         response = client.models.generate_content(
             model="gemini-2.0-flash",
