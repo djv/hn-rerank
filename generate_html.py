@@ -350,7 +350,11 @@ async def main() -> None:
                 return results
 
             # Positive signals = Upvoted only (requires login)
-            pos_ids: list[int] = list(data["upvoted"])[: args.signals]
+            # IMPORTANT: If a story is both upvoted AND hidden, treat it as hidden (negative/neutral).
+            # This allows users to "undo" the signal of an upvote by hiding the story.
+            upvoted_ids = data["upvoted"] - data["hidden"]
+            
+            pos_ids: list[int] = list(upvoted_ids)[: args.signals]
             neg_ids: list[int] = []
             if args.use_hidden_signal:
                 neg_ids = list(data["hidden"])[: args.signals]
