@@ -372,15 +372,29 @@ def _safe_json_loads(text: str) -> dict[Any, Any]:
     try:
         return json.loads(clean_text)
     except json.JSONDecodeError:
-        # Fallback: try to find anything between { and }
+        # Fallback: try to find anything between { and } or [ and ]
         import re
 
-        match = re.search(r"({.*})", clean_text, re.DOTALL)
-        if match:
-            try:
-                return json.loads(match.group(1))
-            except Exception:
-                pass
+        first_curly = clean_text.find('{')
+        first_bracket = clean_text.find('[')
+
+        if first_curly == -1 and first_bracket == -1:
+            return {}
+
+        # Prioritize whichever appears first
+        if first_bracket != -1 and (first_curly == -1 or first_bracket < first_curly):
+            patterns = [r"(\[.*\])", r"({.*})"]
+        else:
+            patterns = [r"({.*})", r"(\[.*\])"]
+
+        for pattern in patterns:
+            match = re.search(pattern, clean_text, re.DOTALL)
+            if match:
+                try:
+                    return json.loads(match.group(1))
+                except Exception:
+                    continue
+
         return {}
 
 
