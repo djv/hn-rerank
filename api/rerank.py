@@ -906,12 +906,30 @@ def rank_stories(
             X_train = np.vstack([X_pos, X_neg])
             y_train = np.concatenate([y_pos, y_neg])
             
-            # Use sample weights for recency if available (for positives)
-            sample_weights = None
+            # Calculate cluster-balanced weights for positives
+            # This prevents the dominant interest cluster from overwhelming the classifier
+            _, labels = cluster_interests_with_labels(X_pos, positive_weights)
+            unique_labels, counts = np.unique(labels, return_counts=True)
+            weight_map = {lbl: 1.0 / count for lbl, count in zip(unique_labels, counts)}
+            
+            # Base weights from clustering
+            pos_sample_weights = np.array([weight_map[label] for label in labels])
+            
+            # Normalize so sum(weights) == n_samples (maintains scale with negatives)
+            # The total weight of all positive samples should equal len(X_pos)
+            # Currently sum(pos_sample_weights) = num_clusters
+            # Factor = len(X_pos) / num_clusters
+            norm_factor = len(X_pos) / len(unique_labels)
+            pos_sample_weights *= norm_factor
+            
+            # Apply recency weights if available (multiplicative)
             if positive_weights is not None:
-                # Negatives get weight 1.0 (or we could decay them too, but usually simple is better)
-                w_neg = np.ones(len(X_neg))
-                sample_weights = np.concatenate([positive_weights, w_neg])
+                pos_sample_weights *= positive_weights
+
+            # Negatives get standard weight 1.0
+            neg_sample_weights = np.ones(len(X_neg))
+            
+            sample_weights = np.concatenate([pos_sample_weights, neg_sample_weights])
 
             clf = LogisticRegression(class_weight="balanced", solver="liblinear", C=1.0)
             clf.fit(X_train, y_train, sample_weight=sample_weights)
