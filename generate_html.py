@@ -262,6 +262,11 @@ async def main() -> None:
         action="store_true",
         help="Disable recency weighting for user profile (default: False)",
     )
+    parser.add_argument(
+        "--ignore-hidden-signal",
+        action="store_true",
+        help="Do not use hidden stories as negative signals (but still exclude them from results)",
+    )
     args: argparse.Namespace = parser.parse_args()
 
     # Initialize model early
@@ -337,14 +342,18 @@ async def main() -> None:
 
             # Positive signals = Upvoted only (requires login)
             pos_ids: list[int] = list(data["upvoted"])[: args.signals]
-            neg_ids: list[int] = list(data["hidden"])[: args.signals]
+            neg_ids: list[int] = []
+            if not args.ignore_hidden_signal:
+                neg_ids = list(data["hidden"])[: args.signals]
 
             pos_stories: list[dict[str, Any]] = await fetch_with_progress(
                 pos_ids, "Positive signals"
             )
-            neg_stories: list[dict[str, Any]] = await fetch_with_progress(
-                neg_ids, "Negative signals"
-            )
+            neg_stories: list[dict[str, Any]] = []
+            if neg_ids:
+                neg_stories = await fetch_with_progress(
+                    neg_ids, "Negative signals"
+                )
             progress.update(
                 p_task, completed=100, description="[green][+] Profile built."
             )
