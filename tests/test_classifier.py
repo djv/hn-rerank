@@ -1,4 +1,3 @@
-import pytest
 import numpy as np
 from unittest.mock import patch, MagicMock
 from api.rerank import rank_stories

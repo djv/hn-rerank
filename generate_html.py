@@ -274,6 +274,10 @@ async def main() -> None:
     )
     args: argparse.Namespace = parser.parse_args()
 
+    # Implication: Classifier requires negative signals
+    if args.use_classifier:
+        args.use_hidden_signal = True
+
     # Initialize model early
     rerank.init_model()
 
