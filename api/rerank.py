@@ -386,8 +386,8 @@ def _safe_json_loads(text: str) -> dict[Any, Any]:
 
 async def _generate_with_retry(
     model: str = "llama-3.3-70b-versatile",
-    contents: Any = None,
-    config: dict[str, Any] = None,
+    contents: Optional[Any] = None,
+    config: Optional[dict[str, Any]] = None,
     max_retries: int = 3,
 ) -> Optional[str]:
     """Call Groq API with exponential backoff retry logic using httpx."""

@@ -18,6 +18,9 @@ STORY_CACHE_DIR = ".cache/stories"
 USER_CACHE_DIR = ".cache/user"
 STORY_CACHE_TTL = 86400
 USER_CACHE_TTL = 120  # 2 minutes
+CANDIDATE_CACHE_DIR = ".cache/candidates"
+CANDIDATE_CACHE_TTL_SHORT = 1800  # 30 minutes
+CANDIDATE_CACHE_TTL_LONG = 604800  # 1 week
 STORY_CACHE_MAX_FILES = 10000  # LRU eviction threshold
 
 # Concurrency
@@ -42,7 +45,7 @@ CANDIDATE_FETCH_COUNT = 200
 # Inference
 DEFAULT_EMBEDDING_BATCH_SIZE = 8
 EMBEDDING_MIN_CLIP = 1e-9
-EMBEDDING_MODEL_VERSION = "v5"  # Bump to invalidate cache on model change
+EMBEDDING_MODEL_VERSION = "v6"  # Bump to invalidate cache on model change
 
 # Recency Weighting
 RECENCY_DECAY_RATE = 0.003

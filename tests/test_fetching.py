@@ -100,6 +100,7 @@ async def test_get_best_stories_filtering():
     with pytest.MonkeyPatch().context() as mp:
         mock_cache = MagicMock()
         mp.setattr("api.fetching.CACHE_PATH", mock_cache)
+        mp.setattr("api.fetching.CANDIDATE_CACHE_PATH", mock_cache)
         mock_cache.__truediv__.return_value.exists.return_value = False
         # Mock atomic write and eviction to avoid temp file issues
         mp.setattr("api.fetching._atomic_write_json", lambda p, d: None)
@@ -161,6 +162,7 @@ async def test_get_best_stories_pagination():
     with pytest.MonkeyPatch().context() as mp:
         mock_cache = MagicMock()
         mp.setattr("api.fetching.CACHE_PATH", mock_cache)
+        mp.setattr("api.fetching.CANDIDATE_CACHE_PATH", mock_cache)
         mock_cache.__truediv__.return_value.exists.return_value = False
         mp.setattr("api.fetching._atomic_write_json", lambda p, d: None)
         mp.setattr("api.fetching._evict_old_cache_files", lambda: None)

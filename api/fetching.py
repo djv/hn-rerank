@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import hashlib
 import html
 import json
 import os
@@ -21,12 +22,34 @@ from api.constants import (
     STORY_CACHE_DIR,
     STORY_CACHE_TTL,
     STORY_CACHE_MAX_FILES,
+    CANDIDATE_CACHE_DIR,
+    CANDIDATE_CACHE_TTL_SHORT,
+    CANDIDATE_CACHE_TTL_LONG,
 )
 
 ALGOLIA_BASE: str = "https://hn.algolia.com/api/v1"
 SEM: asyncio.Semaphore = asyncio.Semaphore(EXTERNAL_REQUEST_SEMAPHORE)
 CACHE_PATH: Path = Path(STORY_CACHE_DIR)
 CACHE_PATH.mkdir(parents=True, exist_ok=True)
+
+CANDIDATE_CACHE_PATH: Path = Path(CANDIDATE_CACHE_DIR)
+CANDIDATE_CACHE_PATH.mkdir(parents=True, exist_ok=True)
+
+
+def get_cached_candidates(key: str, ttl: int) -> Optional[list[int]]:
+    path = CANDIDATE_CACHE_PATH / f"{key}.json"
+    if path.exists():
+        if time.time() - path.stat().st_mtime < ttl:
+            try:
+                return json.loads(path.read_text())
+            except Exception:
+                pass
+    return None
+
+
+def save_cached_candidates(key: str, ids: list[int]) -> None:
+    path = CANDIDATE_CACHE_PATH / f"{key}.json"
+    path.write_text(json.dumps(ids))
 
 
 def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
@@ -213,31 +236,52 @@ async def get_best_stories(
             window_end = now - timedelta(days=window * WINDOW_DAYS)
             window_start = now - timedelta(days=min((window + 1) * WINDOW_DAYS, days))
 
-            params: dict[str, Any] = {
-                "tags": "story",
-                "numericFilters": (
-                    f"created_at_i>{int(window_start.timestamp())},"
-                    f"created_at_i<{int(window_end.timestamp())},"
-                    f"points>{ALGOLIA_MIN_POINTS},"
-                    f"num_comments>={MIN_STORY_COMMENTS}"
-                ),
-                "hitsPerPage": ALGOLIA_MAX_PER_QUERY,
-            }
-            resp: httpx.Response = await client.get(
-                f"{ALGOLIA_BASE}/search", params=params
-            )
-            if resp.status_code != 200 or not resp.content:
-                window += 1
-                continue
-            try:
-                data = resp.json()
-            except Exception:
-                window += 1
-                continue
-            page_hits = data.get("hits", [])
+            # Round timestamps to increase cache hits
+            # For window 0 (most recent): round to 15m
+            # For older windows: round to 1h
+            round_sec = 900 if window == 0 else 3600
+            ts_start = int(window_start.timestamp() // round_sec * round_sec)
+            ts_end = int(window_end.timestamp() // round_sec * round_sec)
 
-            for h in page_hits:
-                oid = int(h["objectID"])
+            cache_key = hashlib.md5(
+                f"{ts_start}-{ts_end}-{ALGOLIA_MIN_POINTS}-{MIN_STORY_COMMENTS}".encode()
+            ).hexdigest()
+            ttl = (
+                CANDIDATE_CACHE_TTL_SHORT if window == 0 else CANDIDATE_CACHE_TTL_LONG
+            )
+
+            cached_ids = get_cached_candidates(cache_key, ttl)
+            page_ids: list[int] = []
+
+            if cached_ids is not None:
+                page_ids = cached_ids
+            else:
+                params: dict[str, Any] = {
+                    "tags": "story",
+                    "numericFilters": (
+                        f"created_at_i>{ts_start},"
+                        f"created_at_i<{ts_end},"
+                        f"points>{ALGOLIA_MIN_POINTS},"
+                        f"num_comments>={MIN_STORY_COMMENTS}"
+                    ),
+                    "hitsPerPage": ALGOLIA_MAX_PER_QUERY,
+                }
+                resp: httpx.Response = await client.get(
+                    f"{ALGOLIA_BASE}/search", params=params
+                )
+                if resp.status_code != 200 or not resp.content:
+                    window += 1
+                    continue
+                try:
+                    data = resp.json()
+                    page_hits = data.get("hits", [])
+                    page_ids = [int(h["objectID"]) for h in page_hits]
+                    save_cached_candidates(cache_key, page_ids)
+                except Exception:
+                    window += 1
+                    continue
+
+            for oid in page_ids:
                 if oid not in exclude_ids and oid not in hits:
                     hits.add(oid)
                     if len(hits) >= limit:

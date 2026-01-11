@@ -23,13 +23,11 @@ HN Rerank is a local-first application that personalizes Hacker News content usi
     - **Discovery**: Uses Algolia API to find candidate stories (search by date/points).
     - **Time Windows**: Fetches candidates in **7-day windows** to stay under Algolia's 1000-hit limit while minimizing API calls.
     - **Detail**: Uses HTML Scraping (`BeautifulSoup`) against `news.ycombinator.com` to fetch story details and *ranked comments*.
-- **Smart Scraping**:
-    - **Breadth-First Selection**: Prioritizes root comments to capture diverse viewpoints.
-    - **Weighted Sort**: Balances "Page Rank" with "Indent Depth" to avoid deep rabbit holes.
-    - **Cleaning**: Filters out low-quality comments (ASCII art, short replies).
 - **Caching**:
     - **Positive Cache**: Stores valid story data for 24h.
     - **Negative Cache**: Stores failures/invalid items (e.g., jobs, comments) to prevent infinite re-fetching loops.
+    - **Candidate Cache**: Stores Algolia search results per time-window. Recent window (30m TTL), older windows (1w TTL).
+- **Smart Scraping**:
 
 ### 4. Reranking Engine (`api/rerank.py`)
 - **Model**: Uses a local ONNX embedding model (`bge-base-en-v1.5`).
