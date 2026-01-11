@@ -267,6 +267,11 @@ async def main() -> None:
         action="store_true",
         help="Use hidden stories as negative signals (default: False, only excludes them)",
     )
+    parser.add_argument(
+        "--use-classifier",
+        action="store_true",
+        help="Use a trained Logistic Regression classifier for scoring instead of heuristics (requires hidden signals)",
+    )
     args: argparse.Namespace = parser.parse_args()
 
     # Initialize model early
@@ -445,6 +450,7 @@ async def main() -> None:
             p_emb,
             n_emb,
             p_weights,
+            use_classifier=args.use_classifier,
             progress_callback=rank_cb,
         )
         progress.update(

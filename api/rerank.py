@@ -11,6 +11,7 @@ import httpx
 import numpy as np
 import onnxruntime as ort
 from numpy.typing import NDArray
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics.pairwise import cosine_similarity
 from transformers import AutoTokenizer
 
@@ -865,12 +866,14 @@ def rank_stories(
     hn_weight: float = 0.05,
     neg_weight: float = 0.6,
     diversity_lambda: float = 0.35,  # Literature: 0.3-0.5 for discovery
+    use_classifier: bool = False,
     progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> list[tuple[int, float, int, float]]:
     """
     Returns list of (index, hybrid_score, best_fav_index, max_sim_score).
 
     Uses multi-interest clustering and MMR diversity reranking.
+    Optionally uses a Logistic Regression classifier if sufficient data exists.
     """
     if not stories:
         return []
@@ -884,55 +887,99 @@ def rank_stories(
     max_sim_scores: NDArray[np.float32]
     best_fav_indices: NDArray[np.int64]
 
-    if positive_embeddings is None or len(positive_embeddings) == 0:
-        # If no positive signals, use HN scores primarily
-        semantic_scores = np.zeros(len(stories), dtype=np.float32)
-        max_sim_scores = np.zeros(len(stories), dtype=np.float32)
-        best_fav_indices = np.full(len(stories), -1, dtype=np.int64)
-    else:
-        # 1. Multi-Interest Clustering
-        # Cluster positive embeddings into K interest centroids to capture diverse interests
-        interest_centroids: NDArray[np.float32] = cluster_interests(
-            positive_embeddings, weights=positive_weights
-        )
+    # Check if we can/should use classifier
+    classifier_success = False
+    if (
+        use_classifier
+        and positive_embeddings is not None
+        and negative_embeddings is not None
+        and len(positive_embeddings) >= 5
+        and len(negative_embeddings) >= 5
+    ):
+        try:
+            # Prepare training data
+            X_pos = positive_embeddings
+            X_neg = negative_embeddings
+            y_pos = np.ones(len(X_pos))
+            y_neg = np.zeros(len(X_neg))
+            
+            X_train = np.vstack([X_pos, X_neg])
+            y_train = np.concatenate([y_pos, y_neg])
+            
+            # Use sample weights for recency if available (for positives)
+            sample_weights = None
+            if positive_weights is not None:
+                # Negatives get weight 1.0 (or we could decay them too, but usually simple is better)
+                w_neg = np.ones(len(X_neg))
+                sample_weights = np.concatenate([positive_weights, w_neg])
 
-        # 2. Semantic Score using interest centroids
-        # For each candidate, find similarity to each interest cluster
-        sim_centroids: NDArray[np.float32] = cosine_similarity(
-            interest_centroids, cand_emb
-        )
+            clf = LogisticRegression(class_weight="balanced", solver="liblinear", C=1.0)
+            clf.fit(X_train, y_train, sample_weight=sample_weights)
+            
+            # Predict probabilities (class 1 = positive interest)
+            probs = clf.predict_proba(cand_emb)[:, 1]
+            semantic_scores = probs.astype(np.float32)
+            
+            # We still need max_sim_scores for the UI "Similar to..."
+            sim_pos_ui = cosine_similarity(positive_embeddings, cand_emb)
+            max_sim_scores = np.max(sim_pos_ui, axis=0)
+            best_fav_indices = np.argmax(sim_pos_ui, axis=0)
+            
+            classifier_success = True
+        except Exception:
+            # Fallback to heuristic on error
+            pass
 
-        # MaxSim across interest clusters (best matching interest)
-        cluster_max_sim = np.max(sim_centroids, axis=0)
+    if not classifier_success:
+        if positive_embeddings is None or len(positive_embeddings) == 0:
+            # If no positive signals, use HN scores primarily
+            semantic_scores = np.zeros(len(stories), dtype=np.float32)
+            max_sim_scores = np.zeros(len(stories), dtype=np.float32)
+            best_fav_indices = np.full(len(stories), -1, dtype=np.int64)
+        else:
+            # 1. Multi-Interest Clustering
+            # Cluster positive embeddings into K interest centroids to capture diverse interests
+            interest_centroids: NDArray[np.float32] = cluster_interests(
+                positive_embeddings, weights=positive_weights
+            )
 
-        # Mean across all clusters (broad appeal)
-        cluster_mean_sim = np.mean(sim_centroids, axis=0)
+            # 2. Semantic Score using interest centroids
+            # For each candidate, find similarity to each interest cluster
+            sim_centroids: NDArray[np.float32] = cosine_similarity(
+                interest_centroids, cand_emb
+            )
 
-        # Combined: weight MaxSim much higher to preserve niche interests and avoid noise dilution
-        # 0.95 MaxSim + 0.05 MeanSim balances specific match with broad appeal
-        semantic_scores = 0.95 * cluster_max_sim + 0.05 * cluster_mean_sim
+            # MaxSim across interest clusters (best matching interest)
+            cluster_max_sim = np.max(sim_centroids, axis=0)
 
-        # For display score and best_fav_index, use original embeddings (not clusters)
-        # This preserves interpretable "match to specific story" display
-        sim_pos: NDArray[np.float32] = cosine_similarity(positive_embeddings, cand_emb)
-        if positive_weights is not None:
-            sim_pos = sim_pos * positive_weights[:, np.newaxis]
-        max_sim_scores = np.max(sim_pos, axis=0)
-        best_fav_indices = np.argmax(sim_pos, axis=0)
+            # Mean across all clusters (broad appeal)
+            cluster_mean_sim = np.mean(sim_centroids, axis=0)
 
-        # Apply soft sigmoid activation instead of hard threshold
-        # This suppresses noise (<0.4) while preserving strong signals
-        # k=15 makes the transition reasonably steep around the threshold
-        k = 15.0
-        threshold = 0.45
-        semantic_scores = 1.0 / (1.0 + np.exp(-k * (semantic_scores - threshold)))
+            # Combined: weight MaxSim much higher to preserve niche interests and avoid noise dilution
+            # 0.95 MaxSim + 0.05 MeanSim balances specific match with broad appeal
+            semantic_scores = 0.95 * cluster_max_sim + 0.05 * cluster_mean_sim
 
-    # 3. Negative Signal (Penalty)
-    if negative_embeddings is not None and len(negative_embeddings) > 0:
-        sim_neg: NDArray[np.float32] = np.max(
-            cosine_similarity(negative_embeddings, cand_emb), axis=0
-        )
-        semantic_scores -= neg_weight * sim_neg
+            # For display score and best_fav_index, use original embeddings (not clusters)
+            # This preserves interpretable "match to specific story" display
+            sim_pos: NDArray[np.float32] = cosine_similarity(positive_embeddings, cand_emb)
+            if positive_weights is not None:
+                sim_pos = sim_pos * positive_weights[:, np.newaxis]
+            max_sim_scores = np.max(sim_pos, axis=0)
+            best_fav_indices = np.argmax(sim_pos, axis=0)
+
+            # Apply soft sigmoid activation instead of hard threshold
+            # This suppresses noise (<0.4) while preserving strong signals
+            # k=15 makes the transition reasonably steep around the threshold
+            k = 15.0
+            threshold = 0.45
+            semantic_scores = 1.0 / (1.0 + np.exp(-k * (semantic_scores - threshold)))
+
+        # 3. Negative Signal (Penalty) - Only applies in heuristic mode
+        if negative_embeddings is not None and len(negative_embeddings) > 0:
+            sim_neg: NDArray[np.float32] = np.max(
+                cosine_similarity(negative_embeddings, cand_emb), axis=0
+            )
+            semantic_scores -= neg_weight * sim_neg
 
     # 4. HN Gravity Score (Log-scaled)
     # We use a log scale so that 500+ points punch through without dominating everything
