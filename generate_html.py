@@ -201,18 +201,10 @@ def generate_story_html(story: dict[str, Any]) -> str:
         escaped_reason_title: str = html.escape(str(story["reason"]), quote=False)
         reason_url: str = story.get("reason_url", "")
         
-        if story.get("smart_reason"):
-            escaped_smart = html.escape(story["smart_reason"])
-            if reason_url:
-                reason_html = f'<p class="text-[11px] text-emerald-600 mb-2">↳ {escaped_smart} <span class="text-stone-400 mx-1">&middot;</span> <a href="{reason_url}" target="_blank" class="text-stone-400 hover:underline hover:text-emerald-600">Because you liked "{escaped_reason_title}"</a></p>'
-            else:
-                reason_html = f'<p class="text-[11px] text-emerald-600 mb-2">↳ {escaped_smart} <span class="text-stone-400">(from "{escaped_reason_title}")</span></p>'
+        if reason_url:
+            reason_html = f'<p class="text-[11px] text-emerald-600 mb-2">↳ <a href="{reason_url}" target="_blank" class="hover:underline">"{escaped_reason_title}"</a></p>'
         else:
-            # Fallback
-            if reason_url:
-                reason_html = f'<p class="text-[11px] text-emerald-600 mb-2">↳ <a href="{reason_url}" target="_blank" class="hover:underline">Similar to: {escaped_reason_title}</a></p>'
-            else:
-                reason_html = f'<p class="text-[11px] text-emerald-600 mb-2">↳ Similar to: {escaped_reason_title}</p>'
+            reason_html = f'<p class="text-[11px] text-emerald-600 mb-2">↳ "{escaped_reason_title}"</p>'
 
     cluster_chip: str = ""
     if story.get("cluster_name"):
@@ -520,10 +512,10 @@ async def main() -> None:
             }
         )
 
-    # Generate TL;DRs for stories and Smart Reasons
+    # Generate TL;DRs for stories
     print("[*] Generating content via LLM...")
     with progress:
-        llm_task = progress.add_task("[cyan]Generating TL;DRs & Reasons...", total=len(stories_data) * 2)
+        llm_task = progress.add_task("[cyan]Generating TL;DRs...", total=len(stories_data))
         
         # Batch TL;DR generation
         tldrs = await rerank.generate_batch_tldrs(
@@ -531,35 +523,11 @@ async def main() -> None:
             progress_callback=lambda curr, tot: progress.update(llm_task, completed=curr)
         )
         
-        # Collect pairs for batch similarity reasons
-        pairs_to_gen = []
-        for sd in stories_data:
-            if sd.get("reason"):
-                pairs_to_gen.append(
-                    (
-                        sd["title"], 
-                        sd["reason"], 
-                        sd.get("comments", []), 
-                        sd.get("cluster_name", "General")
-                    )
-                )
-        
-        reasons = await rerank.generate_batch_similarity_reasons(
-            pairs_to_gen,
-            progress_callback=None
-        )
-        
-        reason_idx = 0
         for sd in stories_data:
             # Assign batched TL;DR
             sd["tldr"] = tldrs.get(sd["id"], "")
-            
-            # Smart Reason
-            if sd.get("reason"):
-                sd["smart_reason"] = reasons[reason_idx]
-                reason_idx += 1
 
-        progress.update(llm_task, completed=len(stories_data) * 2, description="[green][+] LLM content generated.")
+        progress.update(llm_task, completed=len(stories_data), description="[green][+] LLM content generated.")
 
     print("[*] Generating HTML...")
 

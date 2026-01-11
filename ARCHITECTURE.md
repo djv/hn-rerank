@@ -55,10 +55,6 @@ HN Rerank is a local-first application that personalizes Hacker News content usi
     - Format: Story summary, followed by a newline and key discussion points/debates.
     - Replaces the raw comments section in the story card for a cleaner UI.
     - Cached by story ID in `.cache/tldrs.json`.
-- **Smart Reasons** (`generate_batch_similarity_reasons()` via Groq API):
-    - Generates short phrases explaining the semantic link between stories.
-    - Batches requests (10 per call).
-    - Cached in `.cache/reasons.json`.
 
 ### 5. Constants (`api/constants.py`)
 - Centralized configuration for cache TTLs, scoring weights, clustering parameters, and limits.

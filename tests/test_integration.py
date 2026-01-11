@@ -35,12 +35,10 @@ async def test_generate_html_integration(tmp_path):
         patch("generate_html.rerank.rank_stories") as mock_rank,
         patch("generate_html.rerank.generate_batch_tldrs", new_callable=AsyncMock) as mock_batch_tldrs,
         patch("generate_html.rerank.generate_batch_cluster_names", new_callable=AsyncMock) as mock_batch_names,
-        patch("generate_html.rerank.generate_batch_similarity_reasons", new_callable=AsyncMock) as mock_batch_reasons,
     ):
         # Mock LLM functions
         mock_batch_tldrs.return_value = {1: "This is a test TL;DR summary."}
         mock_batch_names.return_value = {0: "Technology"}
-        mock_batch_reasons.return_value = ["Similarity reason"]
 
         # Mock API behavior
         client_instance = mock_client_class.return_value.__aenter__.return_value
