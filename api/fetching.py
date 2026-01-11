@@ -3,6 +3,7 @@ import asyncio
 import hashlib
 import html
 import json
+import math
 import os
 import re
 import time
@@ -225,14 +226,18 @@ async def get_best_stories(
     # Algolia limits to 1000 results per query, so use time windows
     ALGOLIA_MAX_PER_QUERY = 1000
     WINDOW_DAYS = 7  # Increased from 3 to 7 to reduce API calls (safe: ~700 hits/week < 1000)
+    
+    # Calculate distribution target per window
+    num_windows = math.ceil(days / WINDOW_DAYS)
+    target_per_window = math.ceil(limit / num_windows)
+    
     hits: set[int] = set()
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         now = datetime.now(UTC)
 
         # Iterate through time windows from newest to oldest
-        window = 0
-        while len(hits) < limit and window * WINDOW_DAYS < days:
+        for window in range(num_windows):
             window_end = now - timedelta(days=window * WINDOW_DAYS)
             window_start = now - timedelta(days=min((window + 1) * WINDOW_DAYS, days))
 
@@ -253,9 +258,12 @@ async def get_best_stories(
             cached_ids = get_cached_candidates(cache_key, ttl)
             page_ids: list[int] = []
 
-            if cached_ids is not None:
+            # Check if we have enough cached IDs
+            if cached_ids is not None and len(cached_ids) >= target_per_window:
                 page_ids = cached_ids
             else:
+                # If cache miss or insufficient, fetch what we need (clamped to max)
+                fetch_count = min(max(target_per_window, 200), ALGOLIA_MAX_PER_QUERY)
                 params: dict[str, Any] = {
                     "tags": "story",
                     "numericFilters": (
@@ -264,13 +272,12 @@ async def get_best_stories(
                         f"points>{ALGOLIA_MIN_POINTS},"
                         f"num_comments>={MIN_STORY_COMMENTS}"
                     ),
-                    "hitsPerPage": ALGOLIA_MAX_PER_QUERY,
+                    "hitsPerPage": fetch_count,
                 }
                 resp: httpx.Response = await client.get(
                     f"{ALGOLIA_BASE}/search", params=params
                 )
                 if resp.status_code != 200 or not resp.content:
-                    window += 1
                     continue
                 try:
                     data = resp.json()
@@ -278,16 +285,16 @@ async def get_best_stories(
                     page_ids = [int(h["objectID"]) for h in page_hits]
                     save_cached_candidates(cache_key, page_ids)
                 except Exception:
-                    window += 1
                     continue
 
+            # Take only the required slice from this window
+            window_hits = 0
             for oid in page_ids:
                 if oid not in exclude_ids and oid not in hits:
                     hits.add(oid)
-                    if len(hits) >= limit:
+                    window_hits += 1
+                    if window_hits >= target_per_window:
                         break
-
-            window += 1
 
         results: list[dict[str, Any]] = []
         if not hits:
