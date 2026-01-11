@@ -386,7 +386,7 @@ def _safe_json_loads(text: str) -> dict[Any, Any]:
 
 
 async def _generate_with_retry(
-    model: str = "llama-3.3-70b-versatile",
+    model: str = "llama-3.1-8b-instant",
     contents: Optional[Any] = None,
     config: Optional[dict[str, Any]] = None,
     max_retries: int = 3,
@@ -496,7 +496,7 @@ Topic:"""
 
     try:
         text = await _generate_with_retry(
-            model="llama-3.3-70b-versatile",
+            model="llama-3.1-8b-instant",
             contents=prompt,
             config={"temperature": 0.3, "max_output_tokens": 20},
         )
@@ -576,7 +576,7 @@ JSON Output:"""
 
         try:
             text = await _generate_with_retry(
-                model="llama-3.3-70b-versatile",
+                model="llama-3.1-8b-instant",
                 contents=full_prompt,
                 config={
                     "temperature": 0.2,
@@ -726,7 +726,7 @@ JSON Output:"""
 
         try:
             text = await _generate_with_retry(
-                model="llama-3.3-70b-versatile",
+                model="llama-3.1-8b-instant",
                 contents=prompt,
                 config={
                     "temperature": 0.2,
@@ -792,7 +792,7 @@ IMPORTANT: Put the comments summary (Sentence 2+) on a single new line directly 
 
     try:
         text = await _generate_with_retry(
-            model="llama-3.3-70b-versatile",
+            model="llama-3.1-8b-instant",
             contents=prompt,
             config={"temperature": 0.3, "max_output_tokens": 400},
         )

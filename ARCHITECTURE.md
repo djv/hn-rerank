@@ -37,7 +37,7 @@ HN Rerank is a local-first application that personalizes Hacker News content usi
     - Searches from high k to low to maximize granularity.
     - `cluster_interests_with_labels(embeddings, weights)` returns `(centroids, labels)`.
 - **Cluster Naming** (`generate_batch_cluster_names()` via Groq API):
-    - Uses Google Groq API (`llama-3.3-70b-versatile`) to generate contextual 1-3 word labels.
+    - Uses Google Groq API (`llama-3.1-8b-instant`) to generate contextual 1-3 word labels.
     - Batches naming requests (10 per call) to optimize quota.
     - Strips HN prefixes (Show HN:, Ask HN:, Tell HN:) before sending to LLM.
     - Falls back to "Misc" if API unavailable.
@@ -50,7 +50,7 @@ HN Rerank is a local-first application that personalizes Hacker News content usi
     - **Weighting**: Semantic (95%) + HN Popularity (5%).
 - **Diversity**: Applies Maximal Marginal Relevance (MMR, λ=0.35) to prevent redundant results.
 - **Story TL;DR** (`generate_batch_tldrs()` via Groq API):
-    - Generates concise summaries using `llama-3.3-70b-versatile`.
+    - Generates concise summaries using `llama-3.1-8b-instant`.
     - Batches requests (5 per call) to minimize API quota consumption.
     - Format: Story summary, followed by a newline and key discussion points/debates.
     - Replaces the raw comments section in the story card for a cleaner UI.
