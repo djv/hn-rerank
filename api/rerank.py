@@ -907,19 +907,17 @@ def rank_stories(
             y_train = np.concatenate([y_pos, y_neg])
             
             # Calculate cluster-balanced weights for positives
-            # This prevents the dominant interest cluster from overwhelming the classifier
+            # Use inverse square root weighting (1/sqrt(N)) to dampen dominant clusters
+            # without completely equalizing them (which would over-boost outliers).
             _, labels = cluster_interests_with_labels(X_pos, positive_weights)
             unique_labels, counts = np.unique(labels, return_counts=True)
-            weight_map = {lbl: 1.0 / count for lbl, count in zip(unique_labels, counts)}
+            weight_map = {lbl: 1.0 / np.sqrt(count) for lbl, count in zip(unique_labels, counts)}
             
             # Base weights from clustering
             pos_sample_weights = np.array([weight_map[label] for label in labels])
             
             # Normalize so sum(weights) == n_samples (maintains scale with negatives)
-            # The total weight of all positive samples should equal len(X_pos)
-            # Currently sum(pos_sample_weights) = num_clusters
-            # Factor = len(X_pos) / num_clusters
-            norm_factor = len(X_pos) / len(unique_labels)
+            norm_factor = len(X_pos) / np.sum(pos_sample_weights)
             pos_sample_weights *= norm_factor
             
             # Apply recency weights if available (multiplicative)
