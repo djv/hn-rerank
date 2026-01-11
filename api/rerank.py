@@ -939,19 +939,10 @@ def rank_stories(
     points: NDArray[Any] = np.array([float(s.get("score", 0)) for s in stories])
     hn_scores = np.log1p(points) / np.log1p(max(points.max(), 500))
 
-    # 5. Hybrid Score with Dynamic HN Weight
-    # High-point stories get a slightly higher weight to ensure discovery of "Viral" news
-    # Stories with 300+ points get 3x weight (capped at 0.5 to prevent domination)
-    viral_mask = points > 300
-    dynamic_hn_weight = np.full(len(stories), hn_weight)
-    if np.any(viral_mask):
-        # Cap at 0.5 unless the base weight is already higher
-        upper_bound = max(0.5, hn_weight)
-        dynamic_hn_weight[viral_mask] = np.clip(hn_weight * 3.0, hn_weight, upper_bound)
-
+    # 5. Hybrid Score
     hybrid_scores: NDArray[np.float32] = (
-        1 - dynamic_hn_weight
-    ) * semantic_scores + dynamic_hn_weight * hn_scores
+        1 - hn_weight
+    ) * semantic_scores + hn_weight * hn_scores
 
     # 6. Diversity (MMR)
     results: list[tuple[int, float, int, float]] = []
