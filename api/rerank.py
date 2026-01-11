@@ -11,7 +11,6 @@ import httpx
 import numpy as np
 import onnxruntime as ort
 from numpy.typing import NDArray
-from sklearn.metrics.pairwise import cosine_similarity
 from transformers import AutoTokenizer
 
 from api.constants import (
@@ -896,11 +895,17 @@ def rank_stories(
             positive_embeddings, weights=positive_weights
         )
 
+        # Normalize centroids for dot product (replacing cosine_similarity)
+        # Add epsilon to avoid division by zero
+        centroid_norms = np.linalg.norm(interest_centroids, axis=1, keepdims=True)
+        centroid_norms = np.maximum(centroid_norms, 1e-9)
+        interest_centroids_norm = interest_centroids / centroid_norms
+
         # 2. Semantic Score using interest centroids
         # For each candidate, find similarity to each interest cluster
-        sim_centroids: NDArray[np.float32] = cosine_similarity(
-            interest_centroids, cand_emb
-        )
+        # Using optimized dot product instead of sklearn cosine_similarity
+        # cand_emb is already normalized by get_embeddings
+        sim_centroids: NDArray[np.float32] = interest_centroids_norm @ cand_emb.T
 
         # MaxSim across interest clusters (best matching interest)
         cluster_max_sim = np.max(sim_centroids, axis=0)
@@ -914,7 +919,10 @@ def rank_stories(
 
         # For display score and best_fav_index, use original embeddings (not clusters)
         # This preserves interpretable "match to specific story" display
-        sim_pos: NDArray[np.float32] = cosine_similarity(positive_embeddings, cand_emb)
+
+        # positive_embeddings comes from get_embeddings (normalized)
+        sim_pos: NDArray[np.float32] = positive_embeddings @ cand_emb.T
+
         if positive_weights is not None:
             sim_pos = sim_pos * positive_weights[:, np.newaxis]
         max_sim_scores = np.max(sim_pos, axis=0)
@@ -929,8 +937,9 @@ def rank_stories(
 
     # 3. Negative Signal (Penalty)
     if negative_embeddings is not None and len(negative_embeddings) > 0:
+        # negative_embeddings assumed normalized
         sim_neg: NDArray[np.float32] = np.max(
-            cosine_similarity(negative_embeddings, cand_emb), axis=0
+            negative_embeddings @ cand_emb.T, axis=0
         )
         semantic_scores -= neg_weight * sim_neg
 
@@ -956,7 +965,9 @@ def rank_stories(
     # 6. Diversity (MMR)
     results: list[tuple[int, float, int, float]] = []
     selected_mask: NDArray[np.bool_] = np.zeros(len(cand_emb), dtype=bool)
-    cand_sim: NDArray[np.float32] = cosine_similarity(cand_emb, cand_emb)
+
+    # Pre-calculate candidate similarities using dot product (normalized)
+    cand_sim: NDArray[np.float32] = cand_emb @ cand_emb.T
 
     for _ in range(min(len(stories), 100)):  # Rank top 100
         unselected: NDArray[np.int64] = np.where(~selected_mask)[0]

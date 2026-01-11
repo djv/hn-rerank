@@ -445,8 +445,12 @@ def test_weight_parameters_produce_bounded_scores(hn_weight, diversity_lambda):
         {"id": i, "score": (i + 1) * 100, "time": 1000, "text_content": f"S{i}"}
         for i in range(3)
     ]
+    # Ensure embeddings are normalized as get_embeddings would guarantee
     pos_emb = np.random.randn(2, 384).astype(np.float32)
+    pos_emb /= np.linalg.norm(pos_emb, axis=1, keepdims=True)
+
     cand_emb = np.random.randn(3, 384).astype(np.float32)
+    cand_emb /= np.linalg.norm(cand_emb, axis=1, keepdims=True)
 
     import api.rerank
 
