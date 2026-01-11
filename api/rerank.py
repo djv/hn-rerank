@@ -865,7 +865,7 @@ def rank_stories(
     positive_weights: Optional[NDArray[np.float32]] = None,
     hn_weight: float = 0.05,
     neg_weight: float = 0.6,
-    diversity_lambda: float = 0.35,  # Literature: 0.3-0.5 for discovery
+    diversity_lambda: float = 0.45,  # Increased for better discovery (was 0.35)
     use_classifier: bool = False,
     progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> list[tuple[int, float, int, float]]:
@@ -926,6 +926,9 @@ def rank_stories(
             best_fav_indices = np.argmax(sim_pos_ui, axis=0)
             
             classifier_success = True
+            # Classifier probabilities are sharp (often >0.9 for dominant clusters).
+            # We increase diversity penalty to ensure we skip to the next cluster.
+            diversity_lambda = max(diversity_lambda, 0.6)
         except Exception:
             # Fallback to heuristic on error
             pass
