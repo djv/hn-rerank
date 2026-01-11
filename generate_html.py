@@ -263,9 +263,9 @@ async def main() -> None:
         help="Disable recency weighting for user profile (default: False)",
     )
     parser.add_argument(
-        "--ignore-hidden-signal",
+        "--use-hidden-signal",
         action="store_true",
-        help="Do not use hidden stories as negative signals (but still exclude them from results)",
+        help="Use hidden stories as negative signals (default: False, only excludes them)",
     )
     args: argparse.Namespace = parser.parse_args()
 
@@ -343,7 +343,7 @@ async def main() -> None:
             # Positive signals = Upvoted only (requires login)
             pos_ids: list[int] = list(data["upvoted"])[: args.signals]
             neg_ids: list[int] = []
-            if not args.ignore_hidden_signal:
+            if args.use_hidden_signal:
                 neg_ids = list(data["hidden"])[: args.signals]
 
             pos_stories: list[dict[str, Any]] = await fetch_with_progress(
