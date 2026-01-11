@@ -535,11 +535,18 @@ async def main() -> None:
         pairs_to_gen = []
         for sd in stories_data:
             if sd.get("reason"):
-                pairs_to_gen.append((sd["title"], sd["reason"], sd.get("comments", [])))
+                pairs_to_gen.append(
+                    (
+                        sd["title"], 
+                        sd["reason"], 
+                        sd.get("comments", []), 
+                        sd.get("cluster_name", "General")
+                    )
+                )
         
         reasons = await rerank.generate_batch_similarity_reasons(
             pairs_to_gen,
-            progress_callback=None # progress handled manually below for simplicity or we can add it
+            progress_callback=None
         )
         
         reason_idx = 0

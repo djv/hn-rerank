@@ -1005,7 +1005,7 @@ def _save_reason_cache(cache: dict[str, str]) -> None:
 
 
 async def generate_batch_similarity_reasons(
-    pairs: list[tuple[str, str, list[str]]],
+    pairs: list[tuple[str, str, list[str], str]],
     progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> list[str]:
     """Generate similarity reasons in batches."""
@@ -1014,33 +1014,47 @@ async def generate_batch_similarity_reasons(
 
     cache = _load_reason_cache()
     results_map: dict[str, str] = {}
-    to_generate: list[tuple[str, str, list[str], str]] = []
+    to_generate: list[tuple[str, str, list[str], str, str]] = []
 
-    for cand_title, history_title, comments in pairs:
-        key = hashlib.sha256(f"{cand_title}|{history_title}".encode()).hexdigest()
+    for cand_title, history_title, comments, cluster in pairs:
+        key = hashlib.sha256(
+            f"{cand_title}|{history_title}|{cluster}".encode()
+        ).hexdigest()
         if key in cache:
             results_map[key] = cache[key]
         else:
-            to_generate.append((cand_title, history_title, comments, key))
+            to_generate.append((cand_title, history_title, comments, cluster, key))
 
     if to_generate:
         BATCH_SIZE = 10
         for i in range(0, len(to_generate), BATCH_SIZE):
             batch = to_generate[i : i + BATCH_SIZE]
             prompts = []
-            for ct, ht, cm, k in batch:
+            for ct, ht, cm, cl, k in batch:
                 comments_text = ", ".join([c[:100] for c in cm[:2]])
                 prompts.append(
-                    f'Key: {k}\nStory: "{ct}"\nPast: "{ht}"\nContext: {comments_text}'
+                    f'Key: {k}\n'
+                    f'Cluster: "{cl}"\n'
+                    f'New Story: "{ct}"\n'
+                    f'Your Past Interest: "{ht}"\n'
+                    f'Context: {comments_text}'
                 )
 
             full_prompt = f"""
-Identify the specific shared technical topic or theme for each pair.
-Reply with a JSON object where keys are the Keys provided and values are ONE short phrase (max 8 words) starting with a lowercase verb.
+Identify the shared conceptual or technical link between the New Story and the Past Interest.
+The link must justify why someone interested in the Past Interest would like the New Story.
+If the connection is not obvious, look for abstract themes like business models, industry trends, or philosophical approaches.
+
+Constraints:
+- Output ONE short phrase (max 8 words).
+- Must start with a lowercase verb (e.g., "shares," "explores," "applies").
+- NEVER just describe the New Story. It MUST be a bridge between both.
+- Use the Cluster name as a hint for the shared theme.
 
 Pairs:
 {chr(10).join(prompts)}
 
+Reply with a JSON object where keys are the Keys provided.
 JSON Output:"""
 
             try:
@@ -1070,8 +1084,10 @@ JSON Output:"""
         _save_reason_cache(cache)
 
     final_results = []
-    for cand_title, history_title, _ in pairs:
-        key = hashlib.sha256(f"{cand_title}|{history_title}".encode()).hexdigest()
+    for cand_title, history_title, _, cluster in pairs:
+        key = hashlib.sha256(
+            f"{cand_title}|{history_title}|{cluster}".encode()
+        ).hexdigest()
         final_results.append(results_map.get(key, ""))
 
     return final_results
