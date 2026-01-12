@@ -20,8 +20,6 @@ from api.constants import (
     EMBEDDING_CACHE_DIR,
     EMBEDDING_MIN_CLIP,
     EMBEDDING_MODEL_VERSION,
-    MAX_CLUSTERS,
-    MIN_CLUSTERS,
     MIN_SAMPLES_PER_CLUSTER,
     TEXT_CONTENT_MAX_LENGTH,
 )
@@ -231,8 +229,6 @@ def cluster_interests_with_labels(
       - centroids: shape (n_clusters, embedding_dim)
       - labels: shape (n_samples,) cluster assignment per sample
     """
-    from sklearn.cluster import AgglomerativeClustering
-    from sklearn.metrics import silhouette_score
 
     n_samples = len(embeddings)
     if n_samples == 0:
@@ -252,77 +248,49 @@ def cluster_interests_with_labels(
     norms = np.maximum(norms, 1e-9)
     normalized = embeddings / norms
 
-    # Search for highest k with acceptable silhouette (>= 0.1)
-    # This gives more granular clusters while maintaining coherence
-    # Tuned to favor slightly fewer, broader clusters
-    min_k = max(MIN_CLUSTERS, int(np.sqrt(n_samples) * 0.8))
-    max_k = min(MAX_CLUSTERS, int(np.sqrt(n_samples) * 2.5), n_samples // MIN_SAMPLES_PER_CLUSTER)
+    # Use HDBSCAN for density-based clustering
+    from sklearn.cluster import HDBSCAN
+    
+    # HDBSCAN automatically finds the optimal number of clusters
+    # We use cosine metric to match our embedding space
+    clusterer = HDBSCAN(
+        min_cluster_size=MIN_SAMPLES_PER_CLUSTER,
+        metric="cosine",
+        cluster_selection_method="eom",
+    )
+    best_labels = clusterer.fit_predict(normalized).astype(np.int32)
 
-    best_labels: NDArray[np.int32] = np.zeros(n_samples, dtype=np.int32)
-    silhouette_threshold = 0.14
-
-    # Search from high to low k, pick first that meets threshold
-    for k in range(max_k, min_k - 1, -1):
-        agg = AgglomerativeClustering(
-            n_clusters=k,
-            metric="cosine",
-            linkage="average",
-        )
-        labels = agg.fit_predict(normalized)
-        score = float(silhouette_score(normalized, labels))
-        if score >= silhouette_threshold:
-            best_labels = labels.astype(np.int32)
-            break
-    else:
-        # No k met threshold, use max_k anyway
-        agg = AgglomerativeClustering(
-            n_clusters=max_k, metric="cosine", linkage="average"
-        )
-        best_labels = agg.fit_predict(normalized).astype(np.int32)
-
-    # Post-process: Merge tiny clusters (< MIN_SAMPLES_PER_CLUSTER)
-    # We iteratively merge the smallest cluster into its nearest neighbor
-    # until all clusters meet the size requirement or we are down to 1 cluster.
-    while True:
-        unique, counts = np.unique(best_labels, return_counts=True)
-        small_clusters = unique[counts < MIN_SAMPLES_PER_CLUSTER]
-        if len(small_clusters) == 0:
-            break
-        
-        # If we only have 1 cluster left, we can't merge further
-        if len(unique) <= 1:
-            break
+    # Handle noise points (-1) by assigning them to the nearest cluster
+    unique_labels = np.unique(best_labels)
+    has_clusters = any(lbl != -1 for lbl in unique_labels)
+    
+    if -1 in best_labels:
+        if has_clusters:
+            # For each noise point, find the nearest non-noise cluster
+            noise_mask = (best_labels == -1)
+            cluster_mask = (best_labels != -1)
             
-        # Calculate centroids of current clusters for merging distance
-        current_centroids = {}
-        for lbl in unique:
-            current_centroids[lbl] = np.mean(normalized[best_labels == lbl], axis=0)
+            # Calculate centroids for existing clusters
+            non_noise_embeddings = normalized[cluster_mask]
+            non_noise_labels = best_labels[cluster_mask]
             
-        # Pick the smallest cluster to merge
-        # Sort small clusters by size (ascending), pick first
-        # Actually, just picking the first found is fine, but sorting by size ensures we merge 1s before 2s
-        target_small = small_clusters[np.argmin(counts[counts < MIN_SAMPLES_PER_CLUSTER])]
-        target_centroid = current_centroids[target_small]
-        
-        # Find nearest other centroid
-        best_sim = -2.0  # Cosine sim is [-1, 1]
-        merge_partner = -1
-        
-        for other_lbl in unique:
-            if other_lbl == target_small:
-                continue
+            cluster_ids = np.unique(non_noise_labels)
+            centroids_norm = np.array([
+                np.mean(non_noise_embeddings[non_noise_labels == lbl], axis=0)
+                for lbl in cluster_ids
+            ])
+            # Re-normalize centroids
+            centroids_norm = centroids_norm / np.linalg.norm(centroids_norm, axis=1, keepdims=True)
             
-            sim = np.dot(target_centroid, current_centroids[other_lbl])
-            if sim > best_sim:
-                best_sim = sim
-                merge_partner = other_lbl
-        
-        # Merge target_small into merge_partner
-        if merge_partner != -1:
-            best_labels[best_labels == target_small] = merge_partner
+            noise_embeddings = normalized[noise_mask]
+            sims = np.dot(noise_embeddings, centroids_norm.T)
+            nearest_cluster_indices = np.argmax(sims, axis=1)
+            
+            # Map indices back to cluster IDs
+            best_labels[noise_mask] = cluster_ids[nearest_cluster_indices]
         else:
-            # Should not happen if len(unique) > 1
-            break
+            # If everything is noise, just make it one cluster
+            best_labels[:] = 0
 
     # Renumber labels to be consecutive (0, 1, 2...)
     # Merging can leave gaps (e.g., 0, 2, 3 if 1 was merged)
