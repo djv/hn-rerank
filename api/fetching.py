@@ -236,34 +236,63 @@ async def get_best_stories(
     async with httpx.AsyncClient(timeout=30.0) as client:
         now = datetime.now(UTC)
 
-        # Iterate through time windows from newest to oldest
-        for window in range(num_windows):
-            window_end = now - timedelta(days=window * WINDOW_DAYS)
-            window_start = now - timedelta(days=min((window + 1) * WINDOW_DAYS, days))
+        # Align anchor to last Monday midnight UTC
+        # This makes older windows stable for a full week, maximizing cache reuse
+        days_since_monday = now.weekday()
+        anchor = (now - timedelta(days=days_since_monday)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        anchor_ts = int(anchor.timestamp())
+        ts_now = int(now.timestamp() // 900 * 900)  # Round to 15m
 
-            # Round timestamps to increase cache hits
-            # For window 0 (most recent): round to 15m
-            # For older windows: round to 1h
-            round_sec = 900 if window == 0 else 3600
-            ts_start = int(window_start.timestamp() // round_sec * round_sec)
-            ts_end = int(window_end.timestamp() // round_sec * round_sec)
+        # Construct windows
+        # Tuple: (ts_start, ts_end, is_live_window)
+        windows: list[tuple[int, int, bool]] = []
+
+        # 1. Live Window: Now -> Anchor (Last Monday)
+        if ts_now > anchor_ts:
+            windows.append((anchor_ts, ts_now, True))
+
+        # 2. Archive Windows: 7-day chunks back from Anchor
+        cutoff_ts = int((now - timedelta(days=days)).timestamp())
+        current_end = anchor_ts
+        
+        # Safety limit to prevent infinite loops if days is huge
+        max_archive_weeks = math.ceil(days / 7) + 1
+        
+        for _ in range(max_archive_weeks):
+            if current_end <= cutoff_ts:
+                break
+            current_start = current_end - (7 * 86400)
+            windows.append((current_start, current_end, False))
+            current_end = current_start
+
+        # Calculate targets based on duration
+        total_duration = sum(end - start for start, end, _ in windows)
+        if total_duration == 0:
+            total_duration = 1  # prevent div/0
+
+        for ts_start, ts_end, is_live in windows:
+            duration = ts_end - ts_start
+            # Proportional target, but at least 10% of limit or 20 items
+            win_target = math.ceil(limit * (duration / total_duration))
+            win_target = max(win_target, 20)
 
             cache_key = hashlib.md5(
                 f"{ts_start}-{ts_end}-{ALGOLIA_MIN_POINTS}-{MIN_STORY_COMMENTS}".encode()
             ).hexdigest()
-            ttl = (
-                CANDIDATE_CACHE_TTL_SHORT if window == 0 else CANDIDATE_CACHE_TTL_LONG
-            )
+            # Live window: 15m TTL. Archive: 7 days TTL (since it's stable)
+            ttl = CANDIDATE_CACHE_TTL_SHORT if is_live else (7 * 86400)
 
             cached_ids = get_cached_candidates(cache_key, ttl)
             page_ids: list[int] = []
 
             # Check if we have enough cached IDs
-            if cached_ids is not None and len(cached_ids) >= target_per_window:
+            if cached_ids is not None and len(cached_ids) >= win_target:
                 page_ids = cached_ids
             else:
-                # If cache miss or insufficient, fetch what we need (clamped to max)
-                fetch_count = min(max(target_per_window, 200), ALGOLIA_MAX_PER_QUERY)
+                # If cache miss or insufficient, fetch what we need
+                fetch_count = min(max(win_target, 200), ALGOLIA_MAX_PER_QUERY)
                 params: dict[str, Any] = {
                     "tags": "story",
                     "numericFilters": (
@@ -293,8 +322,12 @@ async def get_best_stories(
                 if oid not in exclude_ids and oid not in hits:
                     hits.add(oid)
                     window_hits += 1
-                    if window_hits >= target_per_window:
+                    if window_hits >= win_target:
                         break
+            
+            # Stop if we have enough total hits (optional, but good for speed)
+            if len(hits) >= limit * 1.5:  # Buffer
+                break
 
         results: list[dict[str, Any]] = []
         if not hits:
