@@ -557,27 +557,27 @@ async def generate_batch_cluster_names(
             # Use top 5 items for context (titles + comments)
             sorted_items = sorted(items, key=lambda x: -x[1])[:5]
             
-            cluster_text = []
+            cluster_data = []
             for s, _ in sorted_items:
                 title = str(s.get("title", "")).strip()
                 if not title: continue
                 
                 # Get top 2 comments, truncate to 150 chars
                 comments = s.get("comments", [])
-                comment_text = ""
+                context = ""
                 if comments:
-                    # comments is list[str]
                     snippets = [c[:150].replace("\n", " ") for c in comments[:2]]
-                    comment_text = " (Context: " + "; ".join(snippets) + ")"
+                    context = "; ".join(snippets)
                 
-                cluster_text.append(f'"{title}"{comment_text}')
+                cluster_data.append({"title": title, "context": context})
             
-            joined_text = " | ".join(cluster_text)
-            batch_prompts.append(f"Cluster {cid}: {joined_text}")
+            # Serialize to JSON for cleaner prompt structure
+            batch_prompts.append(f"Cluster {cid}: {json.dumps(cluster_data)}")
 
         full_prompt = f"""
 Identify a highly specific 1-3 word shared topic/theme for each of these {len(batch_cids)} story groups.
-- Use the provided context (comments) to identify the true subject (e.g. specific book, person, or technical concept).
+- The input is a list of stories (title + comment context) for each cluster.
+- Use the context to identify the true subject.
 - If a group contains distinct/unrelated topics (e.g. Space AND Biology), list them: "Space, Bio & AI".
 - Avoid generic terms like "Technology", "News", or "Interesting".
 - Be specific (e.g. "Distributed Systems", "Sci-Fi Books", "Career Advice").
