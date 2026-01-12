@@ -554,16 +554,33 @@ async def generate_batch_cluster_names(
 
         for cid in batch_cids:
             items = to_generate[cid]
-            sorted_items = sorted(items, key=lambda x: -x[1])[:8]
-            titles = [str(s.get("title", "")).strip() for s, _ in sorted_items]
-            titles_text = ", ".join(f'"{t}"' for t in titles if t)
-            batch_prompts.append(f"Cluster {cid}: {titles_text}")
+            # Use top 5 items for context (titles + comments)
+            sorted_items = sorted(items, key=lambda x: -x[1])[:5]
+            
+            cluster_text = []
+            for s, _ in sorted_items:
+                title = str(s.get("title", "")).strip()
+                if not title: continue
+                
+                # Get top 2 comments, truncate to 150 chars
+                comments = s.get("comments", [])
+                comment_text = ""
+                if comments:
+                    # comments is list[str]
+                    snippets = [c[:150].replace("\n", " ") for c in comments[:2]]
+                    comment_text = " (Context: " + "; ".join(snippets) + ")"
+                
+                cluster_text.append(f'"{title}"{comment_text}')
+            
+            joined_text = " | ".join(cluster_text)
+            batch_prompts.append(f"Cluster {cid}: {joined_text}")
 
         full_prompt = f"""
-Identify a highly specific 1-3 word technical topic for each of these {len(batch_cids)} story groups.
+Identify a highly specific 1-3 word shared topic/theme for each of these {len(batch_cids)} story groups.
+- Use the provided context (comments) to identify the true subject (e.g. specific book, person, or technical concept).
 - If a group contains distinct/unrelated topics (e.g. Space AND Biology), list them: "Space, Bio & AI".
 - Avoid generic terms like "Technology", "News", or "Interesting".
-- Be specific (e.g. "Rust Concurrency", "LLM Quantization").
+- Be specific (e.g. "Distributed Systems", "Sci-Fi Books", "Career Advice").
 
 Return ONLY a JSON object where keys are the EXACT Cluster IDs provided and values are the topics.
 
