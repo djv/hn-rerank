@@ -25,7 +25,6 @@ from api.constants import (
     STORY_CACHE_MAX_FILES,
     CANDIDATE_CACHE_DIR,
     CANDIDATE_CACHE_TTL_SHORT,
-    CANDIDATE_CACHE_TTL_LONG,
 )
 
 ALGOLIA_BASE: str = "https://hn.algolia.com/api/v1"
@@ -225,11 +224,9 @@ async def get_best_stories(
 
     # Algolia limits to 1000 results per query, so use time windows
     ALGOLIA_MAX_PER_QUERY = 1000
-    WINDOW_DAYS = 7  # Increased from 3 to 7 to reduce API calls (safe: ~700 hits/week < 1000)
     
     # Calculate distribution target per window
-    num_windows = math.ceil(days / WINDOW_DAYS)
-    target_per_window = math.ceil(limit / num_windows)
+    # num_windows calculation removed as it was unused
     
     hits: set[int] = set()
 

@@ -280,6 +280,63 @@ def cluster_interests_with_labels(
         )
         best_labels = agg.fit_predict(normalized).astype(np.int32)
 
+    # Post-process: Merge tiny clusters (< MIN_SAMPLES_PER_CLUSTER)
+    # We iteratively merge the smallest cluster into its nearest neighbor
+    # until all clusters meet the size requirement or we are down to 1 cluster.
+    while True:
+        unique, counts = np.unique(best_labels, return_counts=True)
+        small_clusters = unique[counts < MIN_SAMPLES_PER_CLUSTER]
+        if len(small_clusters) == 0:
+            break
+        
+        # If we only have 1 cluster left, we can't merge further
+        if len(unique) <= 1:
+            break
+            
+        # Calculate centroids of current clusters for merging distance
+        current_centroids = {}
+        for lbl in unique:
+            current_centroids[lbl] = np.mean(normalized[best_labels == lbl], axis=0)
+            
+        # Pick the smallest cluster to merge
+        # Sort small clusters by size (ascending), pick first
+        # Actually, just picking the first found is fine, but sorting by size ensures we merge 1s before 2s
+        target_small = small_clusters[np.argmin(counts[counts < MIN_SAMPLES_PER_CLUSTER])]
+        target_centroid = current_centroids[target_small]
+        
+        # Find nearest other centroid
+        best_sim = -2.0  # Cosine sim is [-1, 1]
+        merge_partner = -1
+        
+        for other_lbl in unique:
+            if other_lbl == target_small:
+                continue
+            
+            sim = np.dot(target_centroid, current_centroids[other_lbl])
+            if sim > best_sim:
+                best_sim = sim
+                merge_partner = other_lbl
+        
+        # Merge target_small into merge_partner
+        if merge_partner != -1:
+            best_labels[best_labels == target_small] = merge_partner
+        else:
+            # Should not happen if len(unique) > 1
+            break
+
+    # Renumber labels to be consecutive (0, 1, 2...)
+    # Merging can leave gaps (e.g., 0, 2, 3 if 1 was merged)
+    unique_final = sorted(set(best_labels))
+    mapping = {old: new for new, old in enumerate(unique_final)}
+    # Use vectorized mapping
+    # Create a lookup array for fast mapping
+    if unique_final:
+        max_label = max(unique_final)
+        lookup = np.zeros(max_label + 1, dtype=np.int32)
+        for old, new in mapping.items():
+            lookup[old] = new
+        best_labels = lookup[best_labels]
+
     # Compute centroids from labels (in original embedding space)
     unique_labels = sorted(set(best_labels))
     centroids = []
@@ -560,7 +617,8 @@ async def generate_batch_cluster_names(
             cluster_data = []
             for s, _ in sorted_items:
                 title = str(s.get("title", "")).strip()
-                if not title: continue
+                if not title:
+                    continue
                 
                 # Get top 2 comments, truncate to 150 chars
                 comments = s.get("comments", [])
