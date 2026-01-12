@@ -168,12 +168,14 @@ async def fetch_story(client: httpx.AsyncClient, sid: int) -> Optional[dict[str,
             # Use Algolia API instead of scraping HN (avoids rate limits)
             resp: httpx.Response = await client.get(f"{ALGOLIA_BASE}/items/{sid}")
             if resp.status_code != 200:
+                _atomic_write_json(cache_file, {"ts": time.time(), "story": None})
                 return None
 
             item = resp.json()
 
             # Validate it's a story
             if item.get("type") != "story":
+                _atomic_write_json(cache_file, {"ts": time.time(), "story": None})
                 return None
 
             title = html.unescape(item.get("title", ""))
@@ -187,6 +189,7 @@ async def fetch_story(client: httpx.AsyncClient, sid: int) -> Optional[dict[str,
 
             # Require minimum comments for meaningful signal
             if len(all_comments) < MIN_STORY_COMMENTS:
+                _atomic_write_json(cache_file, {"ts": time.time(), "story": None})
                 return None
 
             # Sort by score (position + depth penalty), lower = better
@@ -210,6 +213,7 @@ async def fetch_story(client: httpx.AsyncClient, sid: int) -> Optional[dict[str,
             _evict_old_cache_files()
             return story
         except Exception:
+            # Don't cache transient errors (network, etc)
             return None
 
 
