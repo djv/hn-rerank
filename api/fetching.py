@@ -49,7 +49,7 @@ def get_cached_candidates(key: str, ttl: int) -> Optional[list[int]]:
 
 def save_cached_candidates(key: str, ids: list[int]) -> None:
     path = CANDIDATE_CACHE_PATH / f"{key}.json"
-    path.write_text(json.dumps(ids))
+    _atomic_write_json(path, ids)
 
 
 def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
@@ -279,8 +279,11 @@ async def get_best_stories(
             win_target = math.ceil(limit * (duration / total_duration))
             win_target = max(win_target, 20)
 
+            # For live window, we use a stable key (ignoring ts_end) to respect TTL
+            # For archive windows, ts_end is fixed/stable so we keep it
+            key_suffix = f"{ts_start}" if is_live else f"{ts_start}-{ts_end}"
             cache_key = hashlib.md5(
-                f"{ts_start}-{ts_end}-{ALGOLIA_MIN_POINTS}-{MIN_STORY_COMMENTS}".encode()
+                f"{key_suffix}-{ALGOLIA_MIN_POINTS}-{MIN_STORY_COMMENTS}".encode()
             ).hexdigest()
             # Live window: 15m TTL. Archive: 7 days TTL (since it's stable)
             ttl = CANDIDATE_CACHE_TTL_SHORT if is_live else (7 * 86400)
@@ -294,14 +297,19 @@ async def get_best_stories(
             else:
                 # If cache miss or insufficient, fetch what we need
                 fetch_count = min(max(win_target, 200), ALGOLIA_MAX_PER_QUERY)
+                
+                # Construct filters
+                filters = [
+                    f"created_at_i>{ts_start}",
+                    f"points>{ALGOLIA_MIN_POINTS}",
+                    f"num_comments>={MIN_STORY_COMMENTS}"
+                ]
+                if not is_live:
+                    filters.append(f"created_at_i<{ts_end}")
+                    
                 params: dict[str, Any] = {
                     "tags": "story",
-                    "numericFilters": (
-                        f"created_at_i>{ts_start},"
-                        f"created_at_i<{ts_end},"
-                        f"points>{ALGOLIA_MIN_POINTS},"
-                        f"num_comments>={MIN_STORY_COMMENTS}"
-                    ),
+                    "numericFilters": ",".join(filters),
                     "hitsPerPage": fetch_count,
                 }
                 resp: httpx.Response = await client.get(
