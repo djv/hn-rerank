@@ -252,11 +252,10 @@ def cluster_interests_with_labels(
     norms = np.maximum(norms, 1e-9)
     normalized = embeddings / norms
 
-    # Search for highest k with acceptable silhouette (>= 0.1)
-    # This gives more granular clusters while maintaining coherence
-    # Tuned to favor slightly fewer, broader clusters
-    min_k = max(MIN_CLUSTERS, int(np.sqrt(n_samples) * 0.8))
-    max_k = min(MAX_CLUSTERS, int(np.sqrt(n_samples) * 2.5), n_samples // MIN_SAMPLES_PER_CLUSTER)
+    # Search for optimal k with best silhouette score
+    # Higher multipliers = more granular clusters (better topic separation)
+    min_k = max(MIN_CLUSTERS, int(np.sqrt(n_samples) * 1.2))
+    max_k = min(MAX_CLUSTERS, int(np.sqrt(n_samples) * 3.5), n_samples // MIN_SAMPLES_PER_CLUSTER)
 
     best_labels: NDArray[np.int32] = np.zeros(n_samples, dtype=np.int32)
     best_score = -1.0
