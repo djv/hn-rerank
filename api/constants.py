@@ -60,3 +60,4 @@ SEMANTIC_MATCH_THRESHOLD = 0.50
 MIN_CLUSTERS = 2
 MAX_CLUSTERS = 50
 MIN_SAMPLES_PER_CLUSTER = 2  # Smaller clusters = more granularity
+CLUSTER_SIMILARITY_THRESHOLD = 0.70  # Min similarity to belong to a cluster

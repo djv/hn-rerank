@@ -23,6 +23,7 @@ from api.fetching import get_best_stories, fetch_story
 from api.constants import (
     ALGOLIA_DEFAULT_DAYS,
     CANDIDATE_FETCH_COUNT,
+    CLUSTER_SIMILARITY_THRESHOLD,
     MAX_USER_STORIES,
 )
 
@@ -465,15 +466,19 @@ async def main() -> None:
             r_task, completed=100, description="[green][+] Reranking complete."
         )
 
-    # Compute cluster assignments for candidates
-    cand_cluster_map: dict[int, int] = {}  # cand_idx -> cluster_id
+    # Compute cluster assignments for candidates (only if above similarity threshold)
+    cand_cluster_map: dict[int, int] = {}  # cand_idx -> cluster_id (-1 = no cluster)
     if cluster_centroids is not None and len(cands) > 0:
         cand_texts = [str(c.get("text_content", "")) for c in cands]
         cand_emb = rerank.get_embeddings(cand_texts)
         if len(cand_emb) > 0:
             sim_to_clusters = cosine_similarity(cand_emb, cluster_centroids)
             for i in range(len(cands)):
-                cand_cluster_map[i] = int(np.argmax(sim_to_clusters[i]))
+                max_sim = float(np.max(sim_to_clusters[i]))
+                if max_sim >= CLUSTER_SIMILARITY_THRESHOLD:
+                    cand_cluster_map[i] = int(np.argmax(sim_to_clusters[i]))
+                else:
+                    cand_cluster_map[i] = -1  # Below threshold - no cluster
 
     stories_data: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
@@ -515,7 +520,8 @@ async def main() -> None:
         elif idx in cand_cluster_map:
             # Fallback to candidate's own cluster if no specific favorite match
             cid = cand_cluster_map[idx]
-            cluster_name = cluster_names.get(cid, "")
+            if cid != -1:  # -1 means below similarity threshold
+                cluster_name = cluster_names.get(cid, "")
 
         stories_data.append(
             {
