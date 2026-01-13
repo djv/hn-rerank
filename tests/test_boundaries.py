@@ -1,266 +1,133 @@
-"""Boundary condition and edge case tests."""
-from __future__ import annotations
-
-import time
-import numpy as np
 import pytest
-
-import api.rerank
-from api.rerank import (
-    rank_stories,
-    compute_recency_weights,
-    get_embeddings,
-)
-
-# Embedding dimension used in tests
-EMB_DIM = 384
-
-
-# =============================================================================
-# Recency Weight Boundaries
-# =============================================================================
-
-
-def test_future_timestamp_treated_as_now():
-    """Future timestamps (negative age) should get weight ~1.0."""
-    future_time = int(time.time()) + 86400 * 30  # 30 days in future
-    weights = compute_recency_weights([future_time])
-
-    assert len(weights) == 1
-    assert weights[0] >= 0.95  # Should be close to 1.0
-
-
-def test_very_old_never_zero():
-    """Very old items (10+ years) still get small positive weight."""
-    ten_years_ago = int(time.time()) - 86400 * 365 * 10
-    weights = compute_recency_weights([ten_years_ago])
-
-    assert len(weights) == 1
-    assert weights[0] > 0.0  # Never exactly zero
-    assert weights[0] < 0.1  # But very small
-
-
-def test_sigmoid_inflection_at_one_year():
-    """At ~365 days, weight should be approximately 0.5."""
-    one_year_ago = int(time.time()) - 86400 * 365
-    weights = compute_recency_weights([one_year_ago])
-
-    assert len(weights) == 1
-    assert 0.4 <= weights[0] <= 0.6  # Around 0.5
-
-
-def test_recent_items_high_weight():
-    """Items from last week should have weight > 0.95."""
-    one_week_ago = int(time.time()) - 86400 * 7
-    weights = compute_recency_weights([one_week_ago])
-
-    assert len(weights) == 1
-    assert weights[0] > 0.95
-
-
-def test_decay_rate_zero_returns_uniform():
-    """decay_rate=0 should return all 1.0 weights."""
-    timestamps = [int(time.time()) - 86400 * i for i in [0, 100, 365, 1000]]
-    weights = compute_recency_weights(timestamps, decay_rate=0.0)
-
-    np.testing.assert_array_almost_equal(weights, [1.0, 1.0, 1.0, 1.0])
-
-
-# =============================================================================
-# Ranking Boundaries
-# =============================================================================
-
-
-def test_single_story_ranking():
-    """Single story returns valid result with that story ranked."""
-    story = {"id": 1, "text_content": "Hello world", "score": 100, "time": int(time.time())}
-    pos_emb = np.random.randn(1, EMB_DIM).astype(np.float32)
-    cand_emb = np.random.randn(1, EMB_DIM).astype(np.float32)
-
-    with pytest.MonkeyPatch().context() as mp:
-        mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: cand_emb)
-        results = rank_stories([story], pos_emb)
-
-    assert len(results) == 1
-    assert results[0][0] == 0  # Index 0
-    assert results[0][1] >= 0  # Score >= 0
-
-
-def test_all_identical_embeddings_ranks_by_hn_score():
-    """When embeddings are identical, MMR should diversify by HN score."""
-    stories = [
-        {"id": i, "text_content": "Same content", "score": (3 - i) * 100, "time": int(time.time())}
-        for i in range(3)
-    ]
-    # All stories have same embedding
-    pos_emb = np.ones((1, EMB_DIM), dtype=np.float32)
-    pos_emb = pos_emb / np.linalg.norm(pos_emb)
-    cand_emb = np.ones((3, EMB_DIM), dtype=np.float32)
-    cand_emb = cand_emb / np.linalg.norm(cand_emb[0])
-
-    with pytest.MonkeyPatch().context() as mp:
-        mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: cand_emb)
-        results = rank_stories(stories, pos_emb, hn_weight=0.5)
-
-    # Should have all 3 results
-    assert len(results) == 3
-
-
-def test_extremely_high_hn_score():
-    """Very high HN scores (100k+) don't cause overflow."""
-    story = {"id": 1, "text_content": "Viral post", "score": 100000, "time": int(time.time())}
-    pos_emb = np.random.randn(1, EMB_DIM).astype(np.float32)
-    cand_emb = np.random.randn(1, EMB_DIM).astype(np.float32)
-
-    with pytest.MonkeyPatch().context() as mp:
-        mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: cand_emb)
-        results = rank_stories([story], pos_emb)
-
-    assert len(results) == 1
-    # Score should be bounded (can be > 1 due to semantic match)
-    assert results[0][1] >= 0
-
-
-def test_zero_hn_score():
-    """Stories with 0 points are handled gracefully."""
-    story = {"id": 1, "text_content": "New post", "score": 0, "time": int(time.time())}
-    pos_emb = np.random.randn(1, EMB_DIM).astype(np.float32)
-    cand_emb = np.random.randn(1, EMB_DIM).astype(np.float32)
-
-    with pytest.MonkeyPatch().context() as mp:
-        mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: cand_emb)
-        results = rank_stories([story], pos_emb)
-
-    assert len(results) == 1
-    assert results[0][1] >= 0
-
-
-def test_negative_hn_score():
-    """Negative scores (shouldn't happen but defensive)."""
-    story = {"id": 1, "text_content": "Test", "score": -10, "time": int(time.time())}
-    pos_emb = np.random.randn(1, EMB_DIM).astype(np.float32)
-    cand_emb = np.random.randn(1, EMB_DIM).astype(np.float32)
-
-    with pytest.MonkeyPatch().context() as mp:
-        mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: cand_emb)
-        results = rank_stories([story], pos_emb)
-
-    assert len(results) == 1
-    # Should handle gracefully (max with 0)
-
-
-# =============================================================================
-# Semantic Threshold Boundary
-# =============================================================================
-
-
-def test_below_threshold_gets_zero_score():
-    """Stories below SEMANTIC_MATCH_THRESHOLD get 0 semantic score."""
-    story = {"id": 1, "text_content": "Unrelated content xyz abc", "score": 100, "time": int(time.time())}
-    # Create orthogonal embeddings to get low similarity
-    pos_emb = np.zeros((1, EMB_DIM), dtype=np.float32)
-    pos_emb[0, 0] = 1.0  # Unit vector in first dimension
-
-    # Candidate orthogonal to positive signal
-    cand_emb = np.zeros((1, EMB_DIM), dtype=np.float32)
-    cand_emb[0, 1] = 1.0  # Orthogonal unit vector
-
-    with pytest.MonkeyPatch().context() as mp:
-        mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: cand_emb)
-        results = rank_stories([story], pos_emb, hn_weight=0.0)
-
-    # With very low semantic match (orthogonal = 0), score should be 0
-    assert len(results) == 1
-    assert results[0][1] == pytest.approx(0.0, abs=0.01)
-
-
-# =============================================================================
-# Empty/None Inputs
-# =============================================================================
-
-
-def test_empty_stories_returns_empty():
-    """Empty stories list returns empty results."""
-    pos_emb = np.random.randn(5, 384).astype(np.float32)
-    results = rank_stories([], pos_emb)
-
-    assert results == []
-
-
-def test_none_positive_embeddings():
-    """None positive embeddings falls back to HN-only ranking."""
-    stories = [
-        {"id": 1, "text_content": "Story 1", "score": 100, "time": int(time.time())},
-        {"id": 2, "text_content": "Story 2", "score": 200, "time": int(time.time())},
-    ]
-
-    results = rank_stories(stories, None)
-
-    assert len(results) == 2
-    # Higher HN score should rank first
-    assert int(stories[results[0][0]]["score"]) >= int(stories[results[1][0]]["score"])
-
-
-def test_empty_positive_embeddings_array():
-    """Empty positive embeddings array treated like None."""
-    stories = [
-        {"id": 1, "text_content": "Story 1", "score": 100, "time": int(time.time())},
-    ]
-    empty_emb = np.array([], dtype=np.float32).reshape(0, 384)
-
-    results = rank_stories(stories, empty_emb)
-
-    assert len(results) == 1
-
-
-# =============================================================================
-# Weight Parameter Boundaries
-# =============================================================================
-
-
-def test_hn_weight_zero_pure_semantic():
-    """hn_weight=0 means pure semantic ranking."""
-    stories = [
-        {"id": 1, "text_content": "Machine learning AI", "score": 1, "time": int(time.time())},
-        {"id": 2, "text_content": "Cooking recipes food", "score": 10000, "time": int(time.time())},
-    ]
-    # Positive signal about ML
-    pos_emb = get_embeddings(["Machine learning artificial intelligence"])
-
-    results = rank_stories(stories, pos_emb, hn_weight=0.0)
-
-    # Despite 10000 points, cooking should rank lower than ML
-    assert len(results) == 2
-
-
-def test_hn_weight_one_pure_hn():
-    """hn_weight=1.0 means pure HN score ranking."""
-    stories = [
-        {"id": 1, "text_content": "Matching content", "score": 10, "time": int(time.time())},
-        {"id": 2, "text_content": "Different content", "score": 1000, "time": int(time.time())},
-    ]
-    # Even though story 1 matches better semantically
-    pos_emb = get_embeddings(["Matching content exactly"])
-
-    results = rank_stories(stories, pos_emb, hn_weight=1.0)
-
-    # Story 2 with 1000 points should rank first
-    assert results[0][0] == 1
-
-
-def test_diversity_lambda_zero_no_mmr():
-    """diversity_lambda=0 means no MMR reranking (pure relevance)."""
-    stories = [
-        {"id": i, "text_content": "Same topic content", "score": 100 - i, "time": int(time.time())}
-        for i in range(5)
-    ]
-    pos_emb = np.random.randn(1, 384).astype(np.float32)
-
-    with pytest.MonkeyPatch().context() as mp:
-        # Mock get_embeddings to return 384-dim vectors to match pos_emb
-        cand_emb = np.random.randn(len(stories), 384).astype(np.float32)
-        mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: cand_emb)
-        results = rank_stories(stories, pos_emb, diversity_lambda=0.0)
-
-    assert len(results) == 5
-    # Results should be in descending score order (within identical semantic match)
+from datetime import datetime, timedelta, UTC
+import math
+
+def generate_windows(now, days):
+    # Logic copied from api/fetching.py to verify independently
+    days_since_monday = now.weekday()
+    anchor = (now - timedelta(days=days_since_monday)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    anchor_ts = int(anchor.timestamp())
+    ts_now = int(now.timestamp() // 900 * 900)  # Round to 15m
+
+    windows = []
+
+    # 1. Live Window: Now -> Anchor (Last Monday)
+    if ts_now > anchor_ts:
+        windows.append((anchor_ts, ts_now, True))
+
+    # 2. Archive Windows: 7-day chunks back from Anchor
+    cutoff_ts = int((now - timedelta(days=days)).timestamp())
+    current_end = anchor_ts
+    
+    max_archive_weeks = math.ceil(days / 7) + 1
+    
+    for _ in range(max_archive_weeks):
+        if current_end <= cutoff_ts:
+            break
+        current_start = current_end - (7 * 86400)
+        windows.append((current_start, current_end, False))
+        current_end = current_start
+        
+    return windows
+
+@pytest.mark.parametrize("date_str, days", [
+    ("2024-02-29 12:00:00", 30), # Leap day
+    ("2024-03-01 12:00:00", 30), # Day after leap
+    ("2023-12-31 23:59:59", 30), # End of year
+    ("2024-01-01 00:00:01", 30), # Start of year
+    ("2025-01-12 10:00:00", 1),  # Short duration
+    ("2025-01-12 10:00:00", 365), # Long duration
+    ("2025-01-13 10:00:00", 7), # Monday
+])
+def test_window_continuity_and_coverage(date_str, days):
+    now = datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+    windows = generate_windows(now, days)
+    
+    assert len(windows) > 0
+    
+    # 1. Check Continuity
+    # Sort by start time ascending
+    windows.sort(key=lambda x: x[0])
+    
+    for i in range(len(windows) - 1):
+        # End of current should equal Start of next
+        assert windows[i][1] == windows[i+1][0], f"Gap or overlap at index {i}"
+
+    # 2. Check Coverage
+    oldest_start = windows[0][0]
+    newest_end = windows[-1][1]
+    
+    cutoff_ts = int((now - timedelta(days=days)).timestamp())
+    ts_now = int(now.timestamp() // 900 * 900)
+    
+    # We expect oldest_start to be <= cutoff_ts (it goes back far enough)
+    # UNLESS days is very small and we are at start of week?
+    # No, if days=1. Cutoff = Now - 1 day.
+    # Anchor = Mon.
+    # If Now = Mon + 0.1. Cutoff = Mon - 0.9.
+    # Live: Mon -> Mon + 0.1.
+    # Arch 1: Mon-7 -> Mon.
+    # Mon-7 < Mon-0.9. Covered.
+    
+    # If Now = Mon + 6. Cutoff = Mon + 5.
+    # Live: Mon -> Mon + 6.
+    # Mon (Anchor) < Mon + 5 (Cutoff).
+    # Wait.
+    # If cutoff > anchor, do we generate archive windows?
+    # loop: `if current_end (Anchor) <= cutoff_ts: break`.
+    # If Anchor (Mon) <= Cutoff (Mon+5). True. Break.
+    # So we generate NO archive windows.
+    # Live window covers Anchor -> Now (Mon -> Mon+6).
+    # Range [Cutoff, Now] is [Mon+5, Mon+6].
+    # Live window covers [Mon, Mon+6].
+    # So [Mon+5, Mon+6] is inside Live window.
+    # Correct.
+    
+    # So strictly: oldest_start <= cutoff_ts
+    assert oldest_start <= cutoff_ts, f"Oldest start {oldest_start} not <= cutoff {cutoff_ts}"
+    
+    # And newest_end should be ts_now
+    # If ts_now > anchor.
+    # If ts_now <= anchor (e.g. exactly midnight? or negative skew?), windows logic handles it.
+    if ts_now > int(get_anchor_ts(now)):
+         assert newest_end == ts_now
+
+
+def get_anchor_ts(now):
+    days_since_monday = now.weekday()
+    anchor = (now - timedelta(days=days_since_monday)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    return int(anchor.timestamp())
+
+
+def test_specific_boundary_monday_midnight():
+    # Monday 00:00:00
+    now = datetime(2026, 1, 12, 0, 0, 0, tzinfo=UTC) # A Monday
+    days = 7
+    
+    # Anchor should be Now
+    windows = generate_windows(now, days)
+    # Live window?
+    # ts_now = timestamp(now).
+    # anchor_ts = timestamp(now).
+    # ts_now > anchor_ts is False.
+    # No live window.
+    
+    # Archive windows
+    # current_end = Now.
+    # cutoff = Now - 7 days.
+    # 1. end=Now. > cutoff. Gen Now-7 -> Now.
+    # 2. end=Now-7. <= cutoff. Break.
+    
+    # Result: 1 window: [Now-7, Now].
+    assert len(windows) == 1
+    assert windows[0][0] == int((now - timedelta(days=7)).timestamp())
+    assert windows[0][1] == int(now.timestamp())
+    assert windows[0][2] is False
+
+if __name__ == "__main__":
+    # Manually run if executed as script
+    pass

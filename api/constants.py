@@ -21,6 +21,7 @@ USER_CACHE_TTL = 120  # 2 minutes
 CANDIDATE_CACHE_DIR = ".cache/candidates"
 CANDIDATE_CACHE_TTL_SHORT = 1800  # 30 minutes
 CANDIDATE_CACHE_TTL_LONG = 604800  # 1 week
+CANDIDATE_CACHE_TTL_ARCHIVE = 7776000  # 90 days
 STORY_CACHE_MAX_FILES = 10000  # LRU eviction threshold
 
 # Concurrency

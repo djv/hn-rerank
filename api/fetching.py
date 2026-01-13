@@ -7,6 +7,7 @@ import math
 import os
 import re
 import time
+import logging
 from pathlib import Path
 from datetime import UTC, datetime, timedelta
 from typing import Any, Callable, Optional
@@ -25,7 +26,11 @@ from api.constants import (
     STORY_CACHE_MAX_FILES,
     CANDIDATE_CACHE_DIR,
     CANDIDATE_CACHE_TTL_SHORT,
+    CANDIDATE_CACHE_TTL_LONG,
+    CANDIDATE_CACHE_TTL_ARCHIVE,
 )
+
+logger = logging.getLogger(__name__)
 
 ALGOLIA_BASE: str = "https://hn.algolia.com/api/v1"
 SEM: asyncio.Semaphore = asyncio.Semaphore(EXTERNAL_REQUEST_SEMAPHORE)
@@ -52,7 +57,7 @@ def save_cached_candidates(key: str, ids: list[int]) -> None:
     _atomic_write_json(path, ids)
 
 
-def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
+def _atomic_write_json(path: Path, data: dict[str, Any] | list[int]) -> None:
     """Write JSON atomically using temp file + rename."""
     import tempfile
 
@@ -165,6 +170,7 @@ async def fetch_story(client: httpx.AsyncClient, sid: int) -> Optional[dict[str,
 
     async with SEM:
         try:
+            logger.debug(f"Fetching story {sid} details from Algolia")
             # Use Algolia API instead of scraping HN (avoids rate limits)
             resp: httpx.Response = await client.get(f"{ALGOLIA_BASE}/items/{sid}")
             if resp.status_code != 200:
@@ -285,8 +291,17 @@ async def get_best_stories(
             cache_key = hashlib.md5(
                 f"{key_suffix}-{ALGOLIA_MIN_POINTS}-{MIN_STORY_COMMENTS}".encode()
             ).hexdigest()
-            # Live window: 15m TTL. Archive: 7 days TTL (since it's stable)
-            ttl = CANDIDATE_CACHE_TTL_SHORT if is_live else (7 * 86400)
+
+            # TTL Logic:
+            # 1. Live window: Short TTL (CANDIDATE_CACHE_TTL_SHORT)
+            # 2. Old Archive (>= 30 days): Long/Archive TTL (CANDIDATE_CACHE_TTL_ARCHIVE)
+            # 3. Recent Archive: Weekly TTL (7 days)
+            if is_live:
+                ttl = CANDIDATE_CACHE_TTL_SHORT
+            elif ts_end <= int(now.timestamp()) - (30 * 86400):
+                ttl = CANDIDATE_CACHE_TTL_ARCHIVE
+            else:
+                ttl = CANDIDATE_CACHE_TTL_LONG
 
             cached_ids = get_cached_candidates(cache_key, ttl)
             page_ids: list[int] = []
@@ -296,6 +311,7 @@ async def get_best_stories(
                 page_ids = cached_ids
             else:
                 # If cache miss or insufficient, fetch what we need
+                logger.info(f"Cache miss for window {ts_start}-{ts_end} (live={is_live}). Fetching from Algolia.")
                 fetch_count = min(max(win_target, 200), ALGOLIA_MAX_PER_QUERY)
                 
                 # Construct filters
