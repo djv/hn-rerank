@@ -306,11 +306,11 @@ async def get_best_stories(
             cached_ids = get_cached_candidates(cache_key, ttl)
             page_ids: list[int] = []
 
-            # Check if we have enough cached IDs
-            if cached_ids is not None and len(cached_ids) >= win_target:
+            # Use cache if valid, even if fewer IDs than target (avoid wasteful refetches)
+            if cached_ids is not None:
                 page_ids = cached_ids
             else:
-                # If cache miss or insufficient, fetch what we need
+                # Cache miss or expired - fetch from API
                 logger.info(f"Cache miss for window {ts_start}-{ts_end} (live={is_live}). Fetching from Algolia.")
                 fetch_count = min(max(win_target, 200), ALGOLIA_MAX_PER_QUERY)
                 
