@@ -149,7 +149,7 @@ def get_embeddings(
     vectors: list[Optional[NDArray[np.float32]]] = []
     to_compute_indices: list[int] = []
 
-    expected_dim: int = 768  # e5-base-v2
+    expected_dim: int = 768  # bge-base-en-v1.5
 
     for idx, text in enumerate(processed_texts):
         # Include model version in hash to invalidate cache on model change
@@ -987,8 +987,8 @@ def rank_stories(
             # while still preventing them from totally drowning out small niches.
             _, labels = cluster_interests_with_labels(X_pos, positive_weights)
             unique_labels, counts = np.unique(labels, return_counts=True)
-            # Use log1p to handle counts naturally
-            weight_map = {lbl: 1.0 / np.log1p(count + 1) for lbl, count in zip(unique_labels, counts)}
+            # Use log1p for soft dampening: 1/log(1+count)
+            weight_map = {lbl: 1.0 / np.log1p(count) for lbl, count in zip(unique_labels, counts)}
             
             # Base weights from clustering
             pos_sample_weights = np.array([weight_map[label] for label in labels])
@@ -1057,17 +1057,18 @@ def rank_stories(
 
             # For display score and best_fav_index, use original embeddings (not clusters)
             # This preserves interpretable "match to specific story" display
+            # NOTE: Don't apply recency weights here - we want pure semantic match for UI
+            # (recency is already factored into ranking via cluster centroids)
             sim_pos: NDArray[np.float32] = cosine_similarity(positive_embeddings, cand_emb)
-            if positive_weights is not None:
-                sim_pos = sim_pos * positive_weights[:, np.newaxis]
             max_sim_scores = np.max(sim_pos, axis=0)
             best_fav_indices = np.argmax(sim_pos, axis=0)
 
             # Apply soft sigmoid activation instead of hard threshold
-            # This suppresses noise (<0.4) while preserving strong signals
+            # This suppresses noise while preserving strong signals
             # k=15 makes the transition reasonably steep around the threshold
+            # threshold=0.35 is permissive for users with eclectic tastes
             k = 15.0
-            threshold = 0.45
+            threshold = 0.35
             semantic_scores = 1.0 / (1.0 + np.exp(-k * (semantic_scores - threshold)))
 
         # 3. Negative Signal (Penalty) - Only applies in heuristic mode
