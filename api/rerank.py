@@ -259,10 +259,10 @@ def cluster_interests_with_labels(
     max_k = min(MAX_CLUSTERS, int(np.sqrt(n_samples) * 2.5), n_samples // MIN_SAMPLES_PER_CLUSTER)
 
     best_labels: NDArray[np.int32] = np.zeros(n_samples, dtype=np.int32)
-    silhouette_threshold = 0.20  # 0.20-0.25 = weak but real structure
+    best_score = -1.0
 
-    # Search from high to low k, pick first that meets threshold
-    for k in range(max_k, min_k - 1, -1):
+    # Search all k values, pick the one with highest silhouette score
+    for k in range(min_k, max_k + 1):
         agg = AgglomerativeClustering(
             n_clusters=k,
             metric="cosine",
@@ -270,15 +270,9 @@ def cluster_interests_with_labels(
         )
         labels = agg.fit_predict(normalized)
         score = float(silhouette_score(normalized, labels))
-        if score >= silhouette_threshold:
+        if score > best_score:
+            best_score = score
             best_labels = labels.astype(np.int32)
-            break
-    else:
-        # No k met threshold, use max_k anyway
-        agg = AgglomerativeClustering(
-            n_clusters=max_k, metric="cosine", linkage="average"
-        )
-        best_labels = agg.fit_predict(normalized).astype(np.int32)
 
     # Post-process: Merge tiny clusters (< MIN_SAMPLES_PER_CLUSTER)
     # We iteratively merge the smallest cluster into its nearest neighbor
