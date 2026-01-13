@@ -561,9 +561,13 @@ Topic:"""
             return "Misc"
 
         name = text.strip().strip('"').strip("'")
-        # Truncate if too long
-        words = name.split()[:4]
+        # Truncate if too long (6 words allows multi-topic names like "AI, Space & Biology")
+        words = name.split()[:6]
         final_name = " ".join(words) if words else "Misc"
+        # Strip trailing conjunctions/punctuation left by truncation
+        final_name = final_name.rstrip(" ,&").rstrip()
+        if final_name.endswith(" and") or final_name.endswith(" or"):
+            final_name = final_name.rsplit(" ", 1)[0]
 
         cache[cache_key] = final_name
         _save_cluster_name_cache(cache)
@@ -664,8 +668,13 @@ JSON Output:"""
                 for cid_str, name in batch_results.items():
                     try:
                         cid = int(cid_str)
-                        final_name = str(name).strip().split()[:4]
+                        # Truncate to 6 words (allows multi-topic names)
+                        final_name = str(name).strip().split()[:6]
                         final_name = " ".join(final_name)
+                        # Strip trailing conjunctions/punctuation left by truncation
+                        final_name = final_name.rstrip(" ,&").rstrip()
+                        if final_name.endswith(" and") or final_name.endswith(" or"):
+                            final_name = final_name.rsplit(" ", 1)[0]
 
                         results[cid] = final_name
                         # Save to cache
