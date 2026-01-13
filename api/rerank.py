@@ -259,7 +259,7 @@ def cluster_interests_with_labels(
     max_k = min(MAX_CLUSTERS, int(np.sqrt(n_samples) * 2.5), n_samples // MIN_SAMPLES_PER_CLUSTER)
 
     best_labels: NDArray[np.int32] = np.zeros(n_samples, dtype=np.int32)
-    silhouette_threshold = 0.14
+    silhouette_threshold = 0.20  # 0.20-0.25 = weak but real structure
 
     # Search from high to low k, pick first that meets threshold
     for k in range(max_k, min_k - 1, -1):
