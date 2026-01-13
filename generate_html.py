@@ -143,7 +143,7 @@ CLUSTER_CARD_TEMPLATE: str = """
 
 CLUSTER_STORY_TEMPLATE: str = """
 <li class="px-3 py-2 hover:bg-stone-50">
-    <a href="{hn_url}" target="_blank" class="text-sm text-stone-700 hover:text-hn transition-colors line-clamp-2">
+    <a href="{hn_url}" target="_blank" rel="noopener noreferrer" class="text-sm text-stone-700 hover:text-hn transition-colors line-clamp-2">
         {title}
     </a>
     <div class="flex items-center gap-2 mt-0.5">
@@ -182,10 +182,10 @@ STORY_CARD_TEMPLATE: str = """
                 <span class="text-[10px] text-stone-400 font-mono">{time_ago}</span>
             </div>
             <h2 class="text-sm font-semibold text-stone-900 group-hover:text-hn transition-colors leading-snug">
-                <a href="{url}" target="_blank">{title}</a>
+                <a href="{url}" target="_blank" rel="noopener noreferrer">{title}</a>
             </h2>
         </div>
-        <a href="{hn_url}" target="_blank" class="shrink-0 p-1 rounded bg-stone-100 text-stone-400 hover:bg-hn hover:text-white transition-all" title="HN">
+        <a href="{hn_url}" target="_blank" rel="noopener noreferrer" class="shrink-0 p-2 rounded bg-stone-100 text-stone-600 hover:bg-hn hover:text-white transition-all" title="HN" aria-label="View on Hacker News">
             <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2L2 12h3v8h6v-6h2v6h6v-8h3L12 2z"/></svg>
         </a>
     </div>
