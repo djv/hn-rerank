@@ -252,10 +252,12 @@ def cluster_interests_with_labels(
     norms = np.maximum(norms, 1e-9)
     normalized = embeddings / norms
 
-    # Search for optimal k with best silhouette score
-    # Higher multipliers = more granular clusters (better topic separation)
-    min_k = max(MIN_CLUSTERS, int(np.sqrt(n_samples) * 1.2))
-    max_k = min(MAX_CLUSTERS, int(np.sqrt(n_samples) * 3.5), n_samples // MIN_SAMPLES_PER_CLUSTER)
+    # Search for optimal k using target cluster size (scales naturally with data)
+    # Target: 5-15 stories per cluster on average
+    target_min_size = 5   # Want at least this many per cluster
+    target_max_size = 15  # Want at most this many per cluster
+    min_k = max(MIN_CLUSTERS, n_samples // target_max_size)
+    max_k = max(min_k, min(MAX_CLUSTERS, n_samples // target_min_size))
 
     best_labels: NDArray[np.int32] = np.zeros(n_samples, dtype=np.int32)
     best_score = -1.0
