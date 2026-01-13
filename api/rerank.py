@@ -225,14 +225,14 @@ def cluster_interests_with_labels(
     weights: Optional[NDArray[np.float32]] = None,
 ) -> tuple[NDArray[np.float32], NDArray[np.int32]]:
     """
-    Cluster user interest embeddings using GMM with BIC for model selection.
-    Uses PCA to reduce dimensions for efficiency.
+    Cluster user interest embeddings using Agglomerative Clustering.
+    Uses silhouette score to find optimal cluster count.
     Returns (centroids, labels) where:
       - centroids: shape (n_clusters, embedding_dim)
       - labels: shape (n_samples,) cluster assignment per sample
     """
-    from sklearn.mixture import GaussianMixture
-    from sklearn.decomposition import PCA
+    from sklearn.cluster import AgglomerativeClustering
+    from sklearn.metrics import silhouette_score
 
     n_samples = len(embeddings)
     if n_samples == 0:
@@ -247,35 +247,35 @@ def cluster_interests_with_labels(
             centroid = np.mean(embeddings, axis=0).reshape(1, -1)
         return centroid.astype(np.float32), labels
 
-    # Normalize embeddings
+    # Normalize embeddings for cosine-like behavior with euclidean distance
     norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
     norms = np.maximum(norms, 1e-9)
     normalized = embeddings / norms
 
-    # PCA to reduce dimensions (768 -> 50) for faster GMM
-    n_components = min(50, n_samples - 1, normalized.shape[1])
-    pca = PCA(n_components=n_components, random_state=42)
-    reduced = pca.fit_transform(normalized)
-
-    # Search for optimal k using BIC (lower is better)
-    min_k = MIN_CLUSTERS
-    max_k = min(MAX_CLUSTERS, n_samples // MIN_SAMPLES_PER_CLUSTER)
+    # Search for optimal k with best silhouette score
+    # Higher multipliers = more granular clusters (better topic separation)
+    min_k = max(MIN_CLUSTERS, int(np.sqrt(n_samples) * 1.2))
+    max_k = min(MAX_CLUSTERS, int(np.sqrt(n_samples) * 3.5), n_samples // MIN_SAMPLES_PER_CLUSTER)
 
     best_labels: NDArray[np.int32] = np.zeros(n_samples, dtype=np.int32)
-    best_bic = float('inf')
+    best_score = -1.0
+    best_k = min_k
 
+    # Search all k values, pick the one with highest silhouette score
+    # Bias toward more clusters: only pick fewer if significantly better (> 0.03)
     for k in range(min_k, max_k + 1):
-        gmm = GaussianMixture(
-            n_components=k,
-            covariance_type='diag',  # Faster than 'full'
-            n_init=1,
-            random_state=42,
+        agg = AgglomerativeClustering(
+            n_clusters=k,
+            metric="cosine",
+            linkage="average",
         )
-        gmm.fit(reduced)
-        bic = gmm.bic(reduced)
-        if bic < best_bic:
-            best_bic = bic
-            best_labels = gmm.predict(reduced).astype(np.int32)
+        labels = agg.fit_predict(normalized)
+        score = float(silhouette_score(normalized, labels))
+        # Prefer more clusters unless fewer is significantly better
+        if score > best_score + 0.03 or (score >= best_score - 0.01 and k > best_k):
+            best_score = score
+            best_k = k
+            best_labels = labels.astype(np.int32)
 
     # Post-process: Merge tiny clusters (< MIN_SAMPLES_PER_CLUSTER)
     # We iteratively merge the smallest cluster into its nearest neighbor
