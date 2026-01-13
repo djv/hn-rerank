@@ -260,8 +260,10 @@ def cluster_interests_with_labels(
 
     best_labels: NDArray[np.int32] = np.zeros(n_samples, dtype=np.int32)
     best_score = -1.0
+    best_k = min_k
 
     # Search all k values, pick the one with highest silhouette score
+    # Bias toward more clusters: only pick fewer if significantly better (> 0.03)
     for k in range(min_k, max_k + 1):
         agg = AgglomerativeClustering(
             n_clusters=k,
@@ -270,8 +272,10 @@ def cluster_interests_with_labels(
         )
         labels = agg.fit_predict(normalized)
         score = float(silhouette_score(normalized, labels))
-        if score > best_score:
+        # Prefer more clusters unless fewer is significantly better
+        if score > best_score + 0.03 or (score >= best_score - 0.01 and k > best_k):
             best_score = score
+            best_k = k
             best_labels = labels.astype(np.int32)
 
     # Post-process: Merge tiny clusters (< MIN_SAMPLES_PER_CLUSTER)
