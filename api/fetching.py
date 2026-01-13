@@ -315,13 +315,14 @@ async def get_best_stories(
                 fetch_count = min(max(win_target, 200), ALGOLIA_MAX_PER_QUERY)
                 
                 # Construct filters
+                # Use >= for start to include boundary stories (prevents gaps between windows)
                 filters = [
-                    f"created_at_i>{ts_start}",
+                    f"created_at_i>={ts_start}",
                     f"points>{ALGOLIA_MIN_POINTS}",
                     f"num_comments>={MIN_STORY_COMMENTS}"
                 ]
-                if not is_live:
-                    filters.append(f"created_at_i<{ts_end}")
+                # Always add upper bound (< end) to prevent overlap and bound live window
+                filters.append(f"created_at_i<{ts_end}")
                     
                 params: dict[str, Any] = {
                     "tags": "story",

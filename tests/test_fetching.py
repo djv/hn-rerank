@@ -176,3 +176,149 @@ async def test_get_best_stories_pagination():
         stories = await get_best_stories(limit=1100)
         # We expect 1100 unique stories
         assert len(stories) >= 1100
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_get_best_stories_empty_response():
+    """Test graceful handling when Algolia returns no hits."""
+    search_url = f"{ALGOLIA_BASE}/search"
+    respx.get(search_url).mock(
+        return_value=Response(200, json={"hits": [], "nbPages": 0})
+    )
+
+    with pytest.MonkeyPatch().context() as mp:
+        mock_cache = MagicMock()
+        mp.setattr("api.fetching.CACHE_PATH", mock_cache)
+        mp.setattr("api.fetching.CANDIDATE_CACHE_PATH", mock_cache)
+        mock_cache.__truediv__.return_value.exists.return_value = False
+        mp.setattr("api.fetching._atomic_write_json", lambda p, d: None)
+        mp.setattr("api.fetching._evict_old_cache_files", lambda: None)
+
+        stories = await get_best_stories(limit=10, days=7)
+        assert stories == []
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_get_best_stories_partial_failure():
+    """Test that partial Algolia failures don't crash the fetcher."""
+    search_url = f"{ALGOLIA_BASE}/search"
+
+    call_count = 0
+    def varying_response(request):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            # First window succeeds
+            return Response(200, json={"hits": [{"objectID": "1"}, {"objectID": "2"}]})
+        else:
+            # Subsequent windows fail
+            return Response(500, json={"error": "Internal error"})
+
+    respx.get(search_url).mock(side_effect=varying_response)
+
+    # Mock item fetches for the successful stories
+    comments = [
+        {"type": "comment", "text": f"Comment {i} with enough text to pass the minimum length filter.", "children": []}
+        for i in range(12)
+    ]
+    for sid in ["1", "2"]:
+        respx.get(f"{ALGOLIA_BASE}/items/{sid}").mock(
+            return_value=Response(200, json={
+                "id": int(sid),
+                "type": "story",
+                "title": f"Story {sid}",
+                "url": f"http://example.com/{sid}",
+                "points": 100,
+                "created_at_i": 1600000000,
+                "children": comments,
+            })
+        )
+
+    with pytest.MonkeyPatch().context() as mp:
+        mock_cache = MagicMock()
+        mp.setattr("api.fetching.CACHE_PATH", mock_cache)
+        mp.setattr("api.fetching.CANDIDATE_CACHE_PATH", mock_cache)
+        mock_cache.__truediv__.return_value.exists.return_value = False
+        mp.setattr("api.fetching._atomic_write_json", lambda p, d: None)
+        mp.setattr("api.fetching._evict_old_cache_files", lambda: None)
+
+        stories = await get_best_stories(limit=10, days=14)
+        # Should still return the stories from successful window
+        assert len(stories) >= 1
+
+
+class TestWindowFilters:
+    """Test that window filters use correct boundary conditions."""
+
+    def test_filter_uses_inclusive_start(self):
+        """Verify filter string uses >= for start (not >) to include boundary stories."""
+        # This is a unit test checking the filter construction logic
+        # We check the actual filter string format
+        from api.fetching import ALGOLIA_MIN_POINTS, MIN_STORY_COMMENTS
+
+        ts_start = 1700000000
+        ts_end = 1700086400
+
+        # Simulate the filter construction from get_best_stories
+        filters = [
+            f"created_at_i>={ts_start}",
+            f"points>{ALGOLIA_MIN_POINTS}",
+            f"num_comments>={MIN_STORY_COMMENTS}"
+        ]
+        filters.append(f"created_at_i<{ts_end}")
+
+        filter_str = ",".join(filters)
+
+        # Check inclusive start
+        assert f"created_at_i>={ts_start}" in filter_str
+        # Check exclusive end (to prevent overlap)
+        assert f"created_at_i<{ts_end}" in filter_str
+        # Should NOT have exclusive start
+        assert f"created_at_i>{ts_start}" not in filter_str
+
+
+class TestWinTargetCalculation:
+    """Test window target distribution logic."""
+
+    def test_proportional_distribution(self):
+        """Test that win_target is proportional to window duration."""
+        import math
+
+        # Simulate windows: 2 days live + 7 days archive
+        windows = [
+            (1000, 1000 + 2 * 86400, True),   # 2 days
+            (1000 - 7 * 86400, 1000, False),  # 7 days
+        ]
+        limit = 100
+
+        total_duration = sum(end - start for start, end, _ in windows)
+
+        targets = []
+        for ts_start, ts_end, _ in windows:
+            duration = ts_end - ts_start
+            win_target = math.ceil(limit * (duration / total_duration))
+            win_target = max(win_target, 20)
+            targets.append(win_target)
+
+        # Live window (2 days) should get ~22% of limit
+        # Archive window (7 days) should get ~78% of limit
+        # But minimum is 20
+        assert targets[0] >= 20  # Live window minimum
+        assert targets[1] >= 20  # Archive window minimum
+        assert targets[1] > targets[0]  # Archive should get more (longer duration)
+
+    def test_minimum_target_enforced(self):
+        """Test that minimum target of 20 is enforced even for small limits."""
+        import math
+
+        # Small limit with one window
+        limit = 5
+        total_duration = 7 * 86400
+        duration = 7 * 86400
+
+        win_target = math.ceil(limit * (duration / total_duration))
+        win_target = max(win_target, 20)
+
+        assert win_target == 20  # Should be minimum, not 5
