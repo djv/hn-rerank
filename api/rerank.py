@@ -902,7 +902,7 @@ def rank_stories(
     negative_embeddings: Optional[NDArray[np.float32]] = None,
     positive_weights: Optional[NDArray[np.float32]] = None,
     hn_weight: float = 0.05,
-    neg_weight: float = 0.6,
+    neg_weight: float = 0.3,
     diversity_lambda: float = 0.45,  # Increased for better discovery (was 0.35)
     use_classifier: bool = False,
     progress_callback: Optional[Callable[[int, int], None]] = None,
