@@ -762,7 +762,8 @@ Sentence 2: Key insight from discussion
 BAD: "This story is about a new database that..."
 GOOD: "TigerBeetle achieves 1M TPS via io_uring. Commenters question benchmark realism."
 
-Return JSON: {{ "story_id": "Two sentences." }}
+Return ONLY a JSON object where keys are story IDs (as strings) and values are summaries.
+Example: {{ "12345": "Tool does X. Commenters note Y." }}
 
 Stories:
 {batch_context}
