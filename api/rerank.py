@@ -509,7 +509,7 @@ Theme:"""
 
     try:
         text = await _generate_with_retry(
-            model="llama-3.1-8b-instant",
+            model="llama-3.3-70b-versatile",  # Larger model for accurate naming
             contents=prompt,
             config={"temperature": 0.3, "max_output_tokens": 20},
         )
@@ -611,7 +611,7 @@ JSON:"""
 
         try:
             text = await _generate_with_retry(
-                model="llama-3.1-8b-instant",
+                model="llama-3.3-70b-versatile",  # Larger model for accurate naming
                 contents=full_prompt,
                 config={
                     "temperature": 0.2,
