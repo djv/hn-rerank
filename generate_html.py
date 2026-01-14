@@ -150,7 +150,6 @@ CLUSTER_STORY_TEMPLATE: str = """
     <div class="flex items-center gap-2 mt-0.5">
         <span class="text-[10px] text-stone-400">{points} pts</span>
         <span class="text-[10px] text-stone-400">{time_ago}</span>
-        <span class="text-[10px] text-emerald-600 font-medium">{weight:.0%}</span>
     </div>
 </li>
 """
@@ -257,11 +256,6 @@ async def main() -> None:
         type=int,
         default=ALGOLIA_DEFAULT_DAYS,
         help=f"Time window in days for fetching candidates (default: {ALGOLIA_DEFAULT_DAYS})",
-    )
-    parser.add_argument(
-        "--no-recency-bias",
-        action="store_true",
-        help="Disable recency weighting for user profile (default: False)",
     )
     parser.add_argument(
         "--use-hidden-signal",
@@ -396,14 +390,6 @@ async def main() -> None:
             if neg_stories
             else None
         )
-        p_weights: Optional[NDArray[np.float32]] = (
-            rerank.compute_recency_weights(
-                [int(s["time"]) for s in pos_stories],
-                decay_rate=0.0 if args.no_recency_bias else None,
-            )
-            if pos_stories
-            else None
-        )
         progress.update(e_task, description="[green][+] Preferences embedded.")
 
         # 2b. Clustering interests
@@ -412,14 +398,15 @@ async def main() -> None:
         cluster_names: dict[int, str] = {}
         if p_emb is not None and len(p_emb) > 0:
             cl_task: Any = progress.add_task("[cyan]Clustering interests...", total=1)
-            cluster_centroids, cluster_labels = rerank.cluster_interests_with_labels(p_emb, p_weights)
+            cluster_centroids, cluster_labels = rerank.cluster_interests_with_labels(p_emb)
             progress.update(cl_task, completed=1, description="[green][+] Interests clustered.")
 
             # Build cluster names (LLM calls)
+            # Use story score as weight for LLM to see most popular stories first
             clusters_for_naming: dict[int, list[tuple[dict[str, Any], float]]] = defaultdict(list)
             for i, label in enumerate(cluster_labels):
-                weight = float(p_weights[i]) if p_weights is not None else 1.0
-                clusters_for_naming[int(label)].append((pos_stories[i], weight))
+                score = float(pos_stories[i].get("score", 0))
+                clusters_for_naming[int(label)].append((pos_stories[i], score))
 
             n_clusters = len(set(cluster_labels))
             name_task: Any = progress.add_task("[cyan]Naming clusters...", total=n_clusters)
@@ -458,7 +445,6 @@ async def main() -> None:
             cands,
             p_emb,
             n_emb,
-            p_weights,
             use_classifier=args.use_classifier,
             progress_callback=rank_cb,
         )
@@ -565,27 +551,25 @@ async def main() -> None:
     n_clusters: int = len(cluster_names)
     if cluster_labels is not None and len(pos_stories) > 0:
         # Rebuild clusters dict for the clusters page (reuse cluster_names from earlier)
-        clusters: dict[int, list[tuple[dict[str, Any], float]]] = defaultdict(list)
+        clusters: dict[int, list[dict[str, Any]]] = defaultdict(list)
         for i, label in enumerate(cluster_labels):
-            weight = float(p_weights[i]) if p_weights is not None else 1.0
-            clusters[int(label)].append((pos_stories[i], weight))
+            clusters[int(label)].append(pos_stories[i])
 
-        # Sort each cluster by weight (recency)
+        # Sort each cluster by time (most recent first)
         for cid in clusters:
-            clusters[cid].sort(key=lambda x: x[1], reverse=True)
+            clusters[cid].sort(key=lambda x: x.get("time", 0), reverse=True)
 
         # Generate cluster cards for clusters.html
         cluster_cards: list[str] = []
         for cid in sorted(clusters.keys(), key=lambda c: -len(clusters[c])):
             items = clusters[cid]
             stories_in_cluster: str = ""
-            for story, weight in items[:15]:  # Limit display
+            for story in items[:15]:  # Limit display
                 stories_in_cluster += CLUSTER_STORY_TEMPLATE.format(
                     hn_url=f"https://news.ycombinator.com/item?id={story['id']}",
                     title=html.escape(str(story.get("title", "Untitled")), quote=False),
                     points=int(story.get("score", 0)),
                     time_ago=get_relative_time(int(story.get("time", 0))),
-                    weight=weight,
                 )
             cluster_cards.append(
                 CLUSTER_CARD_TEMPLATE.format(

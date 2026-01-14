@@ -754,16 +754,15 @@ async def generate_batch_tldrs(
         batch_context = "\n\n---\n\n".join(stories_formatted)
 
         prompt = f"""
-2-sentence summary per story. No filler phrases.
+2-3 sentence summary per story. No filler phrases.
 
 Sentence 1: What it is (tool, finding, announcement)
-Sentence 2: Key insight from discussion
+Sentence 2-3: Key insights and debates from the discussion
 
 BAD: "This story is about a new database that..."
-GOOD: "TigerBeetle achieves 1M TPS via io_uring. Commenters question benchmark realism."
+GOOD: "TigerBeetle achieves 1M TPS via io_uring and deterministic simulation testing. Commenters debate whether benchmarks reflect real workloads, with some noting the Zig implementation adds complexity."
 
 Return ONLY a JSON object where keys are story IDs (as strings) and values are summaries.
-Example: {{ "12345": "Tool does X. Commenters note Y." }}
 
 Stories:
 {batch_context}
