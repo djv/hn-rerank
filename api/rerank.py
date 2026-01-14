@@ -499,11 +499,13 @@ async def generate_single_cluster_name(
         return "Misc"
 
     prompt = f"""
-What single topic best describes these titles? Reply with ONLY 1-3 words.
+What COMMON theme connects ALL these titles?
+Must apply equally to every title. If diverse, use broader category.
+Reply with ONLY 1-3 words.
 
 {titles_text}
 
-Topic:"""
+Theme:"""
 
     try:
         text = await _generate_with_retry(
@@ -591,21 +593,21 @@ async def generate_batch_cluster_names(
             batch_prompts.append(f"Cluster {cid}: {json.dumps(cluster_data)}")
 
         full_prompt = f"""
-Identify a highly specific 1-3 word shared topic/theme for each of these {len(batch_cids)} story groups.
-- The input is a list of stories (title + comment context) for each cluster.
-- Use the context to identify the true subject.
-- If a group contains distinct/unrelated topics (e.g. Space AND Biology), list them: "Space, Bio & AI".
-- Avoid generic terms like "Technology", "News", or "Interesting".
-- Be specific (e.g. "Distributed Systems", "Sci-Fi Books", "Career Advice").
+Name each cluster with a 1-4 word COMMON theme.
 
-Return ONLY a JSON object where keys are the EXACT Cluster IDs provided and values are the topics.
+Rules:
+- Name MUST fit EVERY story in the group, not just the top one
+- If stories share a broader category (bikes, transit, maps → "Urban Mobility"), use that
+- Only list subtopics if truly unrelated: "Space, Bio & AI"
+- Avoid vague terms: "Technology", "News", "Interesting", "Analysis"
+- Good: "Distributed Systems", "Urban Transit", "Career Advice"
 
-Example: {{ "0": "React Hooks", "1": "Space, Bio & AI" }}
+Return JSON where keys are cluster IDs: {{ "0": "Theme", "1": "Theme" }}
 
 Groups:
 {chr(10).join(batch_prompts)}
 
-JSON Output:"""
+JSON:"""
 
         try:
             text = await _generate_with_retry(
@@ -752,15 +754,20 @@ async def generate_batch_tldrs(
         batch_context = "\n\n---\n\n".join(stories_formatted)
 
         prompt = f"""
-For each story below, provide a 2-sentence summary (core subject, and key takeaway).
-Return ONLY a JSON object where keys are the story IDs (strings) and values are the summaries.
+2-sentence summary per story. No filler phrases.
 
-Example: {{ "123": "Story is about X. Key takeaway is Y." }}
+Sentence 1: What it is (tool, finding, announcement)
+Sentence 2: Key insight from discussion
+
+BAD: "This story is about a new database that..."
+GOOD: "TigerBeetle achieves 1M TPS via io_uring. Commenters question benchmark realism."
+
+Return JSON: {{ "story_id": "Two sentences." }}
 
 Stories:
 {batch_context}
 
-JSON Output:"""
+JSON:"""
 
         try:
             text = await _generate_with_retry(
@@ -818,15 +825,15 @@ async def generate_story_tldr(story_id: int, title: str, comments: list[str]) ->
     prompt = f"""
 {context}
 
-Provide a concise summary of the story and its discussion. 
-Do NOT use introductory phrases. 
-Start directly with the content.
+Write 2-3 sentences. Start with facts, not meta-commentary.
 
-Structure:
-- Sentence 1: Core subject or project.
-- Sentence 2+: Main technical or philosophical debate and key takeaways from the comments.
+Line 1: What this is (tool, paper, announcement)
+Line 2-3: Key discussion points - debates, caveats, praise
 
-IMPORTANT: Put the comments summary (Sentence 2+) on a single new line directly below the first sentence (no empty line)."""
+BAD: "This article discusses..." / "The comments reveal..."
+GOOD: "Bun 1.0 ships with native SQLite. Commenters find 2x speedup but note memory concerns."
+
+Put lines together with no blank lines between them."""
 
     try:
         text = await _generate_with_retry(
