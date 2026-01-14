@@ -1035,11 +1035,13 @@ def rank_stories(
             semantic_scores = 1.0 / (1.0 + np.exp(-k * (semantic_scores - threshold)))
 
         # 3. Negative Signal (Penalty) - Only applies in heuristic mode
+        # Contrastive: only penalize when more similar to hidden than liked
         if negative_embeddings is not None and len(negative_embeddings) > 0:
             sim_neg: NDArray[np.float32] = np.max(
                 cosine_similarity(negative_embeddings, cand_emb), axis=0
             )
-            semantic_scores -= neg_weight * sim_neg
+            should_penalize = sim_neg > max_sim_scores
+            semantic_scores -= neg_weight * sim_neg * should_penalize
 
     # 4. HN Gravity Score (Log-scaled)
     # We use a log scale so that 500+ points punch through without dominating everything
