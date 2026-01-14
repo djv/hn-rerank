@@ -31,7 +31,6 @@ async def test_generate_html_integration(tmp_path):
         patch("generate_html.get_best_stories", new_callable=AsyncMock) as mock_best,
         patch("generate_html.fetch_story", new_callable=AsyncMock) as mock_fetch,
         patch("generate_html.rerank.get_embeddings") as mock_emb,
-        patch("generate_html.rerank.compute_recency_weights") as mock_weights,
         patch("generate_html.rerank.rank_stories") as mock_rank,
         patch("generate_html.rerank.generate_batch_tldrs", new_callable=AsyncMock) as mock_batch_tldrs,
         patch("generate_html.rerank.generate_batch_cluster_names", new_callable=AsyncMock) as mock_batch_names,
@@ -59,7 +58,6 @@ async def test_generate_html_integration(tmp_path):
         import numpy as np
 
         mock_emb.return_value = np.zeros((1, 768))
-        mock_weights.return_value = np.ones(1)
         mock_rank.return_value = [(0, 0.95, 0, 0.95)]  # (idx, score, fav_idx, max_sim)
 
         # Mock sys.argv

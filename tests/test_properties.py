@@ -1,30 +1,7 @@
 import numpy as np
 import pytest
 from hypothesis import given, strategies as st, settings
-from api.rerank import compute_recency_weights, rank_stories
-
-
-@given(
-    st.lists(st.integers(min_value=0, max_value=2000000000), min_size=1, max_size=100)
-)
-def test_recency_weights_invariants(timestamps):
-    """
-    Invariants for recency weights:
-    1. All weights are in [0, 1].
-    2. If T1 > T2 (T1 is newer), weight(T1) >= weight(T2).
-    """
-    weights = compute_recency_weights(timestamps)
-    assert np.all(weights >= 0.0)
-    assert np.all(weights <= 1.0)
-
-    if len(timestamps) > 1:
-        # Sort indices by timestamp descending (newest first)
-        sorted_indices = np.argsort(timestamps)[::-1]
-        sorted_weights = weights[sorted_indices]
-        # Weight should be monotonic with respect to time
-        # Allowing small epsilon for floating point
-        diffs = np.diff(sorted_weights)
-        assert np.all(diffs <= 1e-7)
+from api.rerank import rank_stories
 
 
 @settings(deadline=None)

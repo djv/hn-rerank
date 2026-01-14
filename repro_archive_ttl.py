@@ -1,12 +1,7 @@
 
 import asyncio
-import hashlib
-import json
-import time
-from pathlib import Path
 from unittest.mock import patch, MagicMock
-from datetime import datetime, timedelta, UTC
-from api.fetching import get_best_stories, CANDIDATE_CACHE_PATH, ALGOLIA_MIN_POINTS, MIN_STORY_COMMENTS
+from api.fetching import get_best_stories, CANDIDATE_CACHE_PATH
 
 # Constants
 MOCK_NOW_TS = 1700000000 
