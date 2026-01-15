@@ -1,6 +1,7 @@
 import time
 import pytest
 from generate_html import generate_story_html, get_relative_time
+from api.models import StoryDisplay
 
 
 def test_generate_story_html_special_chars():
@@ -8,16 +9,19 @@ def test_generate_story_html_special_chars():
     Ensure that story titles or comments containing curly braces don't crash the generator.
     This validates the robustness of the string formatting logic.
     """
-    story = {
-        "match_percent": 95,
-        "points": 100,
-        "time_ago": "2h",
-        "url": "https://example.com",
-        "title": "React {hooks} vs [brackets]",
-        "hn_url": "https://news.ycombinator.com/item?id=123",
-        "reason": "Interest in {technology}",
-        "comments": ["This is a {comment}"],
-    }
+    story = StoryDisplay(
+        id=123,
+        match_percent=95,
+        cluster_name="",
+        points=100,
+        time_ago="2h",
+        url="https://example.com",
+        title="React {hooks} vs [brackets]",
+        hn_url="https://news.ycombinator.com/item?id=123",
+        reason="Interest in {technology}",
+        reason_url="",
+        comments=["This is a {comment}"],
+    )
 
     # This should not raise a KeyError or ValueError
     try:
@@ -31,16 +35,19 @@ def test_generate_story_html_special_chars():
 
 def test_generate_story_html_missing_fields():
     """Test handling of stories with missing or None fields."""
-    story = {
-        "match_percent": 50,
-        "points": 10,
-        "time_ago": "1d",
-        "url": None,  # Missing URL
-        "title": "Untitled",
-        "hn_url": "https://news.ycombinator.com/item?id=456",
-        "reason": "",  # Empty reason
-        "comments": [],
-    }
+    story = StoryDisplay(
+        id=456,
+        match_percent=50,
+        cluster_name="",
+        points=10,
+        time_ago="1d",
+        url=None,  # Missing URL
+        title="Untitled",
+        hn_url="https://news.ycombinator.com/item?id=456",
+        reason="",  # Empty reason
+        reason_url="",
+        comments=[],
+    )
     html = generate_story_html(story)
     assert "Untitled" in html
     assert "https://news.ycombinator.com/item?id=456" in html
@@ -85,48 +92,57 @@ class TestHtmlEscaping:
     """Tests for HTML injection prevention."""
 
     def test_title_escaped(self):
-        story = {
-            "match_percent": 80,
-            "points": 50,
-            "time_ago": "1h",
-            "url": "https://example.com",
-            "title": "<script>alert('xss')</script>",
-            "hn_url": "https://news.ycombinator.com/item?id=1",
-            "reason": None,
-            "comments": [],
-        }
+        story = StoryDisplay(
+            id=1,
+            match_percent=80,
+            cluster_name="",
+            points=50,
+            time_ago="1h",
+            url="https://example.com",
+            title="<script>alert('xss')</script>",
+            hn_url="https://news.ycombinator.com/item?id=1",
+            reason="",
+            reason_url="",
+            comments=[],
+        )
         html = generate_story_html(story)
         assert "<script>" not in html
         assert "&lt;script&gt;" in html
 
     def test_tldr_escaped(self):
         """TL;DR content should be HTML-escaped."""
-        story = {
-            "match_percent": 80,
-            "points": 50,
-            "time_ago": "1h",
-            "url": "https://example.com",
-            "title": "Safe Title",
-            "hn_url": "https://news.ycombinator.com/item?id=1",
-            "reason": None,
-            "comments": [],
-            "tldr": "<script>alert('xss')</script>",
-        }
+        story = StoryDisplay(
+            id=1,
+            match_percent=80,
+            cluster_name="",
+            points=50,
+            time_ago="1h",
+            url="https://example.com",
+            title="Safe Title",
+            hn_url="https://news.ycombinator.com/item?id=1",
+            reason="",
+            reason_url="",
+            comments=[],
+            tldr="<script>alert('xss')</script>",
+        )
         html = generate_story_html(story)
         assert "<script>" not in html
         assert "&lt;script&gt;" in html
 
     def test_reason_escaped(self):
-        story = {
-            "match_percent": 80,
-            "points": 50,
-            "time_ago": "1h",
-            "url": "https://example.com",
-            "title": "Safe Title",
-            "hn_url": "https://news.ycombinator.com/item?id=1",
-            "reason": "<b>Bold</b> reason",
-            "comments": [],
-        }
+        story = StoryDisplay(
+            id=1,
+            match_percent=80,
+            cluster_name="",
+            points=50,
+            time_ago="1h",
+            url="https://example.com",
+            title="Safe Title",
+            hn_url="https://news.ycombinator.com/item?id=1",
+            reason="<b>Bold</b> reason",
+            reason_url="",
+            comments=[],
+        )
         html = generate_story_html(story)
         assert "<b>" not in html
         assert "&lt;b&gt;" in html

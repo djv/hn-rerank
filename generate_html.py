@@ -20,6 +20,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from api import rerank
 from api.client import HNClient
 from api.fetching import get_best_stories, fetch_story
+from api.models import RankResult, Story, StoryDisplay
 from api.constants import (
     ALGOLIA_DEFAULT_DAYS,
     CANDIDATE_FETCH_COUNT,
@@ -195,33 +196,34 @@ STORY_CARD_TEMPLATE: str = """
 """
 
 
-def generate_story_html(story: dict[str, Any]) -> str:
+def generate_story_html(story: StoryDisplay) -> str:
     reason_html: str = ""
-    if story.get("reason"):
-        escaped_reason_title: str = html.escape(str(story["reason"]), quote=False)
-        reason_url: str = story.get("reason_url", "")
-        
-        if reason_url:
-            reason_html = f'<p class="text-[11px] text-emerald-600 mb-2">↳ <a href="{reason_url}" target="_blank" class="hover:underline">"{escaped_reason_title}"</a></p>'
+    if story.reason:
+        escaped_reason_title: str = html.escape(story.reason, quote=False)
+
+        if story.reason_url:
+            reason_html = f'<p class="text-[11px] text-emerald-600 mb-2">↳ <a href="{story.reason_url}" target="_blank" class="hover:underline">"{escaped_reason_title}"</a></p>'
         else:
             reason_html = f'<p class="text-[11px] text-emerald-600 mb-2">↳ "{escaped_reason_title}"</p>'
 
     cluster_chip: str = ""
-    if story.get("cluster_name"):
-        cluster_chip = f'<span class="cluster-chip">{html.escape(story["cluster_name"])}</span>'
+    if story.cluster_name:
+        cluster_chip = (
+            f'<span class="cluster-chip">{html.escape(story.cluster_name)}</span>'
+        )
 
     tldr_html: str = ""
-    if story.get("tldr"):
-        tldr_html = f'<div class="text-xs text-stone-600 bg-stone-50 p-2 rounded border border-stone-100 leading-relaxed whitespace-pre-line">{html.escape(story["tldr"])}</div>'
+    if story.tldr:
+        tldr_html = f'<div class="text-xs text-stone-600 bg-stone-50 p-2 rounded border border-stone-100 leading-relaxed whitespace-pre-line">{html.escape(story.tldr)}</div>'
 
     return STORY_CARD_TEMPLATE.format(
-        score=story["match_percent"],
+        score=story.match_percent,
         cluster_chip=cluster_chip,
-        points=story["points"],
-        time_ago=story["time_ago"],
-        url=story["url"] or story["hn_url"],
-        title=html.escape(str(story["title"]), quote=False),
-        hn_url=story["hn_url"],
+        points=story.points,
+        time_ago=story.time_ago,
+        url=story.url or story.hn_url,
+        title=html.escape(story.title, quote=False),
+        hn_url=story.hn_url,
         reason_html=reason_html,
         tldr_html=tldr_html,
     )
@@ -321,13 +323,13 @@ async def main() -> None:
             )
 
             # Helper for progress-aware batch fetch
-            async def fetch_with_progress(
-                ids: list[int], label: str
-            ) -> list[dict[str, Any]]:
-                results: list[dict[str, Any]] = []
+            async def fetch_with_progress(ids: list[int], label: str) -> list[Story]:
+                results: list[Story] = []
                 # Don't create a new task, just update the main one's description
-                progress.update(p_task, description=f"[*] Fetching {label} ({len(ids)} items)...")
-                
+                progress.update(
+                    p_task, description=f"[*] Fetching {label} ({len(ids)} items)..."
+                )
+
                 if not ids:
                     return []
 
@@ -338,7 +340,7 @@ async def main() -> None:
                 for res in asyncio.as_completed(
                     [fetch_story(hn.client, sid) for sid in ids]
                 ):
-                    s: Optional[dict[str, Any]] = await res
+                    s: Optional[Story] = await res
                     if s:
                         results.append(s)
                     progress.update(p_task, advance=step)
@@ -348,20 +350,18 @@ async def main() -> None:
             # IMPORTANT: If a story is both upvoted AND hidden, treat it as hidden (negative/neutral).
             # This allows users to "undo" the signal of an upvote by hiding the story.
             upvoted_ids = data["upvoted"] - data["hidden"]
-            
+
             pos_ids: list[int] = list(upvoted_ids)[: args.signals]
             neg_ids: list[int] = []
             if args.use_hidden_signal:
                 neg_ids = list(data["hidden"])[: args.signals]
 
-            pos_stories: list[dict[str, Any]] = await fetch_with_progress(
+            pos_stories: list[Story] = await fetch_with_progress(
                 pos_ids, "Positive signals"
             )
-            neg_stories: list[dict[str, Any]] = []
+            neg_stories: list[Story] = []
             if neg_ids:
-                neg_stories = await fetch_with_progress(
-                    neg_ids, "Negative signals"
-                )
+                neg_stories = await fetch_with_progress(neg_ids, "Negative signals")
             progress.update(
                 p_task, completed=100, description="[green][+] Profile built."
             )
@@ -374,7 +374,7 @@ async def main() -> None:
 
         p_emb: Optional[NDArray[np.float32]] = (
             rerank.get_embeddings(
-                [str(s["text_content"]) for s in pos_stories],
+                [s.text_content for s in pos_stories],
                 is_query=True,
                 progress_callback=emb_cb,
             )
@@ -383,7 +383,7 @@ async def main() -> None:
         )
         n_emb: Optional[NDArray[np.float32]] = (
             rerank.get_embeddings(
-                [str(s["text_content"]) for s in neg_stories],
+                [s.text_content for s in neg_stories],
                 is_query=True,
                 progress_callback=emb_cb,
             )
@@ -398,22 +398,32 @@ async def main() -> None:
         cluster_names: dict[int, str] = {}
         if p_emb is not None and len(p_emb) > 0:
             cl_task: Any = progress.add_task("[cyan]Clustering interests...", total=1)
-            cluster_centroids, cluster_labels = rerank.cluster_interests_with_labels(p_emb)
-            progress.update(cl_task, completed=1, description="[green][+] Interests clustered.")
+            cluster_centroids, cluster_labels = rerank.cluster_interests_with_labels(
+                p_emb
+            )
+            progress.update(
+                cl_task, completed=1, description="[green][+] Interests clustered."
+            )
 
             # Build cluster names (LLM calls)
             # Use story score as weight for LLM to see most popular stories first
-            clusters_for_naming: dict[int, list[tuple[dict[str, Any], float]]] = defaultdict(list)
+            clusters_for_naming: dict[int, list[tuple[dict[str, Any], float]]] = (
+                defaultdict(list)
+            )
             for i, label in enumerate(cluster_labels):
-                score = float(pos_stories[i].get("score", 0))
-                clusters_for_naming[int(label)].append((pos_stories[i], score))
+                story = pos_stories[i]
+                clusters_for_naming[int(label)].append(
+                    (story.to_dict(), float(story.score))
+                )
 
             n_clusters = len(set(cluster_labels))
-            name_task: Any = progress.add_task("[cyan]Naming clusters...", total=n_clusters)
-            
+            name_task: Any = progress.add_task(
+                "[cyan]Naming clusters...", total=n_clusters
+            )
+
             def name_cb(curr: int, total: int) -> None:
                 progress.update(name_task, completed=curr)
-            
+
             cluster_names = await rerank.generate_batch_cluster_names(
                 clusters_for_naming, progress_callback=name_cb
             )
@@ -425,7 +435,7 @@ async def main() -> None:
         )
         # Exclude everything we've already interacted with
         exclude: set[int] = data["pos"] | data["upvoted"] | data["hidden"]
-        cands: list[dict[str, Any]] = await get_best_stories(
+        cands: list[Story] = await get_best_stories(
             args.candidates,
             exclude_ids=exclude,
             progress_callback=lambda curr, tot: progress.update(
@@ -433,7 +443,9 @@ async def main() -> None:
             ),
             days=args.days,
         )
-        progress.update(c_task, description=f"[green][+] Candidates fetched.   ({len(cands)} valid)")
+        progress.update(
+            c_task, description=f"[green][+] Candidates fetched.   ({len(cands)} valid)"
+        )
 
         # 4. Reranking
         r_task: Any = progress.add_task("[*] Reranking stories...", total=100)
@@ -441,7 +453,7 @@ async def main() -> None:
         def rank_cb(curr: int, total: int) -> None:
             progress.update(r_task, total=total, completed=curr)
 
-        ranked: list[tuple[int, float, int, float]] = rerank.rank_stories(
+        ranked: list[RankResult] = rerank.rank_stories(
             cands,
             p_emb,
             n_emb,
@@ -455,7 +467,7 @@ async def main() -> None:
     # Compute cluster assignments for candidates (only if above similarity threshold)
     cand_cluster_map: dict[int, int] = {}  # cand_idx -> cluster_id (-1 = no cluster)
     if cluster_centroids is not None and len(cands) > 0:
-        cand_texts = [str(c.get("text_content", "")) for c in cands]
+        cand_texts = [c.text_content for c in cands]
         cand_emb = rerank.get_embeddings(cand_texts)
         if len(cand_emb) > 0:
             sim_to_clusters = cosine_similarity(cand_emb, cluster_centroids)
@@ -466,23 +478,23 @@ async def main() -> None:
                 else:
                     cand_cluster_map[i] = -1  # Below threshold - no cluster
 
-    stories_data: list[dict[str, Any]] = []
+    stories_data: list[StoryDisplay] = []
     seen_urls: set[str] = set()
     seen_titles: set[str] = set()
 
-    for idx, score, fav_idx, max_sim in ranked:
+    for result in ranked:
         if len(stories_data) >= args.count:
             break
 
-        s: dict[str, Any] = cands[idx]
+        s: Story = cands[result.index]
 
         # Deduplication logic
-        url: Optional[str] = s.get("url")
-        title: Optional[str] = s.get("title")
+        url: Optional[str] = s.url
+        title: str = s.title
 
         # Normalize for checking
-        norm_url: str = str(url).split("?")[0] if url else f"hn:{s['id']}"
-        norm_title: str = str(title).lower().strip() if title else ""
+        norm_url: str = str(url).split("?")[0] if url else f"hn:{s.id}"
+        norm_title: str = title.lower().strip() if title else ""
 
         if norm_url in seen_urls or norm_title in seen_titles:
             continue
@@ -494,55 +506,68 @@ async def main() -> None:
 
         reason: str = ""
         reason_url: str = ""
-        if fav_idx != -1 and fav_idx < len(pos_stories):
-            reason = str(pos_stories[fav_idx]["title"])
-            reason_url = f"https://news.ycombinator.com/item?id={pos_stories[fav_idx]['id']}"
+        if result.best_fav_index != -1 and result.best_fav_index < len(pos_stories):
+            fav_story = pos_stories[result.best_fav_index]
+            reason = fav_story.title
+            reason_url = f"https://news.ycombinator.com/item?id={fav_story.id}"
 
         # Get cluster name for this candidate based on the matching history item
         cluster_name: str = ""
-        if fav_idx != -1 and fav_idx < len(pos_stories) and cluster_labels is not None:
-            cid = int(cluster_labels[fav_idx])
+        if (
+            result.best_fav_index != -1
+            and result.best_fav_index < len(pos_stories)
+            and cluster_labels is not None
+        ):
+            cid = int(cluster_labels[result.best_fav_index])
             cluster_name = cluster_names.get(cid, "")
-        elif idx in cand_cluster_map:
+        elif result.index in cand_cluster_map:
             # Fallback to candidate's own cluster if no specific favorite match
-            cid = cand_cluster_map[idx]
+            cid = cand_cluster_map[result.index]
             if cid != -1:  # -1 means below similarity threshold
                 cluster_name = cluster_names.get(cid, "")
 
         stories_data.append(
-            {
-                "id": int(s["id"]),
+            StoryDisplay(
+                id=s.id,
                 # Use MaxSim for the UI label because it represents the "Best Match"
-                # which is what the "Match: X" reason text implies.
-                "match_percent": int(max_sim * 100),
-                "cluster_name": cluster_name,
-                "points": int(s.get("score", 0)),
-                "time_ago": get_relative_time(int(s.get("time", 0))),
-                "url": s.get("url"),
-                "title": str(s.get("title", "Untitled")),
-                "hn_url": f"https://news.ycombinator.com/item?id={s['id']}",
-                "reason": reason,
-                "reason_url": reason_url,
-                "comments": list(s.get("comments", [])),
-            }
+                match_percent=int(result.max_sim_score * 100),
+                cluster_name=cluster_name,
+                points=s.score,
+                time_ago=get_relative_time(s.time),
+                url=s.url,
+                title=s.title or "Untitled",
+                hn_url=f"https://news.ycombinator.com/item?id={s.id}",
+                reason=reason,
+                reason_url=reason_url,
+                comments=list(s.comments),
+            )
         )
 
     # Generate TL;DRs for stories
     print("[*] Generating content via LLM...")
     with progress:
-        llm_task = progress.add_task("[cyan]Generating TL;DRs...", total=len(stories_data))
-        
-        # Batch TL;DR generation
-        tldrs = await rerank.generate_batch_tldrs(
-            stories_data, 
-            progress_callback=lambda curr, tot: progress.update(llm_task, completed=curr)
+        llm_task = progress.add_task(
+            "[cyan]Generating TL;DRs...", total=len(stories_data)
         )
-        
+
+        # Batch TL;DR generation (convert to dicts for API)
+        stories_for_tldr = [sd.to_dict() for sd in stories_data]
+        tldrs = await rerank.generate_batch_tldrs(
+            stories_for_tldr,
+            progress_callback=lambda curr, tot: progress.update(
+                llm_task, completed=curr
+            ),
+        )
+
         for sd in stories_data:
             # Assign batched TL;DR
-            sd["tldr"] = tldrs.get(sd["id"], "")
+            sd.tldr = tldrs.get(sd.id, "")
 
-        progress.update(llm_task, completed=len(stories_data), description="[green][+] LLM content generated.")
+        progress.update(
+            llm_task,
+            completed=len(stories_data),
+            description="[green][+] LLM content generated.",
+        )
 
     print("[*] Generating HTML...")
 
@@ -551,13 +576,13 @@ async def main() -> None:
     n_clusters: int = len(cluster_names)
     if cluster_labels is not None and len(pos_stories) > 0:
         # Rebuild clusters dict for the clusters page (reuse cluster_names from earlier)
-        clusters: dict[int, list[dict[str, Any]]] = defaultdict(list)
+        clusters: dict[int, list[Story]] = defaultdict(list)
         for i, label in enumerate(cluster_labels):
             clusters[int(label)].append(pos_stories[i])
 
         # Sort each cluster by time (most recent first)
         for cid in clusters:
-            clusters[cid].sort(key=lambda x: x.get("time", 0), reverse=True)
+            clusters[cid].sort(key=lambda x: x.time, reverse=True)
 
         # Generate cluster cards for clusters.html
         cluster_cards: list[str] = []
@@ -566,14 +591,16 @@ async def main() -> None:
             stories_in_cluster: str = ""
             for story in items[:15]:  # Limit display
                 stories_in_cluster += CLUSTER_STORY_TEMPLATE.format(
-                    hn_url=f"https://news.ycombinator.com/item?id={story['id']}",
-                    title=html.escape(str(story.get("title", "Untitled")), quote=False),
-                    points=int(story.get("score", 0)),
-                    time_ago=get_relative_time(int(story.get("time", 0))),
+                    hn_url=f"https://news.ycombinator.com/item?id={story.id}",
+                    title=html.escape(story.title or "Untitled", quote=False),
+                    points=story.score,
+                    time_ago=get_relative_time(story.time),
                 )
             cluster_cards.append(
                 CLUSTER_CARD_TEMPLATE.format(
-                    cluster_name=html.escape(cluster_names.get(cid, f"Group {cid + 1}")),
+                    cluster_name=html.escape(
+                        cluster_names.get(cid, f"Group {cid + 1}")
+                    ),
                     count=len(items),
                     stories_html=stories_in_cluster,
                 )

@@ -29,6 +29,7 @@ from api.constants import (
     CANDIDATE_CACHE_TTL_LONG,
     CANDIDATE_CACHE_TTL_ARCHIVE,
 )
+from api.models import Story
 
 logger = logging.getLogger(__name__)
 
@@ -158,15 +159,16 @@ def _extract_comments_recursive(
     return results
 
 
-async def fetch_story(client: httpx.AsyncClient, sid: int) -> Optional[dict[str, Any]]:
+async def fetch_story(client: httpx.AsyncClient, sid: int) -> Optional[Story]:
     cache_file: Path = CACHE_PATH / f"{sid}.json"
     if cache_file.exists():
         try:
             data: dict[str, Any] = json.loads(cache_file.read_text())
             if time.time() - float(data["ts"]) < STORY_CACHE_TTL:
-                return data.get("story")  # Returns None if cached as None
-        except Exception:
-            pass
+                cached_story = data.get("story")
+                return Story.from_dict(cached_story) if cached_story else None
+        except Exception as e:
+            logger.debug(f"Failed to load story cache {cache_file}: {e}")
 
     async with SEM:
         try:
@@ -206,20 +208,23 @@ async def fetch_story(client: httpx.AsyncClient, sid: int) -> Optional[dict[str,
 
             # Use natural title weighting
             title_context = f"{title}."
-            story: dict[str, Any] = {
-                "id": sid,
-                "title": title,
-                "url": url,
-                "score": score,
-                "time": created_at,
-                "comments": ui_comments,
-                "text_content": f"{title_context} {top_for_rank}",
-            }
-            _atomic_write_json(cache_file, {"ts": time.time(), "story": story})
+            story = Story(
+                id=sid,
+                title=title,
+                url=url or None,
+                score=score,
+                time=created_at,
+                comments=ui_comments,
+                text_content=f"{title_context} {top_for_rank}",
+            )
+            _atomic_write_json(
+                cache_file, {"ts": time.time(), "story": story.to_dict()}
+            )
             _evict_old_cache_files()
             return story
-        except Exception:
+        except Exception as e:
             # Don't cache transient errors (network, etc)
+            logger.debug(f"Failed to fetch story {sid}: {e}")
             return None
 
 
@@ -228,16 +233,16 @@ async def get_best_stories(
     exclude_ids: Optional[set[int]] = None,
     progress_callback: Optional[Callable[[int, int], None]] = None,
     days: int = ALGOLIA_DEFAULT_DAYS,
-) -> list[dict[str, Any]]:
+) -> list[Story]:
     if exclude_ids is None:
         exclude_ids = set()
 
     # Algolia limits to 1000 results per query, so use time windows
     ALGOLIA_MAX_PER_QUERY = 1000
-    
+
     # Calculate distribution target per window
     # num_windows calculation removed as it was unused
-    
+
     hits: set[int] = set()
 
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -264,9 +269,9 @@ async def get_best_stories(
                 prev_midnight = (current_end // 86400) * 86400
                 if prev_midnight == current_end:
                     prev_midnight -= 86400
-                
+
                 ts_start = max(prev_midnight, anchor_ts)
-                is_live = (current_end == ts_now)
+                is_live = current_end == ts_now
                 windows.append((ts_start, current_end, is_live))
                 current_end = ts_start
 
@@ -276,7 +281,7 @@ async def get_best_stories(
             current_end = anchor_ts
             # Safety limit to prevent infinite loops if days is huge
             max_archive_weeks = math.ceil(days / 7) + 1
-            
+
             for _ in range(max_archive_weeks):
                 if current_end <= cutoff_ts:
                     break
@@ -321,19 +326,21 @@ async def get_best_stories(
                 page_ids = cached_ids
             else:
                 # Cache miss or expired - fetch from API
-                logger.info(f"Cache miss for window {ts_start}-{ts_end} (live={is_live}). Fetching from Algolia.")
+                logger.info(
+                    f"Cache miss for window {ts_start}-{ts_end} (live={is_live}). Fetching from Algolia."
+                )
                 fetch_count = min(max(win_target, 200), ALGOLIA_MAX_PER_QUERY)
-                
+
                 # Construct filters
                 # Use >= for start to include boundary stories (prevents gaps between windows)
                 filters = [
                     f"created_at_i>={ts_start}",
                     f"points>{ALGOLIA_MIN_POINTS}",
-                    f"num_comments>={MIN_STORY_COMMENTS}"
+                    f"num_comments>={MIN_STORY_COMMENTS}",
                 ]
                 # Always add upper bound (< end) to prevent overlap and bound live window
                 filters.append(f"created_at_i<{ts_end}")
-                    
+
                 params: dict[str, Any] = {
                     "tags": "story",
                     "numericFilters": ",".join(filters),
@@ -360,18 +367,18 @@ async def get_best_stories(
                     window_hits += 1
                     if window_hits >= win_target:
                         break
-            
+
             # Stop if we have enough total hits (optional, but good for speed)
             if len(hits) >= limit * 1.5:  # Buffer
                 break
 
-        results: list[dict[str, Any]] = []
+        results: list[Story] = []
         if not hits:
             return []
 
         tasks: list[Any] = [fetch_story(client, sid) for sid in hits]
         for i, task in enumerate(asyncio.as_completed(tasks)):
-            res: Optional[dict[str, Any]] = await task
+            res: Optional[Story] = await task
             if res:
                 results.append(res)
             if progress_callback:

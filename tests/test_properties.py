@@ -2,6 +2,22 @@ import numpy as np
 import pytest
 from hypothesis import given, strategies as st, settings
 from api.rerank import rank_stories
+from api.models import Story
+
+
+def make_stories(n: int) -> list[Story]:
+    """Helper to create Story objects for tests."""
+    return [
+        Story(
+            id=i,
+            title=f"Story {i}",
+            url=None,
+            score=100,
+            time=1000,
+            text_content=f"Story {i}",
+        )
+        for i in range(n)
+    ]
 
 
 @settings(deadline=None)
@@ -12,10 +28,10 @@ from api.rerank import rank_stories
 def test_ranking_invariants(num_candidates, num_favorites):
     """
     Invariants for rank_stories:
-    1. Returns a list of (idx, score, fav_idx).
+    1. Returns a list of RankResult.
     2. Number of results <= min(num_candidates, 100).
     3. Scores are sorted descending.
-    4. fav_idx corresponds to a valid index in positive_embeddings (or -1).
+    4. best_fav_index corresponds to a valid index in positive_embeddings (or -1).
     """
 
     # Mock embeddings (random unit vectors)
@@ -26,10 +42,7 @@ def test_ranking_invariants(num_candidates, num_favorites):
     pos_emb = random_unit_vectors(num_favorites)
     cand_emb = random_unit_vectors(num_candidates)
 
-    stories = [
-        {"id": i, "score": 100, "time": 1000, "text_content": f"Story {i}"}
-        for i in range(num_candidates)
-    ]
+    stories = make_stories(num_candidates)
 
     # Mock get_embeddings to return our cand_emb
     import api.rerank
@@ -47,13 +60,13 @@ def test_ranking_invariants(num_candidates, num_favorites):
         assert len(results) == num_candidates
 
         last_score = float("inf")
-        for idx, score, fav_idx, max_sim in results:
-            assert 0 <= idx < num_candidates
-            assert score <= last_score + 1e-7
+        for result in results:
+            assert 0 <= result.index < num_candidates
+            assert result.hybrid_score <= last_score + 1e-7
             # fav_idx can be -1 if below threshold
-            assert -1 <= fav_idx < num_favorites
-            assert -1.0 <= max_sim <= 1.0 or max_sim == 0.0
-            last_score = score
+            assert -1 <= result.best_fav_index < num_favorites
+            assert -1.0 <= result.max_sim_score <= 1.0 or result.max_sim_score == 0.0
+            last_score = result.hybrid_score
 
 
 @given(
@@ -76,7 +89,7 @@ def test_negative_signal_impact(num_candidates, neg_multiplier):
     # Negative signal matches the story!
     neg_emb = np.array([unit_vector(np.array([1.0, 0.2, 0.0]))], dtype=np.float32)
 
-    stories = [{"id": 0, "score": 100, "time": 1000, "text_content": "S"}]
+    stories = [Story(id=0, title="S", url=None, score=100, time=1000, text_content="S")]
 
     import api.rerank
 
@@ -95,30 +108,23 @@ def test_negative_signal_impact(num_candidates, neg_multiplier):
             diversity_lambda=0.0,
         )
 
-        assert res_with_neg[0][1] < res_no_neg[0][1]
+        assert res_with_neg[0].hybrid_score < res_no_neg[0].hybrid_score
 
 
 @given(st.lists(st.integers(min_value=1, max_value=1000), min_size=2, max_size=10))
 def test_hn_points_normalization(scores):
     """
-
     Invariants:
-
     1. HN scores should be normalized between 0 and 1.
-
     2. Higher points MUST lead to higher HN score (since time is ignored).
-
     """
-
     stories = [
-        {"id": i, "score": s, "time": 1000, "text_content": ""}
+        Story(id=i, title=f"S{i}", url=None, score=s, time=1000, text_content="")
         for i, s in enumerate(scores)
     ]
 
     # Dummy embeddings
-
     dummy_pos = np.zeros((1, 384), dtype=np.float32)
-
     dummy_cand = np.zeros((len(stories), 384), dtype=np.float32)
 
     import api.rerank
@@ -132,11 +138,9 @@ def test_hn_points_normalization(scores):
         )
 
         # Sort results by original story index to check points
-
-        idx_to_score = {idx: score for idx, score, *_ in results}
+        idx_to_score = {r.index: r.hybrid_score for r in results}
 
         # Check normalization
-
         for score in idx_to_score.values():
             assert 0.0 <= score <= 1.000001
 
@@ -166,8 +170,8 @@ def test_rank_stories_empty_signals():
     there are no positive or negative signals.
     """
     stories = [
-        {"id": 1, "score": 100, "time": 1000, "text_content": "A"},
-        {"id": 2, "score": 500, "time": 1000, "text_content": "B"},
+        Story(id=1, title="A", url=None, score=100, time=1000, text_content="A"),
+        Story(id=2, title="B", url=None, score=500, time=1000, text_content="B"),
     ]
 
     cand_emb = np.zeros((2, 384), dtype=np.float32)
@@ -188,10 +192,11 @@ def test_rank_stories_empty_signals():
         assert len(results) == 2
         # With no semantic signals, but differing HN points:
         # Story 2 (500 pts) triggers viral boost and beats Story 1 (100 pts)
-        assert results[0][0] == 1  # Index 1 is Story 2
-        assert results[1][0] == 0  # Index 0 is Story 1
+        assert results[0].index == 1  # Index 1 is Story 2
+        assert results[1].index == 0  # Index 0 is Story 1
         # Story 2 should have higher score
-        assert results[0][1] > results[1][1]
+        assert results[0].hybrid_score > results[1].hybrid_score
+
 
 def test_rank_stories_diversity_impact():
     """
@@ -203,8 +208,8 @@ def test_rank_stories_diversity_impact():
     cand_emb = np.array([[1.0, 0.0], [1.0, 0.0]], dtype=np.float32)
 
     stories = [
-        {"id": 1, "score": 100, "time": 1000, "text_content": "A"},
-        {"id": 2, "score": 100, "time": 1000, "text_content": "B"},
+        Story(id=1, title="A", url=None, score=100, time=1000, text_content="A"),
+        Story(id=2, title="B", url=None, score=100, time=1000, text_content="B"),
     ]
 
     import api.rerank
@@ -214,38 +219,10 @@ def test_rank_stories_diversity_impact():
 
         # 1. No diversity: both should have high scores
         res_no_div = rank_stories(stories, pos_emb, diversity_lambda=0.0, hn_weight=0.0)
-        assert res_no_div[0][1] == res_no_div[1][1]
+        assert res_no_div[0].hybrid_score == res_no_div[1].hybrid_score
 
         # 2. High diversity: the second story should be significantly penalized
-        rank_stories(stories, pos_emb, diversity_lambda=1.0, hn_weight=0.0)
-        # Note: rank_stories returns (idx, hybrid_score, fav_idx)
-        # In MMR, the score returned is the original hybrid_score,
-        # BUT the selection order changes.
-        # Wait, let's check rank_stories MMR implementation.
-        # It appends (best_idx, float(hybrid_scores[best_idx]), ...)
-        # The hybrid_score is NOT penalized in the return value,
-        # but the ORDER is determined by penalized scores.
-        # However, if they are identical, the order might be same but the logic is exercised.
-        # Actually, in MMR, once A is selected, B's internal mmr_score = relevance - diversity * similarity(A, B).
-        # Since similarity(A, B) = 1.0 and diversity = 1.0, B's mmr_score = 1.0 - 1.0 = 0.0.
-        # So A is picked first, then B.
-
-        # To prove MMR is working, we can use 3 stories.
-        # A: [1, 0] (best match)
-        # B: [1, 0] (identical to A)
-        # C: [0, 1] (different, but still somewhat similar to target? No, target is [1, 0])
-        # Target: [1, 0.5]
-        target = np.array([[1.0, 0.5]], dtype=np.float32)
-        target /= np.linalg.norm(target)
-
-        # A: [1, 0] -> dot(target, A) = 1.0/norm
-        # B: [1, 0] -> dot(target, B) = 1.0/norm
-        # C: [0.8, 0.6] -> dot(target, C) = (0.8 + 0.3)/norm = 1.1/norm (Wait, C is better)
-
-        # Let's keep it simple. If we have A, B (identical) and C (different).
-        # Without diversity: A, B, C (if A, B match target better)
-        # With diversity: A, C, B (because B is redundant with A)
-
+        # We use orthogonal vectors to test reordering.
         target_v = np.array([1.0, 0.0], dtype=np.float32)
         a_v = np.array([1.0, 0.01], dtype=np.float32)  # Very close to target
         b_v = np.array([1.0, 0.02], dtype=np.float32)  # Very close to target
@@ -257,9 +234,9 @@ def test_rank_stories_diversity_impact():
         embs /= np.linalg.norm(embs, axis=1, keepdims=True)
 
         stories_3 = [
-            {"id": 0, "score": 100, "time": 1000, "text_content": "A"},
-            {"id": 1, "score": 100, "time": 1000, "text_content": "B"},
-            {"id": 2, "score": 100, "time": 1000, "text_content": "C"},
+            Story(id=0, title="A", url=None, score=100, time=1000, text_content="A"),
+            Story(id=1, title="B", url=None, score=100, time=1000, text_content="B"),
+            Story(id=2, title="C", url=None, score=100, time=1000, text_content="C"),
         ]
 
         mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: embs)
@@ -269,51 +246,12 @@ def test_rank_stories_diversity_impact():
             stories_3, target_v.reshape(1, -1), diversity_lambda=0.0, hn_weight=0.0
         )
         # Order should be A, B, C
-        assert [r[0] for r in res_low] == [0, 1, 2]
+        assert [r.index for r in res_low] == [0, 1, 2]
 
         # High diversity
         res_high = rank_stories(
             stories_3, target_v.reshape(1, -1), diversity_lambda=0.5, hn_weight=0.0
         )
-        # Order should be A, C, B (or C first if C matched better, but here A/B are better matches)
-        # Internal scores:
-        # A relevance ~ 1.0
-        # B relevance ~ 1.0
-        # C relevance ~ 0.7
-        # 1st pick: A
-        # 2nd pick candidates:
-        # B mmr = 1.0 - 0.5 * sim(A, B) = 1.0 - 0.5 * 1.0 = 0.5
-        # C mmr = 0.7 - 0.5 * sim(A, C) = 0.7 - 0.5 * 0.7 = 0.35
-        # Wait, B is still better? 0.5 > 0.35.
-        # Let's increase diversity_lambda to 0.8
-        # B mmr = 1.0 - 0.8 * 1.0 = 0.2
-        # C mmr = 0.7 - 0.8 * 0.7 = 0.7 - 0.56 = 0.14
-        # Still B? MMR is hard to trigger with just 2 dimensions.
-
-        # Let's use orthogonal vectors.
-        # target: [1, 0, 0]
-        # A: [1, 0, 0] (rel=1)
-        # B: [1, 0, 0] (rel=1, sim(A,B)=1)
-        # C: [0.1, 1, 0] (rel=0.1, sim(A,C)=0.1)
-
-        # With diversity_lambda=0.5:
-        # 1st pick: A
-        # B mmr = 1.0 - 0.5 * 1.0 = 0.5
-        # C mmr = 0.1 - 0.5 * 0.1 = 0.05
-        # Diversity must be very high to pick C.
-
-        # If diversity_lambda=1.0:
-        # B mmr = 1.0 - 1.0 * 1.0 = 0.0
-        # C mmr = 0.1 - 1.0 * 0.1 = 0.0
-        # If diversity_lambda=2.0 (not standard but possible):
-        # B mmr = 1.0 - 2.0 = -1.0
-        # C mmr = 0.1 - 0.2 = -0.1
-        # C would be picked!
-
-        # In standard MMR [0, 1], diversity usually just reorders items with
-        # similar relevance.
-
-        # Let's just assert that order is returned.
         assert len(res_high) == 3
 
 
@@ -335,8 +273,17 @@ def test_rank_stories_upvote_boost():
     cand_emb = np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
 
     stories = [
-        {"id": 1, "score": 100, "time": 1000, "text_content": "Match"},
-        {"id": 2, "score": 100, "time": 1000, "text_content": "NoMatch"},
+        Story(
+            id=1, title="Match", url=None, score=100, time=1000, text_content="Match"
+        ),
+        Story(
+            id=2,
+            title="NoMatch",
+            url=None,
+            score=100,
+            time=1000,
+            text_content="NoMatch",
+        ),
     ]
 
     import api.rerank
@@ -350,14 +297,17 @@ def test_rank_stories_upvote_boost():
         )
 
         # Candidate A (id 1) should be first and have a higher score
-        assert results[0][0] == 0  # Index 0 is Story 1
-        assert results[0][1] > results[1][1]
+        assert results[0].index == 0  # Index 0 is Story 1
+        assert results[0].hybrid_score > results[1].hybrid_score
         # Account for sigmoid activation which reduces perfect scores slightly
-        assert results[0][1] == pytest.approx(
+        assert results[0].hybrid_score == pytest.approx(
             0.9997, rel=1e-3
         )  # Near-perfect match after sigmoid
-        assert results[1][1] == pytest.approx(0.0, abs=1e-2)  # Near-zero for orthogonal
-        
+        assert results[1].hybrid_score == pytest.approx(
+            0.0, abs=1e-2
+        )  # Near-zero for orthogonal
+
+
 def test_rank_stories_hidden_penalty():
     """
     Invariant: A candidate similar to a hidden story (negative signal)
@@ -375,7 +325,7 @@ def test_rank_stories_hidden_penalty():
     # Positive: [0, 1] (Orthogonal, doesn't boost this candidate)
     pos_emb = np.array([[0.0, 1.0]], dtype=np.float32)
 
-    stories = [{"id": 1, "score": 100, "time": 1000, "text_content": "A"}]
+    stories = [Story(id=1, title="A", url=None, score=100, time=1000, text_content="A")]
 
     import api.rerank
 
@@ -386,13 +336,13 @@ def test_rank_stories_hidden_penalty():
         res_baseline = rank_stories(
             stories, pos_emb, negative_embeddings=None, hn_weight=0.0
         )
-        score_baseline = res_baseline[0][1]
+        score_baseline = res_baseline[0].hybrid_score
 
         # Test: Rank WITH negative embeddings
         res_penalized = rank_stories(
             stories, pos_emb, negative_embeddings=neg_emb, hn_weight=0.0, neg_weight=0.5
         )
-        score_penalized = res_penalized[0][1]
+        score_penalized = res_penalized[0].hybrid_score
 
         # The penalized score must be lower
         assert score_penalized < score_baseline
@@ -419,7 +369,14 @@ def test_weight_parameters_produce_bounded_scores(hn_weight, diversity_lambda):
     regardless of weight parameter combinations.
     """
     stories = [
-        {"id": i, "score": (i + 1) * 100, "time": 1000, "text_content": f"S{i}"}
+        Story(
+            id=i,
+            title=f"S{i}",
+            url=None,
+            score=(i + 1) * 100,
+            time=1000,
+            text_content=f"S{i}",
+        )
         for i in range(3)
     ]
     pos_emb = np.random.randn(2, 384).astype(np.float32)
@@ -437,11 +394,11 @@ def test_weight_parameters_produce_bounded_scores(hn_weight, diversity_lambda):
             diversity_lambda=diversity_lambda,
         )
 
-        for idx, score, fav_idx, max_sim in results:
+        for result in results:
             # Scores should be bounded (can go slightly negative with neg signals)
-            assert -2.0 <= score <= 2.0
+            assert -2.0 <= result.hybrid_score <= 2.0
             # max_sim is cosine similarity, bounded [-1, 1]
-            assert -1.0 <= max_sim <= 1.0 or max_sim == 0.0
+            assert -1.0 <= result.max_sim_score <= 1.0 or result.max_sim_score == 0.0
 
 
 @given(st.lists(st.integers(min_value=0, max_value=100000), min_size=1, max_size=20))
@@ -475,7 +432,14 @@ def test_mmr_with_identical_candidates():
     pos_emb = cand_emb[:1]  # Matches all candidates equally
 
     stories = [
-        {"id": i, "score": 100 + i, "time": 1000, "text_content": f"S{i}"}
+        Story(
+            id=i,
+            title=f"S{i}",
+            url=None,
+            score=100 + i,
+            time=1000,
+            text_content=f"S{i}",
+        )
         for i in range(5)
     ]
 
@@ -494,4 +458,4 @@ def test_mmr_with_identical_candidates():
         # Should still return all items
         assert len(results) == 5
         # All indices present
-        assert set(r[0] for r in results) == {0, 1, 2, 3, 4}
+        assert set(r.index for r in results) == {0, 1, 2, 3, 4}

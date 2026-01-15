@@ -1,6 +1,7 @@
 import pytest
 from unittest.mock import AsyncMock, patch
 from generate_html import main
+from api.models import Story, RankResult
 import sys
 
 
@@ -14,15 +15,15 @@ async def test_generate_html_integration(tmp_path):
     output_file = tmp_path / "dashboard.html"
 
     # Mock stories
-    mock_story = {
-        "id": 1,
-        "title": "Integrated Test",
-        "url": "https://integrated.test",
-        "score": 100,
-        "time": 1600000000,
-        "comments": ["Integration works"],
-        "text_content": "integrated test content",
-    }
+    mock_story = Story(
+        id=1,
+        title="Integrated Test",
+        url="https://integrated.test",
+        score=100,
+        time=1600000000,
+        comments=["Integration works"],
+        text_content="integrated test content",
+    )
 
     # Setup mocks
     with (
@@ -32,8 +33,12 @@ async def test_generate_html_integration(tmp_path):
         patch("generate_html.fetch_story", new_callable=AsyncMock) as mock_fetch,
         patch("generate_html.rerank.get_embeddings") as mock_emb,
         patch("generate_html.rerank.rank_stories") as mock_rank,
-        patch("generate_html.rerank.generate_batch_tldrs", new_callable=AsyncMock) as mock_batch_tldrs,
-        patch("generate_html.rerank.generate_batch_cluster_names", new_callable=AsyncMock) as mock_batch_names,
+        patch(
+            "generate_html.rerank.generate_batch_tldrs", new_callable=AsyncMock
+        ) as mock_batch_tldrs,
+        patch(
+            "generate_html.rerank.generate_batch_cluster_names", new_callable=AsyncMock
+        ) as mock_batch_names,
     ):
         # Mock LLM functions
         mock_batch_tldrs.return_value = {1: "This is a test TL;DR summary."}
@@ -58,7 +63,9 @@ async def test_generate_html_integration(tmp_path):
         import numpy as np
 
         mock_emb.return_value = np.zeros((1, 768))
-        mock_rank.return_value = [(0, 0.95, 0, 0.95)]  # (idx, score, fav_idx, max_sim)
+        mock_rank.return_value = [
+            RankResult(index=0, hybrid_score=0.95, best_fav_index=0, max_sim_score=0.95)
+        ]
 
         # Mock sys.argv
         with patch.object(

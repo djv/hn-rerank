@@ -73,5 +73,5 @@ uv run pytest --cov=api
 uv run ruff check .
 
 # Type check
-ty check
+uv run ty check .
 ```

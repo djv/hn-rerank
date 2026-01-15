@@ -74,7 +74,11 @@ async def test_get_best_stories_filtering():
     for sid in ["1", "2", "3", "4"]:
         # Need 10+ comments to pass minimum threshold (50+ chars each)
         comments = [
-            {"type": "comment", "text": f"Comment {i} for story {sid} with enough text to pass the minimum length filter.", "children": []}
+            {
+                "type": "comment",
+                "text": f"Comment {i} for story {sid} with enough text to pass the minimum length filter.",
+                "children": [],
+            }
             for i in range(12)
         ]
         respx.get(f"{ALGOLIA_BASE}/items/{sid}").mock(
@@ -110,7 +114,7 @@ async def test_get_best_stories_filtering():
 
         # The fetcher uses a buffer and minimum window size (20), so it may return more than limit
         assert len(stories) >= 2
-        ids = [s["id"] for s in stories]
+        ids = [s.id for s in stories]
         assert 1 in ids
         assert 3 in ids
         assert 2 not in ids
@@ -130,23 +134,28 @@ async def test_get_best_stories_pagination():
 
     # Cycle through responses if code requests more windows
     import itertools
+
     respx.get(f"{ALGOLIA_BASE}/search").mock(side_effect=itertools.cycle(responses))
 
     # Mock item fetches - all return valid stories with 10+ comments
     # We cheat and return the same content for any ID, but distinct IDs matter for the count
     comments = [
-        {"type": "comment", "text": f"Comment {i} with enough text to pass the minimum length filter requirement which is fifty characters or more.", "children": []}
+        {
+            "type": "comment",
+            "text": f"Comment {i} with enough text to pass the minimum length filter requirement which is fifty characters or more.",
+            "children": [],
+        }
         for i in range(12)
     ]
     respx.get(url__regex=rf"{ALGOLIA_BASE}/items/\d+").mock(
         return_value=Response(
             200,
             json={
-                "id": 1, # ID doesn't matter for the list length check, but get_best_stories deduplicates by content? No by ID.
-                # Wait, fetch_story returns dict with "id". 
+                "id": 1,  # ID doesn't matter for the list length check, but get_best_stories deduplicates by content? No by ID.
+                # Wait, fetch_story returns dict with "id".
                 # If we return same ID in body, it might be confusing but get_best_stories uses the key from `hits`.
                 # Actually fetch_story returns { "id": sid, ... }
-                # We need to make sure the mocked item response reflects the requested ID if possible, 
+                # We need to make sure the mocked item response reflects the requested ID if possible,
                 # OR just ensure we don't dedupe in the final list based on content.
                 # The final list is constructed from `hits`.
                 "type": "story",
@@ -206,6 +215,7 @@ async def test_get_best_stories_partial_failure():
     search_url = f"{ALGOLIA_BASE}/search"
 
     call_count = 0
+
     def varying_response(request):
         nonlocal call_count
         call_count += 1
@@ -220,20 +230,27 @@ async def test_get_best_stories_partial_failure():
 
     # Mock item fetches for the successful stories
     comments = [
-        {"type": "comment", "text": f"Comment {i} with enough text to pass the minimum length filter.", "children": []}
+        {
+            "type": "comment",
+            "text": f"Comment {i} with enough text to pass the minimum length filter.",
+            "children": [],
+        }
         for i in range(12)
     ]
     for sid in ["1", "2"]:
         respx.get(f"{ALGOLIA_BASE}/items/{sid}").mock(
-            return_value=Response(200, json={
-                "id": int(sid),
-                "type": "story",
-                "title": f"Story {sid}",
-                "url": f"http://example.com/{sid}",
-                "points": 100,
-                "created_at_i": 1600000000,
-                "children": comments,
-            })
+            return_value=Response(
+                200,
+                json={
+                    "id": int(sid),
+                    "type": "story",
+                    "title": f"Story {sid}",
+                    "url": f"http://example.com/{sid}",
+                    "points": 100,
+                    "created_at_i": 1600000000,
+                    "children": comments,
+                },
+            )
         )
 
     with pytest.MonkeyPatch().context() as mp:
@@ -265,7 +282,7 @@ class TestWindowFilters:
         filters = [
             f"created_at_i>={ts_start}",
             f"points>{ALGOLIA_MIN_POINTS}",
-            f"num_comments>={MIN_STORY_COMMENTS}"
+            f"num_comments>={MIN_STORY_COMMENTS}",
         ]
         filters.append(f"created_at_i<{ts_end}")
 
@@ -288,7 +305,7 @@ class TestWinTargetCalculation:
 
         # Simulate windows: 2 days live + 7 days archive
         windows = [
-            (1000, 1000 + 2 * 86400, True),   # 2 days
+            (1000, 1000 + 2 * 86400, True),  # 2 days
             (1000 - 7 * 86400, 1000, False),  # 7 days
         ]
         limit = 100

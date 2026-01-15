@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -20,12 +21,37 @@ from api.constants import (
     EMBEDDING_CACHE_DIR,
     EMBEDDING_MIN_CLIP,
     EMBEDDING_MODEL_VERSION,
+    HN_SCORE_NORMALIZATION_CAP,
+    LLM_CLUSTER_BATCH_SIZE,
+    LLM_CLUSTER_NAME_MAX_WORDS,
+    LLM_CLUSTER_NAME_MODEL,
+    LLM_HTTP_TIMEOUT,
+    LLM_TEMPERATURE,
+    LLM_TLDR_BATCH_SIZE,
+    LLM_TLDR_MAX_TOKENS,
+    LLM_TLDR_MODEL,
     MAX_CLUSTERS,
     MIN_CLUSTERS,
     MIN_SAMPLES_PER_CLUSTER,
+    RANKING_DIVERSITY_LAMBDA,
+    RANKING_DIVERSITY_LAMBDA_CLASSIFIER,
+    RANKING_HN_WEIGHT,
+    RANKING_MAX_RESULTS,
+    RANKING_NEGATIVE_WEIGHT,
+    RATE_LIMIT_429_BACKOFF_BASE,
+    RATE_LIMIT_ERROR_BACKOFF_BASE,
+    RATE_LIMIT_JITTER_MAX,
+    RATE_LIMIT_MAX_TOKENS,
+    RATE_LIMIT_REFILL_RATE,
+    SEMANTIC_MAXSIM_WEIGHT,
+    SEMANTIC_MEANSIM_WEIGHT,
+    SEMANTIC_SIGMOID_K,
+    SEMANTIC_SIGMOID_THRESHOLD,
     TEXT_CONTENT_MAX_LENGTH,
 )
+from api.models import RankResult, Story
 
+logger = logging.getLogger(__name__)
 
 
 # Global singleton for the model
@@ -164,13 +190,13 @@ def get_embeddings(
             try:
                 data = np.load(cache_path_npz)
                 vec = data["embedding"]
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Failed to load embedding cache {cache_path_npz}: {e}")
         elif cache_path_npy.exists():
             try:
                 vec = np.load(cache_path_npy)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Failed to load embedding cache {cache_path_npy}: {e}")
 
         if vec is not None and vec.shape == (expected_dim,):
             vectors.append(vec)
@@ -255,7 +281,11 @@ def cluster_interests_with_labels(
     # Search for optimal k with best silhouette score
     # Higher multipliers = more granular clusters (better topic separation)
     min_k = max(MIN_CLUSTERS, int(np.sqrt(n_samples) * 1.2))
-    max_k = min(MAX_CLUSTERS, int(np.sqrt(n_samples) * 3.5), n_samples // MIN_SAMPLES_PER_CLUSTER)
+    max_k = min(
+        MAX_CLUSTERS,
+        int(np.sqrt(n_samples) * 3.5),
+        n_samples // MIN_SAMPLES_PER_CLUSTER,
+    )
 
     best_labels: NDArray[np.int32] = np.zeros(n_samples, dtype=np.int32)
     best_score = -1.0
@@ -307,22 +337,22 @@ def cluster_interests_with_labels(
 
 
 # Global rate limiter state
-_token_bucket: float = 1.0
+_token_bucket: float = RATE_LIMIT_MAX_TOKENS
 _last_refill: float = time.time()
-# Conservative rate limit: 1 call per 4 seconds (~15 RPM)
-_refill_rate: float = 1.0 / 4.0
-_max_tokens: float = 1.0
 
 
 async def _rate_limit() -> None:
     """Enforce rate limiting using a Token Bucket algorithm."""
     global _token_bucket, _last_refill
+    import random
 
     while True:
         now = time.time()
         # Refill tokens based on time passed
         elapsed = now - _last_refill
-        _token_bucket = min(_max_tokens, _token_bucket + elapsed * _refill_rate)
+        _token_bucket = min(
+            RATE_LIMIT_MAX_TOKENS, _token_bucket + elapsed * RATE_LIMIT_REFILL_RATE
+        )
         _last_refill = now
 
         if _token_bucket >= 1.0:
@@ -330,11 +360,9 @@ async def _rate_limit() -> None:
             return
 
         # Calculate wait time needed for next token
-        wait_time = (1.0 - _token_bucket) / _refill_rate
+        wait_time = (1.0 - _token_bucket) / RATE_LIMIT_REFILL_RATE
         # Add a small buffer and jitter to prevent thundering herds
-        import random
-
-        await asyncio.sleep(wait_time + 0.1 + random.uniform(0, 0.5))
+        await asyncio.sleep(wait_time + 0.1 + random.uniform(0, RATE_LIMIT_JITTER_MAX))
 
 
 CLUSTER_NAME_CACHE_PATH = Path(".cache/cluster_names.json")
@@ -344,8 +372,8 @@ def _load_cluster_name_cache() -> dict[str, str]:
     if CLUSTER_NAME_CACHE_PATH.exists():
         try:
             return json.loads(CLUSTER_NAME_CACHE_PATH.read_text())
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to load cluster name cache: {e}")
     return {}
 
 
@@ -383,7 +411,8 @@ def _safe_json_loads(text: str) -> dict[Any, Any]:
 
     try:
         return json.loads(clean_text)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        logger.debug(f"JSON decode failed, trying regex fallback: {e}")
         # Fallback: try to find anything between { and }
         import re
 
@@ -391,13 +420,13 @@ def _safe_json_loads(text: str) -> dict[Any, Any]:
         if match:
             try:
                 return json.loads(match.group(1))
-            except Exception:
-                pass
+            except Exception as e2:
+                logger.warning(f"JSON regex fallback also failed: {e2}")
         return {}
 
 
 async def _generate_with_retry(
-    model: str = "llama-3.1-8b-instant",
+    model: str = LLM_TLDR_MODEL,
     contents: Optional[Any] = None,
     config: Optional[dict[str, Any]] = None,
     max_retries: int = 3,
@@ -407,6 +436,7 @@ async def _generate_with_retry(
 
     api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
+        logger.warning("GROQ_API_KEY not set, skipping LLM call")
         return None
 
     # Handle Gemini-style 'contents' to OpenAI-style 'messages'
@@ -424,7 +454,9 @@ async def _generate_with_retry(
     payload = {
         "model": model,
         "messages": messages,
-        "temperature": config.get("temperature", 0.2) if config else 0.2,
+        "temperature": config.get("temperature", LLM_TEMPERATURE)
+        if config
+        else LLM_TEMPERATURE,
     }
 
     if config and config.get("response_mime_type") == "application/json":
@@ -441,7 +473,7 @@ async def _generate_with_retry(
                         "Content-Type": "application/json",
                     },
                     json=payload,
-                    timeout=30.0,
+                    timeout=LLM_HTTP_TIMEOUT,
                 )
 
                 if resp.status_code == 200:
@@ -449,88 +481,27 @@ async def _generate_with_retry(
                     return data["choices"][0]["message"]["content"]
 
                 if resp.status_code == 429:
-                    print(
-                        f"[DEBUG] Groq Rate Limit hit (429). Attempt {attempt + 1}/{max_retries}"
+                    logger.warning(
+                        f"Groq rate limit hit (429). Attempt {attempt + 1}/{max_retries}"
                     )
-                    await asyncio.sleep(20.0 * (2**attempt))
+                    await asyncio.sleep(RATE_LIMIT_429_BACKOFF_BASE * (2**attempt))
                     continue
 
-                print(f"[ERROR] Groq API error {resp.status_code}: {resp.text}")
+                logger.error(f"Groq API error {resp.status_code}: {resp.text}")
                 return None
 
             except Exception as e:
                 if attempt == max_retries - 1:
-                    print(
-                        f"[ERROR] Groq API call failed after {max_retries} retries: {e}"
+                    logger.error(
+                        f"Groq API call failed after {max_retries} retries: {e}"
                     )
                     return None
-                delay = 10.0 * (2**attempt)
+                delay = RATE_LIMIT_ERROR_BACKOFF_BASE * (2**attempt)
+                logger.warning(
+                    f"Groq API attempt {attempt + 1} failed: {e}, retrying in {delay}s"
+                )
                 await asyncio.sleep(delay)
     return None
-
-
-async def generate_single_cluster_name(
-    items: list[tuple[dict[str, Any], float]],
-) -> str:
-    """Generate a name for a single cluster using Groq API."""
-
-    # Generate cache key based on sorted story IDs
-    story_ids = sorted([str(s.get("id", s.get("objectID", ""))) for s, _ in items])
-    cache_key = hashlib.sha256(",".join(story_ids).encode()).hexdigest()
-
-    cache = _load_cluster_name_cache()
-    if cache_key in cache:
-        return cache[cache_key]
-
-    # Get top titles by weight
-    sorted_items = sorted(items, key=lambda x: -x[1])[:10]
-    titles = []
-    for story, _ in sorted_items:
-        title = str(story.get("title", "")).strip()
-        for prefix in ["Show HN:", "Ask HN:", "Tell HN:"]:
-            if title.startswith(prefix):
-                title = title[len(prefix) :].strip()
-        if title:
-            titles.append(title)
-
-    titles_text = "\n".join(f"- {t}" for t in titles)
-
-    if not titles_text:
-        return "Misc"
-
-    prompt = f"""
-What COMMON theme connects ALL these titles?
-Must apply equally to every title. If diverse, use broader category.
-Reply with ONLY 1-3 words.
-
-{titles_text}
-
-Theme:"""
-
-    try:
-        text = await _generate_with_retry(
-            model="llama-3.3-70b-versatile",  # Larger model for accurate naming
-            contents=prompt,
-            config={"temperature": 0.3, "max_output_tokens": 20},
-        )
-        if not text:
-            return "Misc"
-
-        name = text.strip().strip('"').strip("'")
-        # Truncate if too long (6 words allows multi-topic names like "AI, Space & Biology")
-        words = name.split()[:6]
-        final_name = " ".join(words) if words else "Misc"
-        # Strip trailing conjunctions/punctuation left by truncation
-        final_name = final_name.rstrip(" ,&").rstrip()
-        if final_name.endswith(" and") or final_name.endswith(" or"):
-            final_name = final_name.rsplit(" ", 1)[0]
-
-        cache[cache_key] = final_name
-        _save_cluster_name_cache(cache)
-
-        return final_name
-    except Exception:
-        return "Misc"
 
 
 async def generate_batch_cluster_names(
@@ -561,34 +532,32 @@ async def generate_batch_cluster_names(
             progress_callback(len(clusters), len(clusters))
         return {cid: results.get(cid, "Misc") for cid in clusters}
 
-    # Batch clusters together (max 10 per request)
-    BATCH_SIZE = 10
     cid_list = list(to_generate.keys())
 
-    for i in range(0, len(cid_list), BATCH_SIZE):
-        batch_cids = cid_list[i : i + BATCH_SIZE]
+    for i in range(0, len(cid_list), LLM_CLUSTER_BATCH_SIZE):
+        batch_cids = cid_list[i : i + LLM_CLUSTER_BATCH_SIZE]
         batch_prompts = []
 
         for cid in batch_cids:
             items = to_generate[cid]
             # Use top 5 items for context (titles + comments)
             sorted_items = sorted(items, key=lambda x: -x[1])[:5]
-            
+
             cluster_data = []
             for s, _ in sorted_items:
                 title = str(s.get("title", "")).strip()
                 if not title:
                     continue
-                
+
                 # Get top 2 comments, truncate to 150 chars
                 comments = s.get("comments", [])
                 context = ""
                 if comments:
                     snippets = [c[:150].replace("\n", " ") for c in comments[:2]]
                     context = "; ".join(snippets)
-                
+
                 cluster_data.append({"title": title, "context": context})
-            
+
             # Serialize to JSON for cleaner prompt structure
             batch_prompts.append(f"Cluster {cid}: {json.dumps(cluster_data)}")
 
@@ -611,10 +580,10 @@ JSON:"""
 
         try:
             text = await _generate_with_retry(
-                model="llama-3.3-70b-versatile",  # Larger model for accurate naming
+                model=LLM_CLUSTER_NAME_MODEL,
                 contents=full_prompt,
                 config={
-                    "temperature": 0.2,
+                    "temperature": LLM_TEMPERATURE,
                     "response_mime_type": "application/json",
                 },
             )
@@ -624,8 +593,10 @@ JSON:"""
                 for cid_str, name in batch_results.items():
                     try:
                         cid = int(cid_str)
-                        # Truncate to 6 words (allows multi-topic names)
-                        final_name = str(name).strip().split()[:6]
+                        # Truncate to max words (allows multi-topic names)
+                        final_name = (
+                            str(name).strip().split()[:LLM_CLUSTER_NAME_MAX_WORDS]
+                        )
                         final_name = " ".join(final_name)
                         # Strip trailing conjunctions/punctuation left by truncation
                         final_name = final_name.rstrip(" ,&").rstrip()
@@ -642,13 +613,14 @@ JSON:"""
                             ",".join(story_ids).encode()
                         ).hexdigest()
                         cache[cache_key] = final_name
-                    except (ValueError, TypeError):
+                    except (ValueError, TypeError) as e:
+                        logger.debug(f"Failed to parse cluster name for {cid_str}: {e}")
                         continue
 
             if progress_callback:
                 progress_callback(len(results), len(clusters))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Cluster naming batch failed: {e}")
 
     _save_cluster_name_cache(cache)
 
@@ -678,13 +650,6 @@ JSON:"""
     return final_results
 
 
-async def generate_cluster_names(
-    clusters: dict[int, list[tuple[dict[str, Any], float]]],
-) -> dict[int, str]:
-    """Generate cluster names using Groq API."""
-    return await generate_batch_cluster_names(clusters)
-
-
 TLDR_CACHE_PATH = Path(".cache/tldrs.json")
 
 
@@ -693,8 +658,8 @@ def _load_tldr_cache() -> dict[str, str]:
     if TLDR_CACHE_PATH.exists():
         try:
             return json.loads(TLDR_CACHE_PATH.read_text())
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to load TLDR cache: {e}")
     return {}
 
 
@@ -732,13 +697,11 @@ async def generate_batch_tldrs(
             for s in stories
         }
 
-    # Chunking: 5 stories per request
-    BATCH_SIZE = 5
     total_to_gen = len(to_generate)
     completed_initial = len(stories) - total_to_gen
 
-    for i in range(0, total_to_gen, BATCH_SIZE):
-        batch = to_generate[i : i + BATCH_SIZE]
+    for i in range(0, total_to_gen, LLM_TLDR_BATCH_SIZE):
+        batch = to_generate[i : i + LLM_TLDR_BATCH_SIZE]
 
         stories_formatted = []
         for s in batch:
@@ -754,14 +717,15 @@ async def generate_batch_tldrs(
         batch_context = "\n\n---\n\n".join(stories_formatted)
 
         prompt = f"""
-Summarize each story in 2-3 sentences based on the comments. Don't repeat the title.
+Summarize the discussion and technical insights in 2-3 sentences.
+CRITICAL: Do NOT repeat the title. The user sees it. Do NOT say "This story is about...".
 
 Focus on:
-- Key technical details or findings not obvious from title
-- Main debates, criticisms, or praise from commenters
+- Technical implementation details, trade-offs, or benchmarks mentioned in comments
+- Significant debates, criticisms, or comparisons to other tools
 
-BAD: "This is a new database that..." (just repeats title)
-GOOD: "Achieves 1M TPS via io_uring and deterministic simulation. Commenters debate benchmark realism and note Zig adds complexity."
+BAD: "PostgreSQL 17 Released. It features..." (Repeats title)
+GOOD: "Praised for incremental backups and optimized vacuuming, though some users warn about update conflicts on legacy systems."
 
 Return JSON with story IDs as keys: {{ "12345": "Summary here." }}
 
@@ -772,11 +736,11 @@ JSON:"""
 
         try:
             text = await _generate_with_retry(
-                model="llama-3.1-8b-instant",
+                model=LLM_TLDR_MODEL,
                 contents=prompt,
                 config={
-                    "temperature": 0.2,
-                    "max_output_tokens": 2000,
+                    "temperature": LLM_TEMPERATURE,
+                    "max_output_tokens": LLM_TLDR_MAX_TOKENS,
                     "response_mime_type": "application/json",
                 },
             )
@@ -789,14 +753,15 @@ JSON:"""
                         tldr_clean = tldr.strip().strip('"').strip("'")
                         results[sid] = tldr_clean
                         cache[str(sid)] = tldr_clean
-                    except (ValueError, TypeError):
+                    except (ValueError, TypeError) as e:
+                        logger.debug(f"Failed to parse TLDR for {sid_str}: {e}")
                         continue
 
             if progress_callback:
                 progress_callback(completed_initial + i + len(batch), len(stories))
 
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"TLDR batch generation failed: {e}")
 
     _save_tldr_cache(cache)
     return {
@@ -805,37 +770,19 @@ JSON:"""
     }
 
 
-def compute_recency_weights(
-    timestamps: list[int], decay_rate: Optional[float] = None
-) -> NDArray[np.float32]:
-    if decay_rate is not None and decay_rate <= 0:
-        return np.ones(len(timestamps), dtype=np.float32)
-
-    now: float = time.time()
-    ages_days: NDArray[Any] = (now - np.array(timestamps)) / 86400
-
-    k = 0.01
-    inflection = 365
-
-    exponent = np.clip(k * (ages_days - inflection), -50, 50)
-    weights: NDArray[Any] = 1.0 / (1.0 + np.exp(exponent))
-
-    return np.clip(weights, 0.0, 1.0).astype(np.float32)
-
-
 def rank_stories(
-    stories: list[dict[str, Any]],
+    stories: list[Story],
     positive_embeddings: Optional[NDArray[np.float32]],
     negative_embeddings: Optional[NDArray[np.float32]] = None,
     positive_weights: Optional[NDArray[np.float32]] = None,
-    hn_weight: float = 0.05,
-    neg_weight: float = 0.3,
-    diversity_lambda: float = 0.45,  # Increased for better discovery (was 0.35)
+    hn_weight: float = RANKING_HN_WEIGHT,
+    neg_weight: float = RANKING_NEGATIVE_WEIGHT,
+    diversity_lambda: float = RANKING_DIVERSITY_LAMBDA,
     use_classifier: bool = False,
     progress_callback: Optional[Callable[[int, int], None]] = None,
-) -> list[tuple[int, float, int, float]]:
+) -> list[RankResult]:
     """
-    Returns list of (index, hybrid_score, best_fav_index, max_sim_score).
+    Rank candidate stories by relevance to user interests.
 
     Uses multi-interest clustering and MMR diversity reranking.
     Optionally uses a Logistic Regression classifier if sufficient data exists.
@@ -843,7 +790,7 @@ def rank_stories(
     if not stories:
         return []
 
-    cand_texts: list[str] = [str(s.get("text_content", "")) for s in stories]
+    cand_texts: list[str] = [s.text_content for s in stories]
     cand_emb: NDArray[np.float32] = get_embeddings(
         cand_texts, progress_callback=progress_callback
     )
@@ -867,10 +814,10 @@ def rank_stories(
             X_neg = negative_embeddings
             y_pos = np.ones(len(X_pos))
             y_neg = np.zeros(len(X_neg))
-            
+
             X_train = np.vstack([X_pos, X_neg])
             y_train = np.concatenate([y_pos, y_neg])
-            
+
             # Calculate cluster-balanced weights for positives
             # Use inverse log weighting (1/log(1+N)) for even softer dampening.
             # This respects that large clusters represent confirmed, deep interest
@@ -878,43 +825,47 @@ def rank_stories(
             _, labels = cluster_interests_with_labels(X_pos, positive_weights)
             unique_labels, counts = np.unique(labels, return_counts=True)
             # Use log1p for soft dampening: 1/log(1+count)
-            weight_map = {lbl: 1.0 / np.log1p(count) for lbl, count in zip(unique_labels, counts)}
-            
+            weight_map = {
+                lbl: 1.0 / np.log1p(count) for lbl, count in zip(unique_labels, counts)
+            }
+
             # Base weights from clustering
             pos_sample_weights = np.array([weight_map[label] for label in labels])
-            
+
             # Normalize so sum(weights) == n_samples (maintains scale with negatives)
             norm_factor = len(X_pos) / np.sum(pos_sample_weights)
             pos_sample_weights *= norm_factor
-            
+
             # Apply recency weights if available (multiplicative)
             if positive_weights is not None:
                 pos_sample_weights *= positive_weights
 
             # Negatives get standard weight 1.0
             neg_sample_weights = np.ones(len(X_neg))
-            
+
             sample_weights = np.concatenate([pos_sample_weights, neg_sample_weights])
 
             clf = LogisticRegression(class_weight="balanced", solver="liblinear", C=1.0)
             clf.fit(X_train, y_train, sample_weight=sample_weights)
-            
+
             # Predict probabilities (class 1 = positive interest)
             probs = clf.predict_proba(cand_emb)[:, 1]
             semantic_scores = probs.astype(np.float32)
-            
+
             # We still need max_sim_scores for the UI "Similar to..."
             sim_pos_ui = cosine_similarity(positive_embeddings, cand_emb)
             max_sim_scores = np.max(sim_pos_ui, axis=0)
             best_fav_indices = np.argmax(sim_pos_ui, axis=0)
-            
+
             classifier_success = True
             # Classifier probabilities are sharp (often >0.9 for dominant clusters).
             # We increase diversity penalty to ensure we skip to the next cluster.
-            diversity_lambda = max(diversity_lambda, 0.6)
-        except Exception:
+            diversity_lambda = max(
+                diversity_lambda, RANKING_DIVERSITY_LAMBDA_CLASSIFIER
+            )
+        except Exception as e:
             # Fallback to heuristic on error
-            pass
+            logger.warning(f"Classifier training failed, using heuristic: {e}")
 
     if not classifier_success:
         if positive_embeddings is None or len(positive_embeddings) == 0:
@@ -942,24 +893,29 @@ def rank_stories(
             cluster_mean_sim = np.mean(sim_centroids, axis=0)
 
             # Combined: weight MaxSim much higher to preserve niche interests and avoid noise dilution
-            # 0.95 MaxSim + 0.05 MeanSim balances specific match with broad appeal
-            semantic_scores = 0.95 * cluster_max_sim + 0.05 * cluster_mean_sim
+            semantic_scores = (
+                SEMANTIC_MAXSIM_WEIGHT * cluster_max_sim
+                + SEMANTIC_MEANSIM_WEIGHT * cluster_mean_sim
+            )
 
             # For display score and best_fav_index, use original embeddings (not clusters)
             # This preserves interpretable "match to specific story" display
             # NOTE: Don't apply recency weights here - we want pure semantic match for UI
             # (recency is already factored into ranking via cluster centroids)
-            sim_pos: NDArray[np.float32] = cosine_similarity(positive_embeddings, cand_emb)
+            sim_pos: NDArray[np.float32] = cosine_similarity(
+                positive_embeddings, cand_emb
+            )
             max_sim_scores = np.max(sim_pos, axis=0)
             best_fav_indices = np.argmax(sim_pos, axis=0)
 
             # Apply soft sigmoid activation instead of hard threshold
             # This suppresses noise while preserving strong signals
-            # k=15 makes the transition reasonably steep around the threshold
-            # threshold=0.35 is permissive for users with eclectic tastes
-            k = 15.0
-            threshold = 0.35
-            semantic_scores = 1.0 / (1.0 + np.exp(-k * (semantic_scores - threshold)))
+            semantic_scores = 1.0 / (
+                1.0
+                + np.exp(
+                    -SEMANTIC_SIGMOID_K * (semantic_scores - SEMANTIC_SIGMOID_THRESHOLD)
+                )
+            )
 
         # 3. Negative Signal (Penalty) - Only applies in heuristic mode
         # Contrastive: only penalize when more similar to hidden than liked
@@ -971,9 +927,11 @@ def rank_stories(
             semantic_scores -= neg_weight * sim_neg * should_penalize
 
     # 4. HN Gravity Score (Log-scaled)
-    # We use a log scale so that 500+ points punch through without dominating everything
-    points: NDArray[Any] = np.array([float(s.get("score", 0)) for s in stories])
-    hn_scores = np.log1p(points) / np.log1p(max(points.max(), 500))
+    # We use a log scale so that high-point stories punch through without dominating
+    points: NDArray[Any] = np.array([float(s.score) for s in stories])
+    hn_scores = np.log1p(points) / np.log1p(
+        max(points.max(), HN_SCORE_NORMALIZATION_CAP)
+    )
 
     # 5. Hybrid Score
     hybrid_scores: NDArray[np.float32] = (
@@ -981,11 +939,11 @@ def rank_stories(
     ) * semantic_scores + hn_weight * hn_scores
 
     # 6. Diversity (MMR)
-    results: list[tuple[int, float, int, float]] = []
+    results: list[RankResult] = []
     selected_mask: NDArray[np.bool_] = np.zeros(len(cand_emb), dtype=bool)
     cand_sim: NDArray[np.float32] = cosine_similarity(cand_emb, cand_emb)
 
-    for _ in range(min(len(stories), 100)):  # Rank top 100
+    for _ in range(min(len(stories), RANKING_MAX_RESULTS)):
         unselected: NDArray[np.int64] = np.where(~selected_mask)[0]
         if not len(unselected):
             break
@@ -1002,14 +960,13 @@ def rank_stories(
         best_idx: int = int(unselected[np.argmax(mmr_scores)])
 
         results.append(
-            (
-                best_idx,
-                float(hybrid_scores[best_idx]),
-                int(best_fav_indices[best_idx]),
-                float(max_sim_scores[best_idx]),
+            RankResult(
+                index=best_idx,
+                hybrid_score=float(hybrid_scores[best_idx]),
+                best_fav_index=int(best_fav_indices[best_idx]),
+                max_sim_score=float(max_sim_scores[best_idx]),
             )
         )
         selected_mask[best_idx] = True
 
     return results
-

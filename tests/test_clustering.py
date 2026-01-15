@@ -1,4 +1,5 @@
 """Property-based tests for clustering functions."""
+
 from __future__ import annotations
 
 import pytest
@@ -8,7 +9,11 @@ from hypothesis import given, settings, assume
 from hypothesis import strategies as st
 from hypothesis.extra.numpy import arrays
 
-from api.rerank import cluster_interests_with_labels, cluster_interests, generate_cluster_names
+from api.rerank import (
+    cluster_interests_with_labels,
+    cluster_interests,
+    generate_batch_cluster_names,
+)
 from api.constants import MIN_SAMPLES_PER_CLUSTER
 
 
@@ -177,10 +182,12 @@ async def test_cluster_names_non_empty():
     with patch("httpx.AsyncClient.post") as mock_post:
         mock_resp = MagicMock()
         mock_resp.status_code = 200
-        mock_resp.json.return_value = {"choices": [{"message": {"content": "Technology"}}]}
+        mock_resp.json.return_value = {
+            "choices": [{"message": {"content": "Technology"}}]
+        }
         mock_post.return_value = mock_resp
-        
-        names = await generate_cluster_names(clusters)
+
+        names = await generate_batch_cluster_names(clusters)
 
     assert len(names) == 2
     assert all(isinstance(name, str) for name in names.values())
@@ -197,7 +204,7 @@ async def test_fallback_group_name_on_empty_titles():
         ],
     }
 
-    names = await generate_cluster_names(clusters)
+    names = await generate_batch_cluster_names(clusters)
 
     assert len(names) == 1
     assert names[0] == "Misc"
@@ -206,7 +213,7 @@ async def test_fallback_group_name_on_empty_titles():
 @pytest.mark.asyncio
 async def test_empty_clusters_returns_empty():
     """Empty clusters dict → empty names dict."""
-    names = await generate_cluster_names({})
+    names = await generate_batch_cluster_names({})
     assert names == {}
 
 
@@ -220,14 +227,16 @@ async def test_names_stripped_of_hn_prefixes():
             ({"title": "Tell HN: Something"}, 0.8),
         ],
     }
-    
+
     # Mock API via httpx
     with patch("httpx.AsyncClient.post") as mock_post:
         mock_resp = MagicMock()
         mock_resp.status_code = 200
-        mock_resp.json.return_value = {"choices": [{"message": {"content": "Projects"}}]}
+        mock_resp.json.return_value = {
+            "choices": [{"message": {"content": "Projects"}}]
+        }
         mock_post.return_value = mock_resp
-        
-        names = await generate_cluster_names(clusters)
+
+        names = await generate_batch_cluster_names(clusters)
 
     assert "Show" not in names[0] or "Hn" not in names[0]

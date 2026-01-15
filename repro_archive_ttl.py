@@ -1,16 +1,17 @@
-
 import asyncio
 from unittest.mock import patch, MagicMock
 from api.fetching import get_best_stories, CANDIDATE_CACHE_PATH
 
 # Constants
-MOCK_NOW_TS = 1700000000 
+MOCK_NOW_TS = 1700000000
 DAYS_AGO_30 = MOCK_NOW_TS - (30 * 86400)
+
 
 async def test_archive_cache_invalidation():
     # Setup
     if CANDIDATE_CACHE_PATH.exists():
         import shutil
+
         shutil.rmtree(CANDIDATE_CACHE_PATH)
     CANDIDATE_CACHE_PATH.mkdir(parents=True, exist_ok=True)
 
@@ -28,14 +29,17 @@ async def test_archive_cache_invalidation():
         mock_get.return_value = MagicMock(
             status_code=200,
             content=b"{}",
-            json=lambda: {"hits": [{"objectID": i} for i in range(10)]}
+            json=lambda: {"hits": [{"objectID": i} for i in range(10)]},
         )
-        
-        with patch("api.fetching.fetch_story", side_effect=lambda client, sid: {"id": sid, "title": "test", "score": 10}):
+
+        with patch(
+            "api.fetching.fetch_story",
+            side_effect=lambda client, sid: {"id": sid, "title": "test", "score": 10},
+        ):
             with patch("api.fetching.datetime") as mock_datetime:
                 mock_datetime.now.return_value.timestamp.return_value = MOCK_NOW_TS
-                mock_datetime.now.return_value.weekday.return_value = 0 # Monday
-                
+                mock_datetime.now.return_value.weekday.return_value = 0  # Monday
+
                 # We expect windows to cover 30 days.
                 # Anchor = Now.
                 # Archive 1: -7d to Now.
@@ -63,30 +67,37 @@ async def test_archive_cache_invalidation():
     # Current time is T+8d.
     # Age = 8d. TTL = 7d.
     # Result: Expired. Refetch.
-    
+
     print("\n--- Run 2 (Day 8 - Expect Refetch of old windows) ---")
     with patch("httpx.AsyncClient.get") as mock_get:
         mock_get.return_value = MagicMock(
             status_code=200,
             content=b"{}",
-            json=lambda: {"hits": [{"objectID": i} for i in range(10)]}
+            json=lambda: {"hits": [{"objectID": i} for i in range(10)]},
         )
-        
-        with patch("api.fetching.fetch_story", side_effect=lambda client, sid: {"id": sid, "title": "test", "score": 10}):
+
+        with patch(
+            "api.fetching.fetch_story",
+            side_effect=lambda client, sid: {"id": sid, "title": "test", "score": 10},
+        ):
             with patch("api.fetching.datetime") as mock_datetime:
-                mock_datetime.now.return_value.timestamp.return_value = MOCK_NOW_TS + (8 * 86400)
-                mock_datetime.now.return_value.weekday.return_value = 0 # Still Monday
-                
+                mock_datetime.now.return_value.timestamp.return_value = MOCK_NOW_TS + (
+                    8 * 86400
+                )
+                mock_datetime.now.return_value.weekday.return_value = 0  # Still Monday
+
                 # Patch time.time to simulate aging check
                 with patch("time.time", return_value=MOCK_NOW_TS + (8 * 86400)):
                     await get_best_stories(limit=10, days=35)
-            
+
                 # Count search calls.
                 # We expect multiple windows.
                 # If they expired, we see calls.
-                search_calls = [c for c in mock_get.call_args_list if "search" in str(c)]
+                search_calls = [
+                    c for c in mock_get.call_args_list if "search" in str(c)
+                ]
                 print(f"Search API calls in Run 2: {len(search_calls)}")
-                
+
                 if len(search_calls) > 0:
                     print("CONFIRMED: Archive windows refetched after 8 days.")
                 else:
@@ -94,7 +105,9 @@ async def test_archive_cache_invalidation():
 
     # Cleanup
     import shutil
+
     shutil.rmtree(CANDIDATE_CACHE_PATH)
+
 
 if __name__ == "__main__":
     asyncio.run(test_archive_cache_invalidation())

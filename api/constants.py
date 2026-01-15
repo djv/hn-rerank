@@ -48,9 +48,6 @@ DEFAULT_EMBEDDING_BATCH_SIZE = 8
 EMBEDDING_MIN_CLIP = 1e-9
 EMBEDDING_MODEL_VERSION = "v6"  # Bump to invalidate cache on model change
 
-# Recency Weighting
-RECENCY_DECAY_RATE = 0.003
-
 # Similarity Bounds
 SIMILARITY_MIN = -1.0
 SIMILARITY_MAX = 1.0
@@ -61,3 +58,34 @@ MIN_CLUSTERS = 2
 MAX_CLUSTERS = 50
 MIN_SAMPLES_PER_CLUSTER = 2  # Smaller clusters = more granularity
 CLUSTER_SIMILARITY_THRESHOLD = 0.70  # Min similarity to belong to a cluster
+
+# Ranking Weights
+RANKING_HN_WEIGHT = 0.05  # Weight for HN score vs semantic
+RANKING_NEGATIVE_WEIGHT = 0.3  # Penalty for similarity to hidden stories
+RANKING_DIVERSITY_LAMBDA = 0.45  # MMR diversity penalty
+RANKING_DIVERSITY_LAMBDA_CLASSIFIER = 0.6  # Higher diversity when using classifier
+RANKING_MAX_RESULTS = 100  # Max stories to rank via MMR
+
+# Semantic Scoring
+SEMANTIC_MAXSIM_WEIGHT = 0.95  # Weight for max cluster similarity
+SEMANTIC_MEANSIM_WEIGHT = 0.05  # Weight for mean cluster similarity
+SEMANTIC_SIGMOID_K = 15.0  # Steepness of sigmoid activation
+SEMANTIC_SIGMOID_THRESHOLD = 0.35  # Center point of sigmoid
+HN_SCORE_NORMALIZATION_CAP = 500  # Cap for log normalization of HN points
+
+# LLM Configuration
+LLM_CLUSTER_NAME_MODEL = "llama-3.3-70b-versatile"
+LLM_TLDR_MODEL = "llama-3.1-8b-instant"
+LLM_TEMPERATURE = 0.2
+LLM_TLDR_MAX_TOKENS = 2000
+LLM_CLUSTER_BATCH_SIZE = 10  # Clusters per API request
+LLM_TLDR_BATCH_SIZE = 5  # Stories per TLDR request
+LLM_CLUSTER_NAME_MAX_WORDS = 6  # Max words in cluster name
+
+# Rate Limiting (Token Bucket)
+RATE_LIMIT_REFILL_RATE = 0.25  # Tokens per second (1 call per 4 seconds)
+RATE_LIMIT_MAX_TOKENS = 1.0
+RATE_LIMIT_JITTER_MAX = 0.5  # Max random jitter in seconds
+RATE_LIMIT_429_BACKOFF_BASE = 20.0  # Base delay on 429 response
+RATE_LIMIT_ERROR_BACKOFF_BASE = 10.0  # Base delay on other errors
+LLM_HTTP_TIMEOUT = 30.0  # HTTP request timeout in seconds
