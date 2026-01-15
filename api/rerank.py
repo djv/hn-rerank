@@ -22,6 +22,7 @@ from api.constants import (
     EMBEDDING_MIN_CLIP,
     EMBEDDING_MODEL_VERSION,
     HN_SCORE_NORMALIZATION_CAP,
+    KNN_NEIGHBORS,
     LLM_CLUSTER_BATCH_SIZE,
     LLM_CLUSTER_NAME_MAX_WORDS,
     LLM_CLUSTER_NAME_MODEL,
@@ -43,8 +44,6 @@ from api.constants import (
     RATE_LIMIT_JITTER_MAX,
     RATE_LIMIT_MAX_TOKENS,
     RATE_LIMIT_REFILL_RATE,
-    SEMANTIC_MAXSIM_WEIGHT,
-    SEMANTIC_MEANSIM_WEIGHT,
     SEMANTIC_SIGMOID_K,
     SEMANTIC_SIGMOID_THRESHOLD,
     TEXT_CONTENT_MAX_LENGTH,
@@ -874,39 +873,33 @@ def rank_stories(
             max_sim_scores = np.zeros(len(stories), dtype=np.float32)
             best_fav_indices = np.full(len(stories), -1, dtype=np.int64)
         else:
-            # 1. Multi-Interest Clustering
-            # Cluster positive embeddings into K interest centroids to capture diverse interests
-            interest_centroids: NDArray[np.float32] = cluster_interests(
-                positive_embeddings, weights=positive_weights
-            )
-
-            # 2. Semantic Score using interest centroids
-            # For each candidate, find similarity to each interest cluster
-            sim_centroids: NDArray[np.float32] = cosine_similarity(
-                interest_centroids, cand_emb
-            )
-
-            # MaxSim across interest clusters (best matching interest)
-            cluster_max_sim = np.max(sim_centroids, axis=0)
-
-            # Mean across all clusters (broad appeal)
-            cluster_mean_sim = np.mean(sim_centroids, axis=0)
-
-            # Combined: weight MaxSim much higher to preserve niche interests and avoid noise dilution
-            semantic_scores = (
-                SEMANTIC_MAXSIM_WEIGHT * cluster_max_sim
-                + SEMANTIC_MEANSIM_WEIGHT * cluster_mean_sim
-            )
-
-            # For display score and best_fav_index, use original embeddings (not clusters)
-            # This preserves interpretable "match to specific story" display
-            # NOTE: Don't apply recency weights here - we want pure semantic match for UI
-            # (recency is already factored into ranking via cluster centroids)
-            sim_pos: NDArray[np.float32] = cosine_similarity(
+            # 1. k-Nearest Neighbors Scoring
+            # Instead of centroids, compare candidates to actual history items.
+            # This handles irregular interest shapes better than spherical centroids.
+            
+            # Calculate full similarity matrix: (n_history, n_candidates)
+            # NOTE: Don't apply recency weights yet - we want pure semantic match first
+            sim_matrix: NDArray[np.float32] = cosine_similarity(
                 positive_embeddings, cand_emb
             )
-            max_sim_scores = np.max(sim_pos, axis=0)
-            best_fav_indices = np.argmax(sim_pos, axis=0)
+
+            # Find top K neighbors for each candidate (along axis 0)
+            k = min(len(positive_embeddings), KNN_NEIGHBORS)
+            if k > 0:
+                # np.partition moves the top K elements to the end
+                # We take the last k rows (which are the largest)
+                top_k_sims = np.partition(sim_matrix, -k, axis=0)[-k:, :]
+                # Compute score as mean of top K matches
+                knn_scores = np.mean(top_k_sims, axis=0)
+            else:
+                knn_scores = np.zeros(len(stories), dtype=np.float32)
+
+            semantic_scores = knn_scores
+
+            # For display score and best_fav_index, use the single best match
+            # This preserves interpretable "match to specific story" display
+            max_sim_scores = np.max(sim_matrix, axis=0)
+            best_fav_indices = np.argmax(sim_matrix, axis=0)
 
             # Apply soft sigmoid activation instead of hard threshold
             # This suppresses noise while preserving strong signals

@@ -459,3 +459,59 @@ def test_mmr_with_identical_candidates():
         assert len(results) == 5
         # All indices present
         assert set(r.index for r in results) == {0, 1, 2, 3, 4}
+
+
+def test_knn_scoring_logic():
+    """
+    Invariant: k-NN (k=3) should prefer a candidate with multiple good matches
+    over a candidate with one perfect match and nothing else.
+    """
+    # 3 History items
+    # H1: [1, 0, 0]
+    # H2: [1, 0, 0]
+    # H3: [1, 0, 0]
+    # H4: [0, 1, 0] (Outlier)
+    pos_emb = np.array([
+        [1.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0]
+    ], dtype=np.float32)
+
+    # 2 Candidates
+    # C1: [1, 0, 0] (Matches H1, H2, H3 perfectly -> k=3 score = 1.0)
+    # C2: [0, 1, 0] (Matches H4 perfectly, but H1-H3 are 0.0 -> k=3 score = (1+0+0)/3 = 0.33)
+    cand_emb = np.array([
+        [1.0, 0.0, 0.0],  # C1
+        [0.0, 1.0, 0.0],  # C2
+    ], dtype=np.float32)
+
+    stories = [
+        Story(id=1, title="Consistent", url=None, score=100, time=1000, text_content="C1"),
+        Story(id=2, title="OneHitWonder", url=None, score=100, time=1000, text_content="C2"),
+    ]
+
+    import api.rerank
+    # Ensure constant is set to 3 for this test
+    with pytest.MonkeyPatch().context() as mp:
+        mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: cand_emb)
+        mp.setattr(api.rerank, "KNN_NEIGHBORS", 3)
+
+        results = rank_stories(
+            stories,
+            positive_embeddings=pos_emb,
+            hn_weight=0.0,
+            diversity_lambda=0.0
+        )
+
+        # C1 should win because it has 3 good neighbors
+        # C2 has only 1 good neighbor, so its average top-3 score is dragged down
+        assert results[0].index == 0  # C1
+        assert results[0].hybrid_score > results[1].hybrid_score
+        
+        # Verify scores roughly
+        # C1 raw = 1.0
+        # C2 raw = 0.33
+        # Both go through sigmoid, but ordering should maintain
+        assert results[0].hybrid_score > 0.9  # 1.0 sigmoid is high
+        assert results[1].hybrid_score < results[0].hybrid_score

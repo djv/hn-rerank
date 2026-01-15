@@ -52,6 +52,7 @@ EMBEDDING_MODEL_VERSION = "v6"  # Bump to invalidate cache on model change
 SIMILARITY_MIN = -1.0
 SIMILARITY_MAX = 1.0
 SEMANTIC_MATCH_THRESHOLD = 0.50
+KNN_NEIGHBORS = 3  # Number of neighbors for k-NN scoring
 
 # Multi-Interest Clustering
 MIN_CLUSTERS = 2
