@@ -256,23 +256,33 @@ async def get_best_stories(
         # Tuple: (ts_start, ts_end, is_live_window)
         windows: list[tuple[int, int, bool]] = []
 
-        # 1. Live Window: Now -> Anchor (Last Monday)
+        # 1. Recent Windows: From Anchor (Last Monday) to Now
+        # Split into daily chunks to reduce refetch volume when Live window expires
         if ts_now > anchor_ts:
-            windows.append((anchor_ts, ts_now, True))
+            current_end = ts_now
+            while current_end > anchor_ts:
+                prev_midnight = (current_end // 86400) * 86400
+                if prev_midnight == current_end:
+                    prev_midnight -= 86400
+                
+                ts_start = max(prev_midnight, anchor_ts)
+                is_live = (current_end == ts_now)
+                windows.append((ts_start, current_end, is_live))
+                current_end = ts_start
 
         # 2. Archive Windows: 7-day chunks back from Anchor
         cutoff_ts = int((now - timedelta(days=days)).timestamp())
-        current_end = anchor_ts
-        
-        # Safety limit to prevent infinite loops if days is huge
-        max_archive_weeks = math.ceil(days / 7) + 1
-        
-        for _ in range(max_archive_weeks):
-            if current_end <= cutoff_ts:
-                break
-            current_start = current_end - (7 * 86400)
-            windows.append((current_start, current_end, False))
-            current_end = current_start
+        if cutoff_ts < anchor_ts:
+            current_end = anchor_ts
+            # Safety limit to prevent infinite loops if days is huge
+            max_archive_weeks = math.ceil(days / 7) + 1
+            
+            for _ in range(max_archive_weeks):
+                if current_end <= cutoff_ts:
+                    break
+                current_start = current_end - (7 * 86400)
+                windows.append((current_start, current_end, False))
+                current_end = current_start
 
         # Calculate targets based on duration
         total_duration = sum(end - start for start, end, _ in windows)
