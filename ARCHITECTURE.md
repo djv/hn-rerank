@@ -44,10 +44,9 @@ HN Rerank is a local-first application that personalizes Hacker News content usi
     - Cached by cluster content hash in `.cache/cluster_names.json`.
     - Progress bar shows per-cluster naming progress.
 - **Scoring Algorithm**:
-    - **Cluster MaxSim**: Best match to any interest cluster centroid (95% weight).
-    - **Cluster MeanSim**: Broad appeal across all clusters (5% weight).
+    - **k-NN Scoring**: Calculates the mean similarity of the top 3 nearest neighbors from your history. This handles irregular interest shapes better than centroids.
     - **Soft Sigmoid Activation**: Applies a sigmoid (k=15, threshold=0.35) to semantic scores to suppress noise while preserving strong signals.
-    - **Display Score**: Raw MaxSim to individual stories for interpretable "reason" links.
+    - **Display Score**: Max similarity to any single history item for interpretable "reason" links.
     - **Weighting**: Semantic (95%) + HN Popularity (5%).
 - **Diversity**: Applies Maximal Marginal Relevance (MMR, λ=0.35) to prevent redundant results.
 - **Story TL;DR** (`generate_batch_tldrs()` via Groq API):
