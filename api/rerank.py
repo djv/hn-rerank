@@ -797,6 +797,7 @@ def rank_stories(
     semantic_scores: NDArray[np.float32]
     max_sim_scores: NDArray[np.float32]
     best_fav_indices: NDArray[np.int64]
+    raw_knn_scores: NDArray[np.float32]  # For display (before sigmoid)
 
     # Check if we can/should use classifier
     classifier_success = False
@@ -856,6 +857,14 @@ def rank_stories(
             max_sim_scores = np.max(sim_pos_ui, axis=0)
             best_fav_indices = np.argmax(sim_pos_ui, axis=0)
 
+            # Compute k-NN scores for display
+            k = min(len(positive_embeddings), KNN_NEIGHBORS)
+            if k > 0:
+                top_k_sims = np.partition(sim_pos_ui, -k, axis=0)[-k:, :]
+                raw_knn_scores = np.mean(top_k_sims, axis=0).astype(np.float32)
+            else:
+                raw_knn_scores = np.zeros(len(stories), dtype=np.float32)
+
             classifier_success = True
             # Classifier probabilities are sharp (often >0.9 for dominant clusters).
             # We increase diversity penalty to ensure we skip to the next cluster.
@@ -872,6 +881,7 @@ def rank_stories(
             semantic_scores = np.zeros(len(stories), dtype=np.float32)
             max_sim_scores = np.zeros(len(stories), dtype=np.float32)
             best_fav_indices = np.full(len(stories), -1, dtype=np.int64)
+            raw_knn_scores = np.zeros(len(stories), dtype=np.float32)
         else:
             # 1. k-Nearest Neighbors Scoring
             # Instead of centroids, compare candidates to actual history items.
@@ -894,6 +904,8 @@ def rank_stories(
             else:
                 knn_scores = np.zeros(len(stories), dtype=np.float32)
 
+            # Store raw k-NN scores for display before sigmoid
+            raw_knn_scores = knn_scores.astype(np.float32)
             semantic_scores = knn_scores
 
             # For display score and best_fav_index, use the single best match
@@ -911,13 +923,21 @@ def rank_stories(
             )
 
         # 3. Negative Signal (Penalty) - Only applies in heuristic mode
-        # Contrastive: only penalize when more similar to hidden than liked
+        # Use k-NN for negatives: penalize consistent "not interested" patterns
         if negative_embeddings is not None and len(negative_embeddings) > 0:
-            sim_neg: NDArray[np.float32] = np.max(
-                cosine_similarity(negative_embeddings, cand_emb), axis=0
+            sim_neg_matrix: NDArray[np.float32] = cosine_similarity(
+                negative_embeddings, cand_emb
             )
-            should_penalize = sim_neg > max_sim_scores
-            semantic_scores -= neg_weight * sim_neg * should_penalize
+            # k-NN for negative signals (same k as positive)
+            k_neg = min(len(negative_embeddings), KNN_NEIGHBORS)
+            if k_neg > 0:
+                top_k_neg = np.partition(sim_neg_matrix, -k_neg, axis=0)[-k_neg:, :]
+                knn_neg: NDArray[np.float32] = np.mean(top_k_neg, axis=0)
+            else:
+                knn_neg = np.zeros(len(stories), dtype=np.float32)
+            # Contrastive: compare k-NN scores (pattern vs pattern)
+            should_penalize = knn_neg > raw_knn_scores
+            semantic_scores -= neg_weight * knn_neg * should_penalize
 
     # 4. HN Gravity Score (Log-scaled)
     # We use a log scale so that high-point stories punch through without dominating
@@ -958,6 +978,7 @@ def rank_stories(
                 hybrid_score=float(hybrid_scores[best_idx]),
                 best_fav_index=int(best_fav_indices[best_idx]),
                 max_sim_score=float(max_sim_scores[best_idx]),
+                knn_score=float(raw_knn_scores[best_idx]),
             )
         )
         selected_mask[best_idx] = True

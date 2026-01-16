@@ -529,8 +529,8 @@ async def main() -> None:
         stories_data.append(
             StoryDisplay(
                 id=s.id,
-                # Use MaxSim for the UI label because it represents the "Best Match"
-                match_percent=int(result.max_sim_score * 100),
+                # Use k-NN score for display (mean of top-3 neighbors)
+                match_percent=int(result.knn_score * 100),
                 cluster_name=cluster_name,
                 points=s.score,
                 time_ago=get_relative_time(s.time),

@@ -45,8 +45,9 @@ HN Rerank is a local-first application that personalizes Hacker News content usi
     - Progress bar shows per-cluster naming progress.
 - **Scoring Algorithm**:
     - **k-NN Scoring**: Calculates the mean similarity of the top 3 nearest neighbors from your history. This handles irregular interest shapes better than centroids.
+    - **k-NN Negative Signals**: Hidden stories also use k-NN (top-3 avg). Penalty applied when negative k-NN > positive k-NN (contrastive). Weight: 0.5.
     - **Soft Sigmoid Activation**: Applies a sigmoid (k=15, threshold=0.35) to semantic scores to suppress noise while preserving strong signals.
-    - **Display Score**: Max similarity to any single history item for interpretable "reason" links.
+    - **Display Score**: k-NN score (mean of top-3 neighbors) for consistent ranking/display alignment.
     - **Weighting**: Semantic (95%) + HN Popularity (5%).
 - **Diversity**: Applies Maximal Marginal Relevance (MMR, λ=0.35) to prevent redundant results.
 - **Story TL;DR** (`generate_batch_tldrs()` via Groq API):

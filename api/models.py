@@ -52,6 +52,7 @@ class RankResult:
     hybrid_score: float  # Combined semantic + HN score
     best_fav_index: int  # Index of most similar positive signal (-1 if none)
     max_sim_score: float  # Similarity to best matching positive signal
+    knn_score: float  # Mean similarity to top-k neighbors (for display)
 
 
 @dataclass

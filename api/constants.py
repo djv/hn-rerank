@@ -62,7 +62,7 @@ CLUSTER_SIMILARITY_THRESHOLD = 0.70  # Min similarity to belong to a cluster
 
 # Ranking Weights
 RANKING_HN_WEIGHT = 0.05  # Weight for HN score vs semantic
-RANKING_NEGATIVE_WEIGHT = 0.3  # Penalty for similarity to hidden stories
+RANKING_NEGATIVE_WEIGHT = 0.5  # Penalty for similarity to hidden stories
 RANKING_DIVERSITY_LAMBDA = 0.45  # MMR diversity penalty
 RANKING_DIVERSITY_LAMBDA_CLASSIFIER = 0.6  # Higher diversity when using classifier
 RANKING_MAX_RESULTS = 100  # Max stories to rank via MMR
