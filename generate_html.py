@@ -48,6 +48,10 @@ HTML_TEMPLATE: str = """
                 }}
             }}
         }}
+        function hideCard(id) {{
+            const card = document.querySelector(`[data-id="${{id}}"]`);
+            if (card) card.style.display = 'none';
+        }}
     </script>
     <style type="text/tailwindcss">
         @layer base {{
@@ -171,7 +175,7 @@ def get_relative_time(timestamp: int) -> str:
 
 
 STORY_CARD_TEMPLATE: str = """
-<div class="story-card group">
+<div class="story-card group" data-id="{story_id}">
     <div class="flex items-start justify-between gap-2 mb-1">
         <div class="flex-1 min-w-0">
             <div class="flex items-center gap-2 mb-0.5 flex-wrap">
@@ -186,9 +190,14 @@ STORY_CARD_TEMPLATE: str = """
                 <a href="{url}" target="_blank">{title}</a>
             </h2>
         </div>
-        <a href="{hn_url}" target="_blank" class="shrink-0 p-1 rounded bg-stone-100 text-stone-400 hover:bg-hn hover:text-white transition-all" title="HN">
-            <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2L2 12h3v8h6v-6h2v6h6v-8h3L12 2z"/></svg>
-        </a>
+        <div class="flex gap-1 shrink-0">
+            <a href="{hide_url}" target="_blank" onclick="hideCard({story_id})" class="p-1 rounded bg-stone-100 text-stone-400 hover:bg-red-500 hover:text-white transition-all" title="Hide">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M6 18L18 6M6 6l12 12"/></svg>
+            </a>
+            <a href="{hn_url}" target="_blank" class="p-1 rounded bg-stone-100 text-stone-400 hover:bg-hn hover:text-white transition-all" title="HN">
+                <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2L2 12h3v8h6v-6h2v6h6v-8h3L12 2z"/></svg>
+            </a>
+        </div>
     </div>
     {reason_html}
     {tldr_html}
@@ -217,6 +226,7 @@ def generate_story_html(story: StoryDisplay) -> str:
         tldr_html = f'<div class="text-xs text-stone-600 bg-stone-50 p-2 rounded border border-stone-100 leading-relaxed whitespace-pre-line">{html.escape(story.tldr)}</div>'
 
     return STORY_CARD_TEMPLATE.format(
+        story_id=story.id,
         score=story.match_percent,
         cluster_chip=cluster_chip,
         points=story.points,
@@ -224,6 +234,7 @@ def generate_story_html(story: StoryDisplay) -> str:
         url=story.url or story.hn_url,
         title=html.escape(story.title, quote=False),
         hn_url=story.hn_url,
+        hide_url=f"https://news.ycombinator.com/hide?id={story.id}",
         reason_html=reason_html,
         tldr_html=tldr_html,
     )
