@@ -269,6 +269,11 @@ async def main() -> None:
         action="store_true",
         help="Use a trained Logistic Regression classifier for scoring instead of heuristics (requires hidden signals)",
     )
+    parser.add_argument(
+        "--no-contrastive",
+        action="store_true",
+        help="Always apply negative penalty (default: only when neg_knn > pos_knn)",
+    )
     args: argparse.Namespace = parser.parse_args()
 
     # Implication: Classifier requires negative signals
@@ -458,6 +463,7 @@ async def main() -> None:
             p_emb,
             n_emb,
             use_classifier=args.use_classifier,
+            use_contrastive=not args.no_contrastive,
             progress_callback=rank_cb,
         )
         progress.update(

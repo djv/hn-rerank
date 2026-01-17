@@ -778,6 +778,7 @@ def rank_stories(
     neg_weight: float = RANKING_NEGATIVE_WEIGHT,
     diversity_lambda: float = RANKING_DIVERSITY_LAMBDA,
     use_classifier: bool = False,
+    use_contrastive: bool = True,
     progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> list[RankResult]:
     """
@@ -935,9 +936,12 @@ def rank_stories(
                 knn_neg: NDArray[np.float32] = np.mean(top_k_neg, axis=0)
             else:
                 knn_neg = np.zeros(len(stories), dtype=np.float32)
-            # Contrastive: compare k-NN scores (pattern vs pattern)
-            should_penalize = knn_neg > raw_knn_scores
-            semantic_scores -= neg_weight * knn_neg * should_penalize
+            # Apply penalty: contrastive (only when neg > pos) or always
+            if use_contrastive:
+                should_penalize = knn_neg > raw_knn_scores
+                semantic_scores -= neg_weight * knn_neg * should_penalize
+            else:
+                semantic_scores -= neg_weight * knn_neg
 
     # 4. HN Gravity Score (Log-scaled)
     # We use a log scale so that high-point stories punch through without dominating
