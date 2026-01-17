@@ -274,6 +274,12 @@ async def main() -> None:
         action="store_true",
         help="Only penalize when neg_knn > pos_knn (default: always penalize)",
     )
+    parser.add_argument(
+        "--knn",
+        type=int,
+        default=3,
+        help="Number of neighbors for k-NN scoring (default: 3)",
+    )
     args: argparse.Namespace = parser.parse_args()
 
     # Implication: Classifier requires negative signals
@@ -464,6 +470,7 @@ async def main() -> None:
             n_emb,
             use_classifier=args.use_classifier,
             use_contrastive=args.contrastive,
+            knn_k=args.knn,
             progress_callback=rank_cb,
         )
         progress.update(

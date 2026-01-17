@@ -779,6 +779,7 @@ def rank_stories(
     diversity_lambda: float = RANKING_DIVERSITY_LAMBDA,
     use_classifier: bool = False,
     use_contrastive: bool = False,
+    knn_k: int = KNN_NEIGHBORS,
     progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> list[RankResult]:
     """
@@ -859,7 +860,7 @@ def rank_stories(
             best_fav_indices = np.argmax(sim_pos_ui, axis=0)
 
             # Compute k-NN scores for display
-            k = min(len(positive_embeddings), KNN_NEIGHBORS)
+            k = min(len(positive_embeddings), knn_k)
             if k > 0:
                 top_k_sims = np.partition(sim_pos_ui, -k, axis=0)[-k:, :]
                 raw_knn_scores = np.mean(top_k_sims, axis=0).astype(np.float32)
@@ -895,7 +896,7 @@ def rank_stories(
             )
 
             # Find top K neighbors for each candidate (along axis 0)
-            k = min(len(positive_embeddings), KNN_NEIGHBORS)
+            k = min(len(positive_embeddings), knn_k)
             if k > 0:
                 # np.partition moves the top K elements to the end
                 # We take the last k rows (which are the largest)
@@ -930,7 +931,7 @@ def rank_stories(
                 negative_embeddings, cand_emb
             )
             # k-NN for negative signals (same k as positive)
-            k_neg = min(len(negative_embeddings), KNN_NEIGHBORS)
+            k_neg = min(len(negative_embeddings), knn_k)
             if k_neg > 0:
                 top_k_neg = np.partition(sim_neg_matrix, -k_neg, axis=0)[-k_neg:, :]
                 knn_neg: NDArray[np.float32] = np.mean(top_k_neg, axis=0)
