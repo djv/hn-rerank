@@ -778,7 +778,7 @@ def rank_stories(
     neg_weight: float = RANKING_NEGATIVE_WEIGHT,
     diversity_lambda: float = RANKING_DIVERSITY_LAMBDA,
     use_classifier: bool = False,
-    use_contrastive: bool = True,
+    use_contrastive: bool = False,
     progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> list[RankResult]:
     """
