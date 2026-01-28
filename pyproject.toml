@@ -28,6 +28,8 @@ dependencies = [
     "ty>=0.0.9",
     "types-beautifulsoup4>=4.12.0.20250516",
     "types-tqdm>=4.67.0.20250809",
+    "datasets>=4.5.0",
+    "accelerate>=1.12.0",
 ]
 
 [tool.pytest.ini_options]

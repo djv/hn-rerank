@@ -17,10 +17,17 @@ from sklearn.metrics.pairwise import cosine_similarity
 from transformers import AutoTokenizer
 
 from api.constants import (
+    ADAPTIVE_HN_THRESHOLD_OLD,
+    ADAPTIVE_HN_THRESHOLD_YOUNG,
+    ADAPTIVE_HN_WEIGHT_MAX,
+    ADAPTIVE_HN_WEIGHT_MIN,
+    DEFAULT_CLUSTER_COUNT,
     DEFAULT_EMBEDDING_BATCH_SIZE,
     EMBEDDING_CACHE_DIR,
     EMBEDDING_MIN_CLIP,
     EMBEDDING_MODEL_VERSION,
+    FRESHNESS_HALF_LIFE_HOURS,
+    FRESHNESS_MAX_BOOST,
     HN_SCORE_NORMALIZATION_CAP,
     KNN_NEIGHBORS,
     LLM_CLUSTER_BATCH_SIZE,
@@ -31,8 +38,6 @@ from api.constants import (
     LLM_TLDR_BATCH_SIZE,
     LLM_TLDR_MAX_TOKENS,
     LLM_TLDR_MODEL,
-    MAX_CLUSTERS,
-    MIN_CLUSTERS,
     MIN_SAMPLES_PER_CLUSTER,
     RANKING_DIVERSITY_LAMBDA,
     RANKING_DIVERSITY_LAMBDA_CLASSIFIER,
@@ -248,16 +253,16 @@ def cluster_interests(
 def cluster_interests_with_labels(
     embeddings: NDArray[np.float32],
     weights: Optional[NDArray[np.float32]] = None,
+    n_clusters: int = DEFAULT_CLUSTER_COUNT,
 ) -> tuple[NDArray[np.float32], NDArray[np.int32]]:
     """
     Cluster user interest embeddings using Agglomerative Clustering.
-    Uses silhouette score to find optimal cluster count.
+    Uses fixed k (default 12); LLM naming handles semantic coherence.
     Returns (centroids, labels) where:
       - centroids: shape (n_clusters, embedding_dim)
       - labels: shape (n_samples,) cluster assignment per sample
     """
     from sklearn.cluster import AgglomerativeClustering
-    from sklearn.metrics import silhouette_score
 
     n_samples = len(embeddings)
     if n_samples == 0:
@@ -272,59 +277,27 @@ def cluster_interests_with_labels(
             centroid = np.mean(embeddings, axis=0).reshape(1, -1)
         return centroid.astype(np.float32), labels
 
-    # Normalize embeddings for cosine-like behavior with euclidean distance
+    # Normalize embeddings for cosine-like behavior
     norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
     norms = np.maximum(norms, 1e-9)
     normalized = embeddings / norms
 
-    # Search for optimal k with best silhouette score
-    # Higher multipliers = more granular clusters (better topic separation)
-    min_k = max(MIN_CLUSTERS, int(np.sqrt(n_samples) * 1.2))
-    max_k = min(
-        MAX_CLUSTERS,
-        int(np.sqrt(n_samples) * 3.5),
-        n_samples // MIN_SAMPLES_PER_CLUSTER,
+    # Fixed k, capped by available samples
+    k = min(n_clusters, n_samples // MIN_SAMPLES_PER_CLUSTER)
+    k = max(k, 1)  # At least 1 cluster
+
+    agg = AgglomerativeClustering(
+        n_clusters=k,
+        metric="cosine",
+        linkage="average",
     )
-
-    best_labels: NDArray[np.int32] = np.zeros(n_samples, dtype=np.int32)
-    best_score = -1.0
-    best_k = min_k
-
-    # Search all k values, pick the one with highest silhouette score
-    # Bias toward more clusters: only pick fewer if significantly better (> 0.03)
-    for k in range(min_k, max_k + 1):
-        agg = AgglomerativeClustering(
-            n_clusters=k,
-            metric="cosine",
-            linkage="average",
-        )
-        labels = agg.fit_predict(normalized)
-        score = float(silhouette_score(normalized, labels))
-        # Prefer more clusters unless fewer is significantly better
-        if score > best_score + 0.03 or (score >= best_score - 0.01 and k > best_k):
-            best_score = score
-            best_k = k
-            best_labels = labels.astype(np.int32)
-
-    # Renumber labels to be consecutive (0, 1, 2...)
-    # Note: We no longer force-merge tiny clusters - let them exist naturally
-    # Merging can leave gaps (e.g., 0, 2, 3 if 1 was merged)
-    unique_final = sorted(set(best_labels))
-    mapping = {old: new for new, old in enumerate(unique_final)}
-    # Use vectorized mapping
-    # Create a lookup array for fast mapping
-    if unique_final:
-        max_label = max(unique_final)
-        lookup = np.zeros(max_label + 1, dtype=np.int32)
-        for old, new in mapping.items():
-            lookup[old] = new
-        best_labels = lookup[best_labels]
+    labels = agg.fit_predict(normalized).astype(np.int32)
 
     # Compute centroids from labels (in original embedding space)
-    unique_labels = sorted(set(best_labels))
+    unique_labels = sorted(set(labels))
     centroids = []
     for lbl in unique_labels:
-        mask = best_labels == lbl
+        mask = labels == lbl
         if weights is not None:
             cluster_weights = weights[mask]
             centroid = np.average(embeddings[mask], axis=0, weights=cluster_weights)
@@ -332,7 +305,7 @@ def cluster_interests_with_labels(
             centroid = embeddings[mask].mean(axis=0)
         centroids.append(centroid)
 
-    return np.array(centroids, dtype=np.float32), best_labels
+    return np.array(centroids, dtype=np.float32), labels
 
 
 # Global rate limiter state
@@ -561,16 +534,15 @@ async def generate_batch_cluster_names(
             batch_prompts.append(f"Cluster {cid}: {json.dumps(cluster_data)}")
 
         full_prompt = f"""
-Name each cluster with a 1-4 word COMMON theme.
+Name each cluster with a SPECIFIC, TECHNICAL 2-4 word label.
 
 Rules:
-- Name MUST fit EVERY story in the group, not just the top one
-- If stories share a broader category (bikes, transit, maps → "Urban Mobility"), use that
-- Only list subtopics if truly unrelated: "Space, Bio & AI"
-- Avoid vague terms: "Technology", "News", "Interesting", "Analysis"
-- Good: "Distributed Systems", "Urban Transit", "Career Advice"
+- NO generic terms like "Technology", "Software", "Computers", "Analysis", "Misc".
+- BE PRECISE: "Rust Memory Safety" > "Programming", "PostgreSQL Performance" > "Databases".
+- IF MIXED: Combine top 2 topics (e.g., "AI & Distributed Systems").
+- USE key terms found in the titles (e.g., "LLM", "Wasm", "k8s").
 
-Return JSON where keys are cluster IDs: {{ "0": "Theme", "1": "Theme" }}
+Return JSON where keys are cluster IDs: {{ "0": "Label", "1": "Label" }}
 
 Groups:
 {chr(10).join(batch_prompts)}
@@ -700,22 +672,29 @@ async def generate_batch_tldrs(
     completed_initial = len(stories) - total_to_gen
 
     for i in range(0, total_to_gen, LLM_TLDR_BATCH_SIZE):
-        batch = to_generate[i : i + LLM_TLDR_BATCH_SIZE]
+        original_batch = to_generate[i : i + LLM_TLDR_BATCH_SIZE]
+        pending_stories = {int(s["id"]): s for s in original_batch}
 
-        stories_formatted = []
-        for s in batch:
-            title = s.get("title", "Untitled")
-            comments = s.get("comments", [])
-            context = f"ID: {s['id']}\nTitle: {title}"
-            if comments:
-                context += "\nComments:\n" + "\n".join(
-                    f"- {c[:300]}" for c in comments[:4]
-                )
-            stories_formatted.append(context)
+        # Try up to 2 times to get all summaries for this batch
+        for attempt in range(2):
+            if not pending_stories:
+                break
 
-        batch_context = "\n\n---\n\n".join(stories_formatted)
+            current_batch = list(pending_stories.values())
+            stories_formatted = []
+            for s in current_batch:
+                title = s.get("title", "Untitled")
+                comments = s.get("comments", [])
+                context = f"ID: {s['id']}\nTitle: {title}"
+                if comments:
+                    context += "\nComments:\n" + "\n".join(
+                        f"- {c[:300]}" for c in comments[:4]
+                    )
+                stories_formatted.append(context)
 
-        prompt = f"""
+            batch_context = "\n\n---\n\n".join(stories_formatted)
+
+            prompt = f"""
 Summarize the discussion and technical insights in 2-3 sentences.
 CRITICAL: Do NOT repeat the title. The user sees it. Do NOT say "This story is about...".
 
@@ -733,34 +712,35 @@ Stories:
 
 JSON:"""
 
-        try:
-            text = await _generate_with_retry(
-                model=LLM_TLDR_MODEL,
-                contents=prompt,
-                config={
-                    "temperature": LLM_TEMPERATURE,
-                    "max_output_tokens": LLM_TLDR_MAX_TOKENS,
-                    "response_mime_type": "application/json",
-                },
-            )
+            try:
+                text = await _generate_with_retry(
+                    model=LLM_TLDR_MODEL,
+                    contents=prompt,
+                    config={
+                        "temperature": LLM_TEMPERATURE,
+                        "max_output_tokens": LLM_TLDR_MAX_TOKENS,
+                        "response_mime_type": "application/json",
+                    },
+                )
 
-            if text:
-                batch_results = _safe_json_loads(text)
-                for sid_str, tldr in batch_results.items():
-                    try:
-                        sid = int(sid_str)
-                        tldr_clean = tldr.strip().strip('"').strip("'")
-                        results[sid] = tldr_clean
-                        cache[str(sid)] = tldr_clean
-                    except (ValueError, TypeError) as e:
-                        logger.debug(f"Failed to parse TLDR for {sid_str}: {e}")
-                        continue
+                if text:
+                    batch_results = _safe_json_loads(text)
+                    for sid_str, tldr in batch_results.items():
+                        try:
+                            sid = int(sid_str)
+                            tldr_clean = tldr.strip().strip('"').strip("'")
+                            if sid in pending_stories:
+                                results[sid] = tldr_clean
+                                cache[str(sid)] = tldr_clean
+                                del pending_stories[sid]
+                        except (ValueError, TypeError) as e:
+                            logger.debug(f"Failed to parse TLDR for {sid_str}: {e}")
+                            continue
+            except Exception as e:
+                logger.warning(f"TLDR batch generation failed (attempt {attempt+1}): {e}")
 
-            if progress_callback:
-                progress_callback(completed_initial + i + len(batch), len(stories))
-
-        except Exception as e:
-            logger.warning(f"TLDR batch generation failed: {e}")
+        if progress_callback:
+            progress_callback(completed_initial + i + len(original_batch), len(stories))
 
     _save_tldr_cache(cache)
     return {
@@ -863,7 +843,7 @@ def rank_stories(
             k = min(len(positive_embeddings), knn_k)
             if k > 0:
                 top_k_sims = np.partition(sim_pos_ui, -k, axis=0)[-k:, :]
-                raw_knn_scores = np.mean(top_k_sims, axis=0).astype(np.float32)
+                raw_knn_scores = np.median(top_k_sims, axis=0).astype(np.float32)
             else:
                 raw_knn_scores = np.zeros(len(stories), dtype=np.float32)
 
@@ -901,8 +881,8 @@ def rank_stories(
                 # np.partition moves the top K elements to the end
                 # We take the last k rows (which are the largest)
                 top_k_sims = np.partition(sim_matrix, -k, axis=0)[-k:, :]
-                # Compute score as mean of top K matches
-                knn_scores = np.mean(top_k_sims, axis=0)
+                # Use median for outlier robustness (single bad match won't skew score)
+                knn_scores = np.median(top_k_sims, axis=0)
             else:
                 knn_scores = np.zeros(len(stories), dtype=np.float32)
 
@@ -934,7 +914,7 @@ def rank_stories(
             k_neg = min(len(negative_embeddings), knn_k)
             if k_neg > 0:
                 top_k_neg = np.partition(sim_neg_matrix, -k_neg, axis=0)[-k_neg:, :]
-                knn_neg: NDArray[np.float32] = np.mean(top_k_neg, axis=0)
+                knn_neg: NDArray[np.float32] = np.median(top_k_neg, axis=0)
             else:
                 knn_neg = np.zeros(len(stories), dtype=np.float32)
             # Apply penalty: contrastive (only when neg > pos) or always
@@ -951,12 +931,47 @@ def rank_stories(
         max(points.max(), HN_SCORE_NORMALIZATION_CAP)
     )
 
-    # 5. Hybrid Score
-    hybrid_scores: NDArray[np.float32] = (
-        1 - hn_weight
-    ) * semantic_scores + hn_weight * hn_scores
+    # 5. Compute story ages for adaptive weighting
+    now = time.time()
+    ages_hours: NDArray[np.float64] = np.array(
+        [(now - s.time) / 3600.0 for s in stories]
+    )
 
-    # 6. Diversity (MMR)
+    # 6. Adaptive HN weight based on age (only if hn_weight > 0)
+    # hn_weight=0 means pure semantic mode (for testing invariants)
+    if hn_weight > 0:
+        # Young stories (<6h): trust semantic more (low HN weight)
+        # Old stories (>48h): trust HN score more (higher HN weight)
+        adaptive_t = np.clip(
+            (ages_hours - ADAPTIVE_HN_THRESHOLD_YOUNG)
+            / (ADAPTIVE_HN_THRESHOLD_OLD - ADAPTIVE_HN_THRESHOLD_YOUNG),
+            0.0,
+            1.0,
+        )
+        hn_weights: NDArray[np.float64] = (
+            ADAPTIVE_HN_WEIGHT_MIN
+            + adaptive_t * (ADAPTIVE_HN_WEIGHT_MAX - ADAPTIVE_HN_WEIGHT_MIN)
+        )
+
+        # 7. Hybrid Score (per-story adaptive weighting)
+        hybrid_scores: NDArray[np.float32] = (
+            (1 - hn_weights) * semantic_scores + hn_weights * hn_scores
+        ).astype(np.float32)
+
+        # 8. Freshness boost (exponential decay)
+        # Newer stories get a boost; score halves every FRESHNESS_HALF_LIFE_HOURS
+        freshness: NDArray[np.float64] = np.power(
+            2.0, -ages_hours / FRESHNESS_HALF_LIFE_HOURS
+        )
+        freshness = np.clip(freshness, 0.0, 1.0)
+        hybrid_scores = hybrid_scores + (FRESHNESS_MAX_BOOST * freshness).astype(
+            np.float32
+        )
+    else:
+        # Pure semantic mode (hn_weight=0): no HN score, no freshness
+        hybrid_scores = semantic_scores.astype(np.float32)
+
+    # 9. Diversity (MMR)
     results: list[RankResult] = []
     selected_mask: NDArray[np.bool_] = np.zeros(len(cand_emb), dtype=bool)
     cand_sim: NDArray[np.float32] = cosine_similarity(cand_emb, cand_emb)

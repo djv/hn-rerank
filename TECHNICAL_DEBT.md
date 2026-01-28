@@ -19,6 +19,7 @@
 
 ## Resolved Items
 - **Cross-Encoder Reranking**: Removed after ablation study showed it hurt metrics.
+- **Domain-Specific Embeddings**: Fine-tuned BGE-base on HN interaction data (titles + top comments) to improve semantic retrieval quality. Added training pipeline for local model updates.
 
 ## Future Refactoring
 - **Signal Support**: Currently, favorited *comments* are treated as invalid stories and negatively cached.

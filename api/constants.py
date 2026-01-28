@@ -28,7 +28,7 @@ STORY_CACHE_MAX_FILES = 25000  # LRU eviction threshold
 EXTERNAL_REQUEST_SEMAPHORE = 10  # Reduced to avoid API throttling
 
 # Comment Pool
-MIN_STORY_COMMENTS = 10  # Filter in Algolia query + fetch validation
+MIN_STORY_COMMENTS = 15  # Filter in Algolia query + fetch validation
 MAX_COMMENTS_COLLECTED = 100
 TOP_COMMENTS_FOR_RANKING = 50
 TOP_COMMENTS_FOR_UI = 10
@@ -46,32 +46,43 @@ CANDIDATE_FETCH_COUNT = 200
 # Inference
 DEFAULT_EMBEDDING_BATCH_SIZE = 8
 EMBEDDING_MIN_CLIP = 1e-9
-EMBEDDING_MODEL_VERSION = "v6"  # Bump to invalidate cache on model change
+EMBEDDING_MODEL_VERSION = "v8-base"  # Reset to base model after tuning experiment
 
 # Similarity Bounds
 SIMILARITY_MIN = -1.0
 SIMILARITY_MAX = 1.0
 SEMANTIC_MATCH_THRESHOLD = 0.50
-KNN_NEIGHBORS = 3  # Number of neighbors for k-NN scoring
+KNN_NEIGHBORS = 2  # Optimized: 2 neighbors provide best stability
 
 # Multi-Interest Clustering
+DEFAULT_CLUSTER_COUNT = 12  # Fixed k; LLM naming handles coherence
 MIN_CLUSTERS = 2
 MAX_CLUSTERS = 50
 MIN_SAMPLES_PER_CLUSTER = 2  # Smaller clusters = more granularity
 CLUSTER_SIMILARITY_THRESHOLD = 0.70  # Min similarity to belong to a cluster
 
 # Ranking Weights
-RANKING_HN_WEIGHT = 0.05  # Weight for HN score vs semantic
+RANKING_HN_WEIGHT = 0.05  # Weight for HN score vs semantic (legacy, unused with adaptive)
 RANKING_NEGATIVE_WEIGHT = 0.5  # Penalty for similarity to hidden stories
 RANKING_DIVERSITY_LAMBDA = 0.45  # MMR diversity penalty
 RANKING_DIVERSITY_LAMBDA_CLASSIFIER = 0.6  # Higher diversity when using classifier
-RANKING_MAX_RESULTS = 100  # Max stories to rank via MMR
+RANKING_MAX_RESULTS = 300  # Max stories to rank via MMR (increased to ensure coverage)
+
+# Adaptive HN Weight (age-based)
+ADAPTIVE_HN_WEIGHT_MIN = 0.05  # For stories < 6h old (trust semantic)
+ADAPTIVE_HN_WEIGHT_MAX = 0.25  # For stories > 48h old (trust HN score)
+ADAPTIVE_HN_THRESHOLD_YOUNG = 6  # Hours - below this, use min weight
+ADAPTIVE_HN_THRESHOLD_OLD = 48  # Hours - above this, use max weight
+
+# Freshness Decay
+FRESHNESS_HALF_LIFE_HOURS = 24.0  # Score halves every 24 hours
+FRESHNESS_MAX_BOOST = 0.15  # Max freshness contribution to hybrid score
 
 # Semantic Scoring
 SEMANTIC_MAXSIM_WEIGHT = 0.95  # Weight for max cluster similarity
 SEMANTIC_MEANSIM_WEIGHT = 0.05  # Weight for mean cluster similarity
 SEMANTIC_SIGMOID_K = 15.0  # Steepness of sigmoid activation
-SEMANTIC_SIGMOID_THRESHOLD = 0.35  # Center point of sigmoid
+SEMANTIC_SIGMOID_THRESHOLD = 0.30  # Optimized: Lower threshold captures more relevant signals
 HN_SCORE_NORMALIZATION_CAP = 500  # Cap for log normalization of HN points
 
 # LLM Configuration

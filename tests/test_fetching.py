@@ -79,7 +79,7 @@ async def test_get_best_stories_filtering():
                 "text": f"Comment {i} for story {sid} with enough text to pass the minimum length filter.",
                 "children": [],
             }
-            for i in range(12)
+            for i in range(16)
         ]
         respx.get(f"{ALGOLIA_BASE}/items/{sid}").mock(
             return_value=Response(
@@ -145,7 +145,7 @@ async def test_get_best_stories_pagination():
             "text": f"Comment {i} with enough text to pass the minimum length filter requirement which is fifty characters or more.",
             "children": [],
         }
-        for i in range(12)
+        for i in range(16)
     ]
     respx.get(url__regex=rf"{ALGOLIA_BASE}/items/\d+").mock(
         return_value=Response(
@@ -235,7 +235,7 @@ async def test_get_best_stories_partial_failure():
             "text": f"Comment {i} with enough text to pass the minimum length filter.",
             "children": [],
         }
-        for i in range(12)
+        for i in range(16)
     ]
     for sid in ["1", "2"]:
         respx.get(f"{ALGOLIA_BASE}/items/{sid}").mock(

@@ -53,13 +53,13 @@ HTML_TEMPLATE: str = """
         @layer base {{
             body {{ @apply bg-stone-50 text-stone-800 antialiased; }}
         }}
-        .story-card {{ @apply bg-white border border-stone-200 rounded-lg p-3 shadow-sm transition-all hover:border-hn hover:shadow-md; }}
-        .cluster-chip {{ @apply px-2 py-1 bg-white border border-stone-200 rounded-full text-xs text-stone-600 hover:border-hn hover:text-hn transition-colors cursor-default; }}
+        .story-card {{ @apply bg-white border border-stone-200 rounded-lg p-2.5 shadow-sm transition-all hover:border-hn hover:shadow-md h-full flex flex-col; }}
+        .cluster-chip {{ @apply px-1.5 py-0.5 bg-stone-50 border border-stone-200 rounded text-[10px] font-medium text-stone-600 hover:border-hn hover:text-hn transition-colors cursor-default whitespace-nowrap; }}
     </style>
 </head>
-<body class="p-2 md:p-4">
-    <div class="max-w-3xl mx-auto">
-        <header class="mb-4 border-b border-stone-200 pb-3 flex items-end justify-between">
+<body class="p-2 md:p-4 bg-stone-100">
+    <div class="max-w-7xl mx-auto">
+        <header class="mb-4 border-b border-stone-300 pb-3 flex items-end justify-between bg-white p-4 rounded-lg shadow-sm">
             <div>
                 <h1 class="text-2xl font-black text-stone-900 tracking-tight">
                     HN <span class="text-hn">Rerank</span>
@@ -69,7 +69,7 @@ HTML_TEMPLATE: str = """
             <p class="text-[10px] text-stone-400 font-mono">{timestamp}</p>
         </header>
 
-        <div class="grid gap-2">
+        <div class="grid gap-3 grid-cols-2 items-start">
             {stories_html}
         </div>
 
@@ -172,24 +172,18 @@ def get_relative_time(timestamp: int) -> str:
 
 STORY_CARD_TEMPLATE: str = """
 <div class="story-card group">
-    <div class="flex items-start justify-between gap-2 mb-1">
-        <div class="flex-1 min-w-0">
-            <div class="flex items-center gap-2 mb-0.5 flex-wrap">
-                <span class="px-1.5 py-0.5 rounded bg-hn/10 text-hn text-[10px] font-bold">
-                    {score}%
-                </span>
-                {cluster_chip}
-                <span class="text-[10px] text-stone-400 font-mono">{points} pts</span>
-                <span class="text-[10px] text-stone-400 font-mono">{time_ago}</span>
-            </div>
-            <h2 class="text-sm font-semibold text-stone-900 group-hover:text-hn transition-colors leading-snug">
-                <a href="{url}" target="_blank">{title}</a>
-            </h2>
-        </div>
-        <a href="{hn_url}" target="_blank" class="shrink-0 p-1 rounded bg-stone-100 text-stone-400 hover:bg-hn hover:text-white transition-all" title="HN">
-            <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2L2 12h3v8h6v-6h2v6h6v-8h3L12 2z"/></svg>
-        </a>
+    <div class="flex items-center gap-2 mb-0.5 flex-wrap">
+        <span class="px-1.5 py-0.5 rounded bg-hn/10 text-hn text-[10px] font-bold">
+            {score}%
+        </span>
+        {cluster_chip}
+        <span class="text-[10px] text-stone-400 font-mono">{points} pts</span>
+        <span class="text-[10px] text-stone-400 font-mono">{time_ago}</span>
     </div>
+    <h2 class="text-sm font-semibold text-stone-900 leading-snug mb-1">
+        <a href="{url}" target="_blank" class="hover:text-hn transition-colors">{title}</a>
+        <a href="{hn_url}" target="_blank" class="ml-1.5 text-[10px] font-normal text-stone-400 hover:text-hn transition-colors" title="Comments">(discuss)</a>
+    </h2>
     {reason_html}
     {tldr_html}
 </div>
@@ -494,23 +488,32 @@ async def main() -> None:
     stories_data: list[StoryDisplay] = []
     seen_urls: set[str] = set()
     seen_titles: set[str] = set()
+    seen_clusters: set[int] = set()
 
-    for result in ranked:
-        if len(stories_data) >= args.count:
-            break
+    def get_cluster_id(result: RankResult) -> int:
+        """Get cluster ID for a result (-1 if none)."""
+        if (
+            result.best_fav_index != -1
+            and result.best_fav_index < len(pos_stories)
+            and cluster_labels is not None
+        ):
+            return int(cluster_labels[result.best_fav_index])
+        elif result.index in cand_cluster_map:
+            return cand_cluster_map[result.index]
+        return -1
 
+    def make_story_display(result: RankResult) -> Optional[StoryDisplay]:
+        """Create StoryDisplay from RankResult, handling dedup."""
         s: Story = cands[result.index]
 
-        # Deduplication logic
         url: Optional[str] = s.url
         title: str = s.title
 
-        # Normalize for checking
         norm_url: str = str(url).split("?")[0] if url else f"hn:{s.id}"
         norm_title: str = title.lower().strip() if title else ""
 
         if norm_url in seen_urls or norm_title in seen_titles:
-            continue
+            return None
 
         if url:
             seen_urls.add(norm_url)
@@ -524,37 +527,46 @@ async def main() -> None:
             reason = fav_story.title
             reason_url = f"https://news.ycombinator.com/item?id={fav_story.id}"
 
-        # Get cluster name for this candidate based on the matching history item
-        cluster_name: str = ""
-        if (
-            result.best_fav_index != -1
-            and result.best_fav_index < len(pos_stories)
-            and cluster_labels is not None
-        ):
-            cid = int(cluster_labels[result.best_fav_index])
-            cluster_name = cluster_names.get(cid, "")
-        elif result.index in cand_cluster_map:
-            # Fallback to candidate's own cluster if no specific favorite match
-            cid = cand_cluster_map[result.index]
-            if cid != -1:  # -1 means below similarity threshold
-                cluster_name = cluster_names.get(cid, "")
+        cid = get_cluster_id(result)
+        cluster_name: str = cluster_names.get(cid, "") if cid != -1 else ""
 
-        stories_data.append(
-            StoryDisplay(
-                id=s.id,
-                # Use k-NN score for display (mean of top-3 neighbors)
-                match_percent=int(result.knn_score * 100),
-                cluster_name=cluster_name,
-                points=s.score,
-                time_ago=get_relative_time(s.time),
-                url=s.url,
-                title=s.title or "Untitled",
-                hn_url=f"https://news.ycombinator.com/item?id={s.id}",
-                reason=reason,
-                reason_url=reason_url,
-                comments=list(s.comments),
-            )
+        return StoryDisplay(
+            id=s.id,
+            match_percent=int(result.knn_score * 100),
+            cluster_name=cluster_name,
+            points=s.score,
+            time_ago=get_relative_time(s.time),
+            url=s.url,
+            title=s.title or "Untitled",
+            hn_url=f"https://news.ycombinator.com/item?id={s.id}",
+            reason=reason,
+            reason_url=reason_url,
+            comments=list(s.comments),
         )
+
+    # Phase 1: Ensure top story from each cluster is included
+    used_indices: set[int] = set()
+    for result in ranked:
+        cid = get_cluster_id(result)
+        if cid != -1 and cid not in seen_clusters:
+            sd = make_story_display(result)
+            if sd:
+                stories_data.append(sd)
+                seen_clusters.add(cid)
+                used_indices.add(result.index)
+        if len(seen_clusters) >= len(cluster_names):
+            break  # All clusters represented
+
+    # Phase 2: Fill remaining slots with best remaining stories
+    for result in ranked:
+        if len(stories_data) >= args.count:
+            break
+        if result.index in used_indices:
+            continue
+        sd = make_story_display(result)
+        if sd:
+            stories_data.append(sd)
+            used_indices.add(result.index)
 
     # Generate TL;DRs for stories
     print("[*] Generating content via LLM...")

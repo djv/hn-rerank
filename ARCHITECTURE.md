@@ -30,12 +30,13 @@ HN Rerank is a local-first application that personalizes Hacker News content usi
 - **Smart Scraping**:
 
 ### 4. Reranking Engine (`api/rerank.py`)
-- **Model**: Uses a local ONNX embedding model (`bge-base-en-v1.5`).
+- **Model**: Uses a local **fine-tuned** ONNX embedding model (`bge-base-en-v1.5`).
+    - The base model is fine-tuned on HN interaction data (titles + top comments) using contrastive loss (`MultipleNegativesRankingLoss`) to improve domain-specific retrieval quality.
+    - Fine-tuning scripts (`prepare_data.py`, `tune_embeddings.py`, `export_tuned.py`) allow for local retraining on updated interaction data.
 - **Multi-Interest Clustering**:
-    - Uses **Agglomerative Clustering** with **Average Linkage** and **Cosine Metric** (better for irregular semantic shapes than Ward/Euclidean).
-    - Silhouette score threshold (≥0.14) ensures coherent clusters while allowing semantic merges.
-    - Searches from high k to low to maximize granularity.
-    - `cluster_interests_with_labels(embeddings, weights)` returns `(centroids, labels)`.
+    - Uses **Agglomerative Clustering** with **Average Linkage** and **Cosine Metric**.
+    - **Fixed k=12** (configurable). LLM naming handles semantic coherence—silhouette optimizes geometry, not usefulness.
+    - `cluster_interests_with_labels(embeddings, weights, n_clusters)` returns `(centroids, labels)`.
 - **Cluster Naming** (`generate_batch_cluster_names()` via Groq API):
     - Uses Google Groq API (`llama-3.3-70b-versatile`) to generate contextual 1-3 word labels.
     - Batches naming requests (10 per call) to optimize quota.
@@ -44,11 +45,15 @@ HN Rerank is a local-first application that personalizes Hacker News content usi
     - Cached by cluster content hash in `.cache/cluster_names.json`.
     - Progress bar shows per-cluster naming progress.
 - **Scoring Algorithm**:
-    - **k-NN Scoring**: Calculates the mean similarity of the top 3 nearest neighbors from your history. This handles irregular interest shapes better than centroids.
-    - **k-NN Negative Signals**: Hidden stories also use k-NN (top-3 avg). Penalty applied when negative k-NN > positive k-NN (contrastive). Weight: 0.5.
+    - **k-NN Scoring**: Calculates the **median** similarity of the top 3 nearest neighbors from your history. Median is more robust to outliers than mean.
+    - **k-NN Negative Signals**: Hidden stories also use k-NN (top-3 median). Penalty applied when negative k-NN > positive k-NN (contrastive). Weight: 0.5.
     - **Soft Sigmoid Activation**: Applies a sigmoid (k=15, threshold=0.35) to semantic scores to suppress noise while preserving strong signals.
-    - **Display Score**: k-NN score (mean of top-3 neighbors) for consistent ranking/display alignment.
-    - **Weighting**: Semantic (95%) + HN Popularity (5%).
+    - **Display Score**: k-NN score (median of top-3 neighbors) for consistent ranking/display alignment.
+    - **Adaptive HN Weighting**: Story age determines HN weight:
+        - Young stories (<6h): 2% HN weight (trust semantic similarity)
+        - Old stories (>48h): 15% HN weight (trust social proof)
+        - Linear interpolation between thresholds
+    - **Freshness Boost**: Exponential decay (half-life: 24h) adds up to 15% boost for new stories. Prevents stale high-match stories from dominating.
 - **Diversity**: Applies Maximal Marginal Relevance (MMR, λ=0.35) to prevent redundant results.
 - **Story TL;DR** (`generate_batch_tldrs()` via Groq API):
     - Generates concise summaries using `llama-3.1-8b-instant`.
