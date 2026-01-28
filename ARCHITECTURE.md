@@ -44,11 +44,13 @@ HN Rerank is a local-first application that personalizes Hacker News content usi
     - Falls back to "Misc" if API unavailable.
     - Cached by cluster content hash in `.cache/cluster_names.json`.
     - Progress bar shows per-cluster naming progress.
-- **Scoring Algorithm**:
-    - **k-NN Scoring**: Calculates the **median** similarity of the top 3 nearest neighbors from your history. Median is more robust to outliers than mean.
-    - **k-NN Negative Signals**: Hidden stories also use k-NN (top-3 median). Penalty applied when negative k-NN > positive k-NN (contrastive). Weight: 0.5.
-    - **Soft Sigmoid Activation**: Applies a sigmoid (k=15, threshold=0.35) to semantic scores to suppress noise while preserving strong signals.
-    - **Display Score**: k-NN score (median of top-3 neighbors) for consistent ranking/display alignment.
+- **Scoring Algorithm** (two modes):
+    - **Classifier Mode (default)**: Logistic Regression trained on positive (upvoted) and negative (hidden) embeddings. Provides 3x better NDCG than k-NN heuristics when sufficient hidden signals exist.
+    - **k-NN Fallback**: When classifier is disabled or insufficient data:
+        - Calculates the **median** similarity of the top 2 nearest neighbors from your history.
+        - Hidden stories also use k-NN (top-2 median). Penalty applied when negative k-NN > positive k-NN (contrastive). Weight: 0.5.
+    - **Soft Sigmoid Activation**: Applies a sigmoid (k=15, threshold=0.30) to semantic scores to suppress noise while preserving strong signals.
+    - **Display Score**: k-NN score (median of top-k neighbors) for consistent ranking/display alignment.
     - **Adaptive HN Weighting**: Story age determines HN weight:
         - Young stories (<6h): 2% HN weight (trust semantic similarity)
         - Old stories (>48h): 15% HN weight (trust social proof)

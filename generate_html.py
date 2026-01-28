@@ -25,6 +25,7 @@ from api.constants import (
     ALGOLIA_DEFAULT_DAYS,
     CANDIDATE_FETCH_COUNT,
     CLUSTER_SIMILARITY_THRESHOLD,
+    KNN_NEIGHBORS,
     MAX_USER_STORIES,
 )
 
@@ -256,12 +257,26 @@ async def main() -> None:
     parser.add_argument(
         "--use-hidden-signal",
         action="store_true",
-        help="Use hidden stories as negative signals (default: False, only excludes them)",
+        default=True,
+        help="Use hidden stories as negative signals (default: True)",
+    )
+    parser.add_argument(
+        "--no-hidden-signal",
+        action="store_false",
+        dest="use_hidden_signal",
+        help="Don't use hidden stories as negative signals, only exclude them",
     )
     parser.add_argument(
         "--use-classifier",
         action="store_true",
-        help="Use a trained Logistic Regression classifier for scoring instead of heuristics (requires hidden signals)",
+        default=True,
+        help="Use Logistic Regression classifier (default: True, disable with --no-classifier)",
+    )
+    parser.add_argument(
+        "--no-classifier",
+        action="store_false",
+        dest="use_classifier",
+        help="Disable classifier, use k-NN heuristics only",
     )
     parser.add_argument(
         "--contrastive",
@@ -271,8 +286,8 @@ async def main() -> None:
     parser.add_argument(
         "--knn",
         type=int,
-        default=3,
-        help="Number of neighbors for k-NN scoring (default: 3)",
+        default=KNN_NEIGHBORS,
+        help=f"Number of neighbors for k-NN scoring (default: {KNN_NEIGHBORS})",
     )
     args: argparse.Namespace = parser.parse_args()
 
