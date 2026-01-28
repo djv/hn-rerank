@@ -38,6 +38,8 @@ async def main():
     parser.add_argument("--k", type=int, default=30, help="Cutoff for metrics")
     parser.add_argument("--candidates", type=int, default=200, help="Candidate pool size")
     parser.add_argument("--classifier", action="store_true", help="Use classifier mode with hidden stories")
+    parser.add_argument("--recency", action="store_true", help="Apply recency weighting to train embeddings")
+    parser.add_argument("--diversity", type=float, default=0.45, help="MMR diversity lambda")
     args = parser.parse_args()
 
     client = HNClient()
@@ -95,6 +97,17 @@ async def main():
         train_texts = [s.text_content for s in train_stories]
         train_emb: NDArray[np.float32] = get_embeddings(train_texts)
 
+        # Compute recency weights if enabled
+        pos_weights: NDArray[np.float32] | None = None
+        if args.recency and train_stories:
+            import time as time_mod
+            now = time_mod.time()
+            half_life = 90 * 24 * 3600  # 90 days half-life
+            times = np.array([s.time for s in train_stories], dtype=np.float32)
+            ages = now - times
+            pos_weights = np.exp(-ages * np.log(2) / half_life).astype(np.float32)
+            print(f"Recency weights: min={pos_weights.min():.2f}, max={pos_weights.max():.2f}")
+
         # Build negative embeddings if using classifier
         neg_emb: NDArray[np.float32] | None = None
         if args.classifier and neg_stories:
@@ -124,7 +137,9 @@ async def main():
             candidates,
             positive_embeddings=train_emb,
             negative_embeddings=neg_emb,
+            positive_weights=pos_weights,
             use_classifier=args.classifier,
+            diversity_lambda=args.diversity,
         )
 
         ranked_ids = [candidates[r.index].id for r in results]
