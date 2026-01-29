@@ -7,31 +7,39 @@ from api.client import HNClient
 async def test_fetch_user_data_mocked():
     """Test fetch_user_data logic by mocking the low-level scraping."""
     username = "testuser"
-    # Mocking _scrape_ids to return dummy sets
-    with patch("api.client.HNClient._scrape_ids") as mock_scrape:
-        mock_scrape.side_effect = [
-            {1, 2},  # favorites
-            {3, 4},  # upvoted
-            {5, 6},  # hidden
-        ]
 
-        async with HNClient() as client:
-            # Mock login check to return logged in
-            with patch.object(client.client, "get") as mock_get:
-                mock_get.return_value = MagicMock(text="logout")
-                with patch("pathlib.Path.exists", return_value=False):
-                    data = await client.fetch_user_data(username)
-                    assert "pos" in data
-                    assert "upvoted" in data
-                    assert "hidden" in data
-                    assert data["pos"] == {1, 2}
-                    assert data["upvoted"] == {3, 4}
-                    assert data["hidden"] == {5, 6}
+    async with HNClient() as client:
+        # Mock HTTP response with logout link and username
+        mock_resp = MagicMock(
+            text=f'<html><a id="me">{username}</a> | <a>logout</a></html>'
+        )
 
-                    # Verify scrape calls
-                    mock_scrape.assert_any_call(f"/favorites?id={username}")
-                    mock_scrape.assert_any_call(f"/upvoted?id={username}")
-                    mock_scrape.assert_any_call(f"/hidden?id={username}")
+        with patch.object(client.client, "get", return_value=mock_resp):
+            with patch.object(client, "_scrape_items") as mock_items:
+                with patch.object(client, "_scrape_ids") as mock_ids:
+                    # _scrape_items: hidden (always fresh), then favorites (cache miss)
+                    mock_items.side_effect = [
+                        ({5, 6}, {"http://hidden.com"}),  # hidden
+                        ({1, 2}, {"http://fav.com"}),  # favorites
+                    ]
+                    # _scrape_ids: upvoted
+                    mock_ids.return_value = {3, 4}
+
+                    with patch("pathlib.Path.exists", return_value=False):
+                        data = await client.fetch_user_data(username)
+
+                        assert "pos" in data
+                        assert "upvoted" in data
+                        assert "hidden" in data
+                        # pos = (favorites | upvoted) - hidden = ({1,2} | {3,4}) - {5,6}
+                        assert data["pos"] == {1, 2, 3, 4}
+                        assert data["upvoted"] == {3, 4}
+                        assert data["hidden"] == {5, 6}
+
+                        # Verify scrape calls
+                        mock_items.assert_any_call(f"/hidden?id={username}", max_pages=20)
+                        mock_items.assert_any_call(f"/favorites?id={username}", max_pages=15)
+                        mock_ids.assert_called_with(f"/upvoted?id={username}", max_pages=15)
 
 
 @pytest.mark.asyncio

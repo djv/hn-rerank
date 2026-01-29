@@ -231,6 +231,7 @@ async def fetch_story(client: httpx.AsyncClient, sid: int) -> Optional[Story]:
 async def get_best_stories(
     limit: int,
     exclude_ids: Optional[set[int]] = None,
+    exclude_urls: Optional[set[str]] = None,
     progress_callback: Optional[Callable[[int, int], None]] = None,
     days: int = ALGOLIA_DEFAULT_DAYS,
 ) -> list[Story]:
@@ -380,6 +381,11 @@ async def get_best_stories(
         for i, task in enumerate(asyncio.as_completed(tasks)):
             res: Optional[Story] = await task
             if res:
+                # URL-based exclusion for duplicates/hidden items
+                if exclude_urls and res.url:
+                    norm_url = res.url.split("?")[0].rstrip("/")
+                    if norm_url in exclude_urls:
+                        continue
                 results.append(res)
             if progress_callback:
                 progress_callback(i + 1, len(hits))

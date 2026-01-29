@@ -289,6 +289,11 @@ async def main() -> None:
         default=KNN_NEIGHBORS,
         help=f"Number of neighbors for k-NN scoring (default: {KNN_NEIGHBORS})",
     )
+    parser.add_argument(
+        "--no-naming",
+        action="store_true",
+        help="Disable LLM-based cluster naming",
+    )
     args: argparse.Namespace = parser.parse_args()
 
     # Implication: Classifier requires negative signals
@@ -298,7 +303,7 @@ async def main() -> None:
     # Initialize model early
     rerank.init_model()
 
-    if not os.environ.get("GROQ_API_KEY"):
+    if not args.no_naming and not os.environ.get("GROQ_API_KEY"):
         console.print(
             "[red][bold][-] Error:[/bold] GROQ_API_KEY not found in environment.[/red]"
         )
@@ -366,12 +371,9 @@ async def main() -> None:
                     progress.update(p_task, advance=step)
                 return results
 
-            # Positive signals = Upvoted only (requires login)
-            # IMPORTANT: If a story is both upvoted AND hidden, treat it as hidden (negative/neutral).
-            # This allows users to "undo" the signal of an upvote by hiding the story.
-            upvoted_ids = data["upvoted"] - data["hidden"]
-
-            pos_ids: list[int] = list(upvoted_ids)[: args.signals]
+            # Positive signals = Favorites + Upvoted (merged in fetch_user_data)
+            pos_ids: list[int] = list(data["pos"])[: args.signals]
+            
             neg_ids: list[int] = []
             if args.use_hidden_signal:
                 neg_ids = list(data["hidden"])[: args.signals]
@@ -436,7 +438,7 @@ async def main() -> None:
                     (story.to_dict(), float(story.score))
                 )
 
-            n_clusters = len(set(cluster_labels))
+            n_clusters = len(clusters_for_naming)
             name_task: Any = progress.add_task(
                 "[cyan]Naming clusters...", total=n_clusters
             )
@@ -444,20 +446,27 @@ async def main() -> None:
             def name_cb(curr: int, total: int) -> None:
                 progress.update(name_task, completed=curr)
 
-            cluster_names = await rerank.generate_batch_cluster_names(
-                clusters_for_naming, progress_callback=name_cb
-            )
-            progress.update(name_task, description="[green][+] Clusters named.")
+            if args.no_naming:
+                cluster_names = {cid: f"Interest Group {cid + 1}" for cid in clusters_for_naming}
+                progress.update(name_task, completed=n_clusters, description="[yellow][!] Using generic cluster names.")
+            else:
+                cluster_names = await rerank.generate_batch_cluster_names(
+                    clusters_for_naming, progress_callback=name_cb
+                )
+                progress.update(name_task, description="[green][+] Clusters named.")
 
         # 3. Candidates
         c_task: Any = progress.add_task(
             f"[*] Fetching {args.candidates} candidates...", total=args.candidates
         )
         # Exclude everything we've already interacted with
-        exclude: set[int] = data["pos"] | data["upvoted"] | data["hidden"]
+        exclude_ids: set[int] = data["favorites"] | data["upvoted"] | data["hidden"]
+        exclude_urls: set[str] = data.get("hidden_urls", set())
+
         cands: list[Story] = await get_best_stories(
             args.candidates,
-            exclude_ids=exclude,
+            exclude_ids=exclude_ids,
+            exclude_urls=exclude_urls,
             progress_callback=lambda curr, tot: progress.update(
                 c_task, total=tot, completed=curr
             ),
@@ -560,28 +569,39 @@ async def main() -> None:
         )
 
     # Phase 1: Ensure top story from each cluster is included
+    selected_results: list[RankResult] = []
     used_indices: set[int] = set()
+    
     for result in ranked:
         cid = get_cluster_id(result)
         if cid != -1 and cid not in seen_clusters:
-            sd = make_story_display(result)
-            if sd:
-                stories_data.append(sd)
-                seen_clusters.add(cid)
-                used_indices.add(result.index)
+            selected_results.append(result)
+            seen_clusters.add(cid)
+            used_indices.add(result.index)
         if len(seen_clusters) >= len(cluster_names):
             break  # All clusters represented
 
-    # Phase 2: Fill remaining slots with best remaining stories
+    # Phase 2: Fill remaining slots with best remaining stories from MMR ranking
     for result in ranked:
-        if len(stories_data) >= args.count:
+        if len(selected_results) >= args.count:
             break
         if result.index in used_indices:
             continue
+        selected_results.append(result)
+        used_indices.add(result.index)
+
+    # FINAL STEP: Re-sort selected stories by hybrid_score to ensure best ranking
+    # The cluster logic ensures diversity, but we want the best of those stories at the top.
+    selected_results.sort(key=lambda x: x.hybrid_score, reverse=True)
+
+    stories_data: list[StoryDisplay] = []
+    seen_urls: set[str] = set()
+    seen_titles: set[str] = set()
+
+    for result in selected_results:
         sd = make_story_display(result)
         if sd:
             stories_data.append(sd)
-            used_indices.add(result.index)
 
     # Generate TL;DRs for stories
     print("[*] Generating content via LLM...")

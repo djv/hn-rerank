@@ -512,8 +512,8 @@ async def generate_batch_cluster_names(
 
         for cid in batch_cids:
             items = to_generate[cid]
-            # Use top 5 items for context (titles + comments)
-            sorted_items = sorted(items, key=lambda x: -x[1])[:5]
+            # Use top 10 items for context (titles + comments) for richer naming
+            sorted_items = sorted(items, key=lambda x: -x[1])[:10]
 
             cluster_data = []
             for s, _ in sorted_items:
@@ -833,6 +833,14 @@ def rank_stories(
             # Predict probabilities (class 1 = positive interest)
             probs = clf.predict_proba(cand_emb)[:, 1]
             semantic_scores = probs.astype(np.float32)
+
+            # Post-classifier negative penalty: classifier doesn't see hidden stories
+            # after training, so apply explicit penalty for similarity to hidden items
+            if negative_embeddings is not None and len(negative_embeddings) > 0:
+                sim_neg = cosine_similarity(negative_embeddings, cand_emb)
+                k_neg = min(len(negative_embeddings), knn_k)
+                knn_neg = np.median(np.partition(sim_neg, -k_neg, axis=0)[-k_neg:, :], axis=0)
+                semantic_scores = semantic_scores - neg_weight * knn_neg
 
             # We still need max_sim_scores for the UI "Similar to..."
             sim_pos_ui = cosine_similarity(positive_embeddings, cand_emb)

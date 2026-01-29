@@ -27,32 +27,24 @@ STORY_CACHE_MAX_FILES = 25000  # LRU eviction threshold
 # Concurrency
 EXTERNAL_REQUEST_SEMAPHORE = 10  # Reduced to avoid API throttling
 
-# Comment Pool
-MIN_STORY_COMMENTS = 15  # Filter in Algolia query + fetch validation
-MAX_COMMENTS_COLLECTED = 100
-TOP_COMMENTS_FOR_RANKING = 50
-TOP_COMMENTS_FOR_UI = 10
-RANKING_DEPTH_PENALTY = 10
-MIN_COMMENT_LENGTH = 50  # Filter short low-value comments
-
 # User Limits
-MAX_USER_STORIES = 1000
+MAX_USER_STORIES = 2000
 
 # Discovery Pool
 ALGOLIA_MIN_POINTS = 5
 ALGOLIA_DEFAULT_DAYS = 30
-CANDIDATE_FETCH_COUNT = 200
+CANDIDATE_FETCH_COUNT = 500
 
 # Inference
 DEFAULT_EMBEDDING_BATCH_SIZE = 8
 EMBEDDING_MIN_CLIP = 1e-9
-EMBEDDING_MODEL_VERSION = "v8-base"  # Reset to base model after tuning experiment
+EMBEDDING_MODEL_VERSION = "v8-base"  # Base model (personalized tuning requires GPU)
 
 # Similarity Bounds
 SIMILARITY_MIN = -1.0
 SIMILARITY_MAX = 1.0
 SEMANTIC_MATCH_THRESHOLD = 0.50
-KNN_NEIGHBORS = 2  # Optimized: 2 neighbors provide best stability
+KNN_NEIGHBORS = 2  # Optimization: k=2 for broader matching
 
 # Multi-Interest Clustering
 DEFAULT_CLUSTER_COUNT = 12  # Fixed k; LLM naming handles coherence
@@ -63,27 +55,36 @@ CLUSTER_SIMILARITY_THRESHOLD = 0.70  # Min similarity to belong to a cluster
 
 # Ranking Weights
 RANKING_HN_WEIGHT = 0.05  # Weight for HN score vs semantic (legacy, unused with adaptive)
-RANKING_NEGATIVE_WEIGHT = 0.5  # Penalty for similarity to hidden stories
-RANKING_DIVERSITY_LAMBDA = 0.30  # MMR diversity penalty (lowered from 0.45 for better NDCG)
-RANKING_DIVERSITY_LAMBDA_CLASSIFIER = 0.3  # Moderate diversity for classifier (was 0.6, lowered for NDCG)
-RANKING_MAX_RESULTS = 300  # Max stories to rank via MMR (increased to ensure coverage)
+RANKING_NEGATIVE_WEIGHT = 0.69  # Penalty for similarity to hidden stories (Optimized v2)
+RANKING_DIVERSITY_LAMBDA = 0.19  # MMR diversity penalty (Optimized v2)
+RANKING_DIVERSITY_LAMBDA_CLASSIFIER = 0.19  # Match default for classifier
+RANKING_MAX_RESULTS = 500  # Max stories to rank via MMR (Increased)
 
 # Adaptive HN Weight (age-based)
-ADAPTIVE_HN_WEIGHT_MIN = 0.05  # For stories < 6h old (trust semantic)
-ADAPTIVE_HN_WEIGHT_MAX = 0.25  # For stories > 48h old (trust HN score)
+# Optimization showed preference for strong semantic signal (low HN weight)
+ADAPTIVE_HN_WEIGHT_MIN = 0.015  # For stories < 6h old
+ADAPTIVE_HN_WEIGHT_MAX = 0.021  # For stories > 48h old
 ADAPTIVE_HN_THRESHOLD_YOUNG = 6  # Hours - below this, use min weight
 ADAPTIVE_HN_THRESHOLD_OLD = 48  # Hours - above this, use max weight
 
 # Freshness Decay
-FRESHNESS_HALF_LIFE_HOURS = 24.0  # Score halves every 24 hours
-FRESHNESS_MAX_BOOST = 0.15  # Max freshness contribution to hybrid score
+FRESHNESS_HALF_LIFE_HOURS = 97.5  # Slower decay (Optimized v2)
+FRESHNESS_MAX_BOOST = 0.014  # Lower boost (Optimized v2)
 
 # Semantic Scoring
 SEMANTIC_MAXSIM_WEIGHT = 0.95  # Weight for max cluster similarity
 SEMANTIC_MEANSIM_WEIGHT = 0.05  # Weight for mean cluster similarity
-SEMANTIC_SIGMOID_K = 15.0  # Steepness of sigmoid activation
-SEMANTIC_SIGMOID_THRESHOLD = 0.30  # Optimized: Lower threshold captures more relevant signals
+SEMANTIC_SIGMOID_K = 19.2  # Sigmoid steepness (Optimized v2)
+SEMANTIC_SIGMOID_THRESHOLD = 0.43  # Threshold (Optimized v2)
 HN_SCORE_NORMALIZATION_CAP = 500  # Cap for log normalization of HN points
+
+# Comment Pool
+MIN_STORY_COMMENTS = 10  # Filter in Algolia query + fetch validation (relaxed)
+MAX_COMMENTS_COLLECTED = 200  # Increased for richer signal
+TOP_COMMENTS_FOR_RANKING = 150  # Use more comments for embedding (Increased)
+TOP_COMMENTS_FOR_UI = 10
+RANKING_DEPTH_PENALTY = 10
+MIN_COMMENT_LENGTH = 30  # Filter short low-value comments (relaxed)
 
 # LLM Configuration
 LLM_CLUSTER_NAME_MODEL = "llama-3.3-70b-versatile"

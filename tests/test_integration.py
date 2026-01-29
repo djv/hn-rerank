@@ -52,8 +52,10 @@ async def test_generate_html_integration(tmp_path):
         client_instance.client.get = AsyncMock(return_value=mock_response)
         client_instance.fetch_user_data.return_value = {
             "pos": set(),
-            "upvoted": {1},  # Now using upvoted instead of pos
+            "upvoted": {1},
             "hidden": set(),
+            "hidden_urls": set(),
+            "favorites": set(),
         }
 
         mock_fetch.return_value = mock_story
