@@ -38,7 +38,7 @@ CANDIDATE_FETCH_COUNT = 500
 # Inference
 DEFAULT_EMBEDDING_BATCH_SIZE = 8
 EMBEDDING_MIN_CLIP = 1e-9
-EMBEDDING_MODEL_VERSION = "v8-base"  # Base model (personalized tuning requires GPU)
+EMBEDDING_MODEL_VERSION = "v9-tuned"  # Fine-tuned on user preferences (80% triplet accuracy)
 
 # Similarity Bounds
 SIMILARITY_MIN = -1.0
@@ -55,31 +55,31 @@ CLUSTER_SIMILARITY_THRESHOLD = 0.70  # Min similarity to belong to a cluster
 
 # Ranking Weights
 RANKING_HN_WEIGHT = 0.05  # Weight for HN score vs semantic (legacy, unused with adaptive)
-RANKING_NEGATIVE_WEIGHT = 0.69  # Penalty for similarity to hidden stories (Optimized v2)
-RANKING_DIVERSITY_LAMBDA = 0.19  # MMR diversity penalty (Optimized v2)
-RANKING_DIVERSITY_LAMBDA_CLASSIFIER = 0.19  # Match default for classifier
+RANKING_NEGATIVE_WEIGHT = 0.35  # Penalty for similarity to hidden stories (Robust CV)
+RANKING_DIVERSITY_LAMBDA = 0.47  # MMR diversity penalty (Robust CV)
+RANKING_DIVERSITY_LAMBDA_CLASSIFIER = 0.47  # Match default for classifier
 RANKING_MAX_RESULTS = 500  # Max stories to rank via MMR (Increased)
 
 # Adaptive HN Weight (age-based)
 # Optimization showed preference for strong semantic signal (low HN weight)
-ADAPTIVE_HN_WEIGHT_MIN = 0.015  # For stories < 6h old
-ADAPTIVE_HN_WEIGHT_MAX = 0.021  # For stories > 48h old
+ADAPTIVE_HN_WEIGHT_MIN = 0.086  # For stories < 6h old
+ADAPTIVE_HN_WEIGHT_MAX = 0.149  # For stories > 48h old
 ADAPTIVE_HN_THRESHOLD_YOUNG = 6  # Hours - below this, use min weight
 ADAPTIVE_HN_THRESHOLD_OLD = 48  # Hours - above this, use max weight
 
 # Freshness Decay
-FRESHNESS_HALF_LIFE_HOURS = 97.5  # Slower decay (Optimized v2)
-FRESHNESS_MAX_BOOST = 0.014  # Lower boost (Optimized v2)
+FRESHNESS_HALF_LIFE_HOURS = 80.7  # Slower decay (Robust CV)
+FRESHNESS_MAX_BOOST = 0.002  # Lower boost (Robust CV)
 
 # Semantic Scoring
 SEMANTIC_MAXSIM_WEIGHT = 0.95  # Weight for max cluster similarity
 SEMANTIC_MEANSIM_WEIGHT = 0.05  # Weight for mean cluster similarity
-SEMANTIC_SIGMOID_K = 19.2  # Sigmoid steepness (Optimized v2)
-SEMANTIC_SIGMOID_THRESHOLD = 0.43  # Threshold (Optimized v2)
+SEMANTIC_SIGMOID_K = 14.8  # Sigmoid steepness (Robust CV)
+SEMANTIC_SIGMOID_THRESHOLD = 0.65  # Threshold (Robust CV)
 HN_SCORE_NORMALIZATION_CAP = 500  # Cap for log normalization of HN points
 
 # Comment Pool
-MIN_STORY_COMMENTS = 10  # Filter in Algolia query + fetch validation (relaxed)
+MIN_STORY_COMMENTS = 20  # Filter in Algolia query + fetch validation
 MAX_COMMENTS_COLLECTED = 200  # Increased for richer signal
 TOP_COMMENTS_FOR_RANKING = 150  # Use more comments for embedding (Increased)
 TOP_COMMENTS_FOR_UI = 10

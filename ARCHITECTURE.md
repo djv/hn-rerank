@@ -75,7 +75,7 @@ HN Rerank is a local-first application that personalizes Hacker News content usi
 3. Embedding         → Generate vectors for user's history (BGE-base)
 4. Clustering        → Group signals into clusters (Agglomerative + Average Linkage)
 5. Cluster Naming    → Generate names via Groq API
-6. Candidate Fetch   → Get top N stories from Algolia (last 30 days, 7-day windows)
+6. Candidate Fetch   → Get top N stories from Algolia (last 7-30 days, 7-day windows)
 7. Candidate Embed   → Generate vectors for candidates
 8. Reranking         → Compute similarity to centroids, apply MMR diversity
 9. UI Clustering     → Candidate chips show the User Interest Cluster that triggered the match

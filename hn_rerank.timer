@@ -1,0 +1,10 @@
+[Unit]
+Description=Run HN Rerank Update every 6 hours
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=6h
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

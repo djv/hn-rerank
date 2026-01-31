@@ -1,0 +1,12 @@
+[Unit]
+Description=HN Rerank Dashboard Update
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/dev/hn_rerank
+ExecStart=/home/dev/hn_rerank/update_dashboard.sh
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

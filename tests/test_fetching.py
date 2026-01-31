@@ -72,14 +72,14 @@ async def test_get_best_stories_filtering():
 
     # Mock individual item fetches via Algolia items API
     for sid in ["1", "2", "3", "4"]:
-        # Need 10+ comments to pass minimum threshold (50+ chars each)
+        # Need 20+ comments to pass minimum threshold (MIN_STORY_COMMENTS=20)
         comments = [
             {
                 "type": "comment",
                 "text": f"Comment {i} for story {sid} with enough text to pass the minimum length filter.",
                 "children": [],
             }
-            for i in range(16)
+            for i in range(25)
         ]
         respx.get(f"{ALGOLIA_BASE}/items/{sid}").mock(
             return_value=Response(
@@ -137,7 +137,7 @@ async def test_get_best_stories_pagination():
 
     respx.get(f"{ALGOLIA_BASE}/search").mock(side_effect=itertools.cycle(responses))
 
-    # Mock item fetches - all return valid stories with 10+ comments
+    # Mock item fetches - all return valid stories with 20+ comments (MIN_STORY_COMMENTS=20)
     # We cheat and return the same content for any ID, but distinct IDs matter for the count
     comments = [
         {
@@ -145,7 +145,7 @@ async def test_get_best_stories_pagination():
             "text": f"Comment {i} with enough text to pass the minimum length filter requirement which is fifty characters or more.",
             "children": [],
         }
-        for i in range(16)
+        for i in range(25)
     ]
     respx.get(url__regex=rf"{ALGOLIA_BASE}/items/\d+").mock(
         return_value=Response(
@@ -228,14 +228,14 @@ async def test_get_best_stories_partial_failure():
 
     respx.get(search_url).mock(side_effect=varying_response)
 
-    # Mock item fetches for the successful stories
+    # Mock item fetches for the successful stories (MIN_STORY_COMMENTS=20)
     comments = [
         {
             "type": "comment",
             "text": f"Comment {i} with enough text to pass the minimum length filter.",
             "children": [],
         }
-        for i in range(16)
+        for i in range(25)
     ]
     for sid in ["1", "2"]:
         respx.get(f"{ALGOLIA_BASE}/items/{sid}").mock(

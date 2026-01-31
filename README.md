@@ -33,7 +33,7 @@ HN Rerank fetches stories from the last 30 days and re-ranks them based on seman
 
 4. **Generate Dashboard**:
    ```bash
-   uv run generate_html.py <your-hn-username>
+   uv run generate_html.py <your-hn-username> --days 7
    ```
    Outputs:
    - `index.html` - Ranked story recommendations with cluster tags and TL;DRs
@@ -43,7 +43,7 @@ HN Rerank fetches stories from the last 30 days and re-ranks them based on seman
 
 1. **Profile Building**: Fetches your upvoted stories from HN (requires login)
 2. **Clustering**: Groups your upvotes into interest clusters (e.g., "ML/AI", "Rust", "Startups")
-3. **Candidate Fetching**: Gets recent popular stories from Algolia
+3. **Candidate Fetching**: Gets recent popular stories from Algolia (default: last 30 days, auto-update uses 7 days)
 4. **Ranking**: Scores candidates by similarity to your interest clusters
 5. **Diversity**: Applies MMR to ensure variety in recommendations
 
