@@ -38,7 +38,7 @@ CANDIDATE_FETCH_COUNT = 500
 # Inference
 DEFAULT_EMBEDDING_BATCH_SIZE = 8
 EMBEDDING_MIN_CLIP = 1e-9
-EMBEDDING_MODEL_VERSION = "v9-tuned"  # Fine-tuned on user preferences (80% triplet accuracy)
+EMBEDDING_MODEL_VERSION = "v10-tuned"  # Fine-tuned on 218 triplets (96% accuracy)
 
 # Similarity Bounds
 SIMILARITY_MIN = -1.0
