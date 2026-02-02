@@ -5,10 +5,11 @@ import argparse
 import json
 from pathlib import Path
 import logging
+from typing import cast
 
 from sentence_transformers import SentenceTransformer, losses, InputExample
 from sentence_transformers.evaluation import TripletEvaluator
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 
 # Configure logging
 logging.basicConfig(
@@ -97,7 +98,11 @@ def tune(epochs: int = 3, batch_size: int = 16, use_triplets: bool = True) -> No
     model = SentenceTransformer(model_id)
 
     # Setup training
-    train_dataloader = DataLoader(train_examples, shuffle=True, batch_size=batch_size)
+    train_dataloader = DataLoader(
+        cast(Dataset[InputExample], train_examples),
+        shuffle=True,
+        batch_size=batch_size,
+    )
 
     # Choose loss based on data format
     if use_triplets and has_triplets:
@@ -116,14 +121,23 @@ def tune(epochs: int = 3, batch_size: int = 16, use_triplets: bool = True) -> No
     # Setup evaluator
     evaluator = None
     if val_triplets:
-        anchors = [t.texts[0] for t in val_triplets]
-        positives = [t.texts[1] for t in val_triplets]
-        negatives = [t.texts[2] for t in val_triplets]
-        evaluator = TripletEvaluator(
-            anchors, positives, negatives,
-            name="hn_triplet_eval",
-            show_progress_bar=False,
-        )
+        anchors: list[str] = []
+        positives: list[str] = []
+        negatives: list[str] = []
+        for t in val_triplets:
+            if not t.texts or len(t.texts) < 3:
+                continue
+            anchors.append(t.texts[0])
+            positives.append(t.texts[1])
+            negatives.append(t.texts[2])
+        if anchors:
+            evaluator = TripletEvaluator(
+                anchors,
+                positives,
+                negatives,
+                name="hn_triplet_eval",
+                show_progress_bar=False,
+            )
 
     # Training config
     warmup_steps = int(len(train_dataloader) * 0.1)

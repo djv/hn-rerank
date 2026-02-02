@@ -14,8 +14,9 @@ from api.rerank import (
     cluster_interests,
     generate_batch_cluster_names,
     _merge_small_clusters,
+    _split_large_clusters,
 )
-from api.constants import MIN_SAMPLES_PER_CLUSTER
+from api.constants import MIN_SAMPLES_PER_CLUSTER, MAX_CLUSTER_SIZE_MULTIPLIER
 
 
 # Strategy for generating valid embeddings (L2-normalized vectors)
@@ -148,6 +149,42 @@ def test_merge_small_clusters_removes_singletons():
 
     assert counts.min() >= 2
     assert sorted(set(merged)) == list(range(len(set(merged))))
+
+
+def test_split_large_clusters_limits_max_size():
+    """Large clusters are split to respect max cluster size threshold."""
+    embeddings = np.array(
+        [
+            [1.0, 0.0],
+            [0.95, 0.05],
+            [0.9, 0.1],
+            [0.85, 0.15],
+            [0.8, 0.2],
+            [0.75, 0.25],
+            [0.7, 0.3],
+            [0.65, 0.35],
+            [-1.0, 0.0],
+            [-0.9, 0.1],
+        ],
+        dtype=np.float32,
+    )
+    labels = np.array([0] * 8 + [1] * 2, dtype=np.int32)
+    desired_clusters = 6
+
+    avg_size = int(np.ceil(len(labels) / desired_clusters))
+    max_size = max(MIN_SAMPLES_PER_CLUSTER, int(avg_size * MAX_CLUSTER_SIZE_MULTIPLIER))
+
+    split = _split_large_clusters(
+        embeddings,
+        labels,
+        desired_clusters=desired_clusters,
+        min_size=MIN_SAMPLES_PER_CLUSTER,
+        max_size=max_size,
+    )
+    counts = np.bincount(split)
+
+    assert counts.max() <= max_size
+    assert sorted(set(split)) == list(range(len(set(split))))
 
 
 def test_weighted_centroid():

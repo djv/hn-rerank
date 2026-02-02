@@ -341,6 +341,9 @@ async def main():
 
     if not success:
         return
+    if evaluator.dataset is None:
+        return
+    dataset = evaluator.dataset
 
     if args.cv > 0:
         print(f"\nRunning {args.cv}-fold cross-validation...")
@@ -382,20 +385,20 @@ async def main():
     # Just re-run ranking to get the results object for the verbose output
     # (The evaluate method only returns metrics)
     results = rank_stories(
-        evaluator.dataset.candidates,
-        positive_embeddings=evaluator.dataset.train_embeddings,
-        negative_embeddings=evaluator.dataset.neg_embeddings,
-        positive_weights=evaluator.dataset.pos_weights,
+        dataset.candidates,
+        positive_embeddings=dataset.train_embeddings,
+        negative_embeddings=dataset.neg_embeddings,
+        positive_weights=dataset.pos_weights,
         use_classifier=args.classifier,
         diversity_lambda=args.diversity,
         knn_k=args.knn,
         neg_weight=args.neg_weight,
     )
-    ranked_ids = [evaluator.dataset.candidates[r.index].id for r in results]
+    ranked_ids = [dataset.candidates[r.index].id for r in results]
 
     print("\nTest story positions in ranking:")
     for i, sid in enumerate(ranked_ids):
-        if sid in evaluator.dataset.test_ids:
+        if sid in dataset.test_ids:
             score = results[i].hybrid_score if i < len(results) else 0
             print(f"  #{i+1}: story {sid} (score: {score:.3f})")
 

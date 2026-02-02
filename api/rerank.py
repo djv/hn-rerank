@@ -3,6 +3,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -39,6 +40,7 @@ from api.constants import (
     LLM_TLDR_MAX_TOKENS,
     LLM_TLDR_MODEL,
     MAX_CLUSTERS,
+    MAX_CLUSTER_SIZE_MULTIPLIER,
     MIN_CLUSTERS,
     MIN_SAMPLES_PER_CLUSTER,
     RANKING_DIVERSITY_LAMBDA,
@@ -298,6 +300,19 @@ def cluster_interests_with_labels(
 
     labels = _merge_small_clusters(embeddings, labels, MIN_SAMPLES_PER_CLUSTER)
 
+    avg_size = int(math.ceil(n_samples / effective_n_clusters))
+    max_size = max(
+        MIN_SAMPLES_PER_CLUSTER,
+        int(avg_size * MAX_CLUSTER_SIZE_MULTIPLIER),
+    )
+    labels = _split_large_clusters(
+        embeddings,
+        labels,
+        desired_clusters=effective_n_clusters,
+        min_size=MIN_SAMPLES_PER_CLUSTER,
+        max_size=max_size,
+    )
+
     centroids = _centroids_from_labels(embeddings, labels, weights)
     return centroids, labels
 
@@ -362,6 +377,73 @@ def _merge_small_clusters(
 
     remap = {old: i for i, old in enumerate(sorted(set(new_labels)))}
     return np.array([remap[int(lbl)] for lbl in new_labels], dtype=np.int32)
+
+
+def _split_large_clusters(
+    embeddings: NDArray[np.float32],
+    labels: NDArray[np.int32],
+    desired_clusters: int,
+    min_size: int,
+    max_size: int,
+) -> NDArray[np.int32]:
+    """Split clusters larger than max_size, without exceeding desired_clusters."""
+    from sklearn.cluster import AgglomerativeClustering
+    if desired_clusters <= 0 or max_size <= 0:
+        return labels
+
+    while True:
+        unique_labels, counts = np.unique(labels, return_counts=True)
+        cluster_count = len(unique_labels)
+        available = desired_clusters - cluster_count
+        if available <= 0:
+            return labels
+
+        oversized = {
+            int(lbl): int(cnt)
+            for lbl, cnt in zip(unique_labels, counts)
+            if int(cnt) > max_size
+        }
+        if not oversized:
+            return labels
+
+        # Split the largest cluster first.
+        target_label = max(oversized, key=lambda label: oversized[label])
+        target_size = oversized[target_label]
+        needed = max(2, int(math.ceil(target_size / max_size)))
+        split_k = min(available + 1, needed)
+        if split_k <= 1:
+            return labels
+
+        idxs = np.where(labels == target_label)[0]
+        sub_emb = embeddings[idxs]
+
+        norms = np.linalg.norm(sub_emb, axis=1, keepdims=True)
+        norms = np.maximum(norms, 1e-9)
+        sub_norm = sub_emb / norms
+
+        agg = AgglomerativeClustering(
+            n_clusters=split_k,
+            metric="cosine",
+            linkage="average",
+        )
+        sub_labels = agg.fit_predict(sub_norm).astype(np.int32)
+        sub_labels = _merge_small_clusters(sub_emb, sub_labels, min_size)
+
+        sub_unique = sorted(set(sub_labels))
+        new_label_start = int(labels.max()) + 1
+        mapping: dict[int, int] = {}
+        for i, sub_lbl in enumerate(sub_unique):
+            mapping[int(sub_lbl)] = (
+                target_label if i == 0 else new_label_start + (i - 1)
+            )
+
+        labels[idxs] = np.array(
+            [mapping[int(sub_lbl)] for sub_lbl in sub_labels], dtype=np.int32
+        )
+
+        # If we failed to increase the number of clusters, stop to avoid loops.
+        if len(set(labels)) <= cluster_count:
+            return labels
 
 
 # Global rate limiter state

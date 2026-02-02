@@ -37,6 +37,7 @@ HN Rerank is a local-first application that personalizes Hacker News content usi
     - Uses **Agglomerative Clustering** with **Average Linkage** and **Cosine Metric**.
     - **Default k=25** (configurable via `--clusters`). LLM naming handles semantic coherence.
     - Enforces a minimum cluster size of **2** by merging small clusters into nearest larger groups.
+    - Splits oversized clusters to keep max size near **3×** the average cluster size target.
     - `cluster_interests_with_labels(embeddings, weights, n_clusters)` returns `(centroids, labels)`.
 - **Cluster Naming** (`generate_batch_cluster_names()` via Groq API):
     - Uses Groq API (`llama-3.3-70b-versatile`) to generate contextual 1-3 word labels.
@@ -135,3 +136,4 @@ Each story card shows:
 - **Unit Tests**: `pytest` for core logic
 - **Property Tests**: `hypothesis` for invariants (clustering, ranking, boundaries)
 - **Coverage**: ~76% of `api/` module
+- **Type Checking**: Colab-only notebooks are excluded from `ty` checks.
