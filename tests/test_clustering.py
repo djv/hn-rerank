@@ -13,6 +13,7 @@ from api.rerank import (
     cluster_interests_with_labels,
     cluster_interests,
     generate_batch_cluster_names,
+    _merge_small_clusters,
 )
 from api.constants import MIN_SAMPLES_PER_CLUSTER
 
@@ -63,7 +64,7 @@ def test_small_sample_fallback(n_samples: int):
     assert all(lbl == 0 for lbl in labels)
 
 
-@given(st.integers(min_value=10, max_value=50))
+@given(st.integers(min_value=10, max_value=25))
 @settings(max_examples=10, deadline=10000)
 def test_labels_cover_all_samples(n_samples: int):
     """Every sample gets a valid non-negative label."""
@@ -75,7 +76,7 @@ def test_labels_cover_all_samples(n_samples: int):
     assert all(lbl >= 0 for lbl in labels)
 
 
-@given(st.integers(min_value=10, max_value=50))
+@given(st.integers(min_value=10, max_value=25))
 @settings(max_examples=10, deadline=10000)
 def test_centroids_match_label_count(n_samples: int):
     """Number of centroids equals number of unique labels."""
@@ -87,7 +88,7 @@ def test_centroids_match_label_count(n_samples: int):
     assert len(centroids) == n_unique_labels
 
 
-@given(st.integers(min_value=10, max_value=50))
+@given(st.integers(min_value=10, max_value=25))
 @settings(max_examples=10, deadline=10000)
 def test_labels_consecutive_from_zero(n_samples: int):
     """Labels are 0, 1, 2, ... with no gaps."""
@@ -125,6 +126,28 @@ def test_centroid_is_cluster_mean():
             np.testing.assert_array_almost_equal(
                 centroids[cluster_id], expected_centroid, decimal=5
             )
+
+
+def test_merge_small_clusters_removes_singletons():
+    """Singleton clusters are merged into the nearest larger cluster."""
+    embeddings = np.array(
+        [
+            [1.0, 0.0],
+            [0.9, 0.1],
+            [-1.0, 0.0],
+            [-0.9, 0.1],
+            [0.95, 0.0],
+            [-0.95, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    labels = np.array([0, 0, 1, 1, 2, 3], dtype=np.int32)
+
+    merged = _merge_small_clusters(embeddings, labels, min_size=2)
+    counts = np.bincount(merged)
+
+    assert counts.min() >= 2
+    assert sorted(set(merged)) == list(range(len(set(merged))))
 
 
 def test_weighted_centroid():

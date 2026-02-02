@@ -38,6 +38,8 @@ from api.constants import (
     LLM_TLDR_BATCH_SIZE,
     LLM_TLDR_MAX_TOKENS,
     LLM_TLDR_MODEL,
+    MAX_CLUSTERS,
+    MIN_CLUSTERS,
     MIN_SAMPLES_PER_CLUSTER,
     RANKING_DIVERSITY_LAMBDA,
     RANKING_DIVERSITY_LAMBDA_CLASSIFIER,
@@ -282,18 +284,30 @@ def cluster_interests_with_labels(
     norms = np.maximum(norms, 1e-9)
     normalized = embeddings / norms
 
-    # Fixed k, capped by available samples
-    k = min(n_clusters, n_samples // MIN_SAMPLES_PER_CLUSTER)
-    k = max(k, 1)  # At least 1 cluster
+    # Use fixed number of clusters as requested (max 25)
+    # n_clusters is capped by n_samples / MIN_SAMPLES_PER_CLUSTER and MAX_CLUSTERS
+    effective_n_clusters = min(n_clusters, MAX_CLUSTERS, n_samples // MIN_SAMPLES_PER_CLUSTER)
+    effective_n_clusters = max(effective_n_clusters, MIN_CLUSTERS)
 
     agg = AgglomerativeClustering(
-        n_clusters=k,
+        n_clusters=effective_n_clusters,
         metric="cosine",
         linkage="average",
     )
     labels = agg.fit_predict(normalized).astype(np.int32)
 
-    # Compute centroids from labels (in original embedding space)
+    labels = _merge_small_clusters(embeddings, labels, MIN_SAMPLES_PER_CLUSTER)
+
+    centroids = _centroids_from_labels(embeddings, labels, weights)
+    return centroids, labels
+
+
+def _centroids_from_labels(
+    embeddings: NDArray[np.float32],
+    labels: NDArray[np.int32],
+    weights: Optional[NDArray[np.float32]] = None,
+) -> NDArray[np.float32]:
+    """Compute centroids for each cluster label."""
     unique_labels = sorted(set(labels))
     centroids = []
     for lbl in unique_labels:
@@ -304,8 +318,50 @@ def cluster_interests_with_labels(
         else:
             centroid = embeddings[mask].mean(axis=0)
         centroids.append(centroid)
+    return np.array(centroids, dtype=np.float32)
 
-    return np.array(centroids, dtype=np.float32), labels
+
+def _merge_small_clusters(
+    embeddings: NDArray[np.float32],
+    labels: NDArray[np.int32],
+    min_size: int,
+) -> NDArray[np.int32]:
+    """Merge clusters smaller than min_size into the nearest larger cluster."""
+    if min_size <= 1:
+        return labels
+
+    unique_labels, counts = np.unique(labels, return_counts=True)
+    small = {int(lbl) for lbl, cnt in zip(unique_labels, counts) if cnt < min_size}
+    if not small:
+        return labels
+
+    large = [int(lbl) for lbl, cnt in zip(unique_labels, counts) if cnt >= min_size]
+    if not large:
+        return np.zeros(len(labels), dtype=np.int32)
+
+    centroids = _centroids_from_labels(embeddings, labels)
+    norms = np.linalg.norm(centroids, axis=1, keepdims=True)
+    norms = np.maximum(norms, 1e-9)
+    centroids_norm = centroids / norms
+
+    new_labels = labels.copy()
+    for lbl in small:
+        idxs = np.where(labels == lbl)[0]
+        if len(idxs) == 0:
+            continue
+
+        cluster_emb = embeddings[idxs]
+        c_norm = np.linalg.norm(cluster_emb, axis=1, keepdims=True)
+        c_norm = np.maximum(c_norm, 1e-9)
+        cluster_emb_norm = cluster_emb / c_norm
+
+        large_indices = [label for label in large]
+        sims = cluster_emb_norm @ centroids_norm[large_indices].T
+        target = large_indices[int(np.argmax(np.mean(sims, axis=0)))]
+        new_labels[idxs] = target
+
+    remap = {old: i for i, old in enumerate(sorted(set(new_labels)))}
+    return np.array([remap[int(lbl)] for lbl in new_labels], dtype=np.int32)
 
 
 # Global rate limiter state

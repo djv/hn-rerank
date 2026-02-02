@@ -25,7 +25,9 @@ from api.constants import (
     ALGOLIA_DEFAULT_DAYS,
     CANDIDATE_FETCH_COUNT,
     CLUSTER_SIMILARITY_THRESHOLD,
+    DEFAULT_CLUSTER_COUNT,
     KNN_NEIGHBORS,
+    MAX_CLUSTERS,
     MAX_USER_STORIES,
 )
 
@@ -183,7 +185,7 @@ STORY_CARD_TEMPLATE: str = """
     </div>
     <h2 class="text-sm font-semibold text-stone-900 leading-snug mb-1">
         <a href="{url}" target="_blank" class="hover:text-hn transition-colors">{title}</a>
-        <a href="{hn_url}" target="_blank" class="ml-1.5 text-[10px] font-normal text-stone-400 hover:text-hn transition-colors" title="Comments">(discuss)</a>
+        <a href="{hn_url}" target="_blank" class="ml-2 text-xs font-medium text-hn/70 hover:text-hn transition-colors" title="Comments">💬</a>
     </h2>
     {reason_html}
     {tldr_html}
@@ -224,6 +226,13 @@ def generate_story_html(story: StoryDisplay) -> str:
     )
 
 
+def resolve_cluster_name(cluster_names: dict[int, str], cluster_id: int) -> str:
+    """Return cluster name with stable fallback for unnamed IDs."""
+    if cluster_id == -1:
+        return ""
+    return cluster_names.get(cluster_id, f"Group {cluster_id + 1}")
+
+
 async def main() -> None:
     parser: argparse.ArgumentParser = argparse.ArgumentParser(
         description="Generate personalized HN dashboard"
@@ -246,6 +255,12 @@ async def main() -> None:
         type=int,
         default=CANDIDATE_FETCH_COUNT,
         help=f"Number of candidates to fetch from Algolia (default: {CANDIDATE_FETCH_COUNT})",
+    )
+    parser.add_argument(
+        "--clusters",
+        type=int,
+        default=DEFAULT_CLUSTER_COUNT,
+        help=f"Number of interest clusters to discover (2-{MAX_CLUSTERS}, default: {DEFAULT_CLUSTER_COUNT})",
     )
     parser.add_argument(
         "-d",
@@ -421,7 +436,7 @@ async def main() -> None:
         if p_emb is not None and len(p_emb) > 0:
             cl_task: Any = progress.add_task("[cyan]Clustering interests...", total=1)
             cluster_centroids, cluster_labels = rerank.cluster_interests_with_labels(
-                p_emb
+                p_emb, n_clusters=args.clusters
             )
             progress.update(
                 cl_task, completed=1, description="[green][+] Interests clustered."
@@ -552,7 +567,7 @@ async def main() -> None:
             reason_url = f"https://news.ycombinator.com/item?id={fav_story.id}"
 
         cid = get_cluster_id(result)
-        cluster_name: str = cluster_names.get(cid, "") if cid != -1 else ""
+        cluster_name: str = resolve_cluster_name(cluster_names, cid)
 
         return StoryDisplay(
             id=s.id,
@@ -658,9 +673,7 @@ async def main() -> None:
                 )
             cluster_cards.append(
                 CLUSTER_CARD_TEMPLATE.format(
-                    cluster_name=html.escape(
-                        cluster_names.get(cid, f"Group {cid + 1}")
-                    ),
+                    cluster_name=html.escape(resolve_cluster_name(cluster_names, cid)),
                     count=len(items),
                     stories_html=stories_in_cluster,
                 )

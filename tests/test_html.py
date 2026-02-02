@@ -1,6 +1,6 @@
 import time
 import pytest
-from generate_html import generate_story_html, get_relative_time
+from generate_html import generate_story_html, get_relative_time, resolve_cluster_name
 from api.models import StoryDisplay
 
 
@@ -53,6 +53,34 @@ def test_generate_story_html_missing_fields():
     assert "https://news.ycombinator.com/item?id=456" in html
     # Should use HN URL as primary link if URL is missing
     assert 'href="https://news.ycombinator.com/item?id=456"' in html
+
+
+def test_resolve_cluster_name_fallback():
+    cluster_names = {0: "Systems"}
+
+    assert resolve_cluster_name(cluster_names, 0) == "Systems"
+    assert resolve_cluster_name(cluster_names, 1) == "Group 2"
+    assert resolve_cluster_name(cluster_names, -1) == ""
+
+
+def test_generate_story_html_includes_cluster_chip():
+    story = StoryDisplay(
+        id=789,
+        match_percent=72,
+        cluster_name=resolve_cluster_name({}, 0),
+        points=50,
+        time_ago="3h",
+        url="https://example.com",
+        title="Clustered story",
+        hn_url="https://news.ycombinator.com/item?id=789",
+        reason="",
+        reason_url="",
+        comments=[],
+    )
+    html = generate_story_html(story)
+
+    assert "cluster-chip" in html
+    assert "Group 1" in html
 
 
 class TestRelativeTime:
