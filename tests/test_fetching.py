@@ -2,7 +2,13 @@ import pytest
 import respx
 from httpx import Response
 from unittest.mock import MagicMock
-from api.fetching import get_best_stories, _clean_text, ALGOLIA_BASE
+from api.constants import MIN_COMMENT_LENGTH, MIN_STORY_COMMENTS
+from api.fetching import (
+    ALGOLIA_BASE,
+    _clean_text,
+    _extract_comments_recursive,
+    get_best_stories,
+)
 
 
 class TestCleanText:
@@ -45,6 +51,77 @@ class TestCleanText:
         result = _clean_text(text)
         assert result is not None
         assert "⠁" not in result
+
+
+class TestExtractComments:
+    """Edge case tests for _extract_comments_recursive."""
+
+    def test_min_comment_length_inclusive(self):
+        text = "a" * MIN_COMMENT_LENGTH
+        children = [
+            {
+                "type": "comment",
+                "text": text,
+                "points": 10,
+                "children": [],
+            }
+        ]
+
+        results = _extract_comments_recursive(children)
+
+        assert len(results) == 1
+        assert results[0]["text"] == text
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_get_best_stories_accepts_min_comment_length():
+    """Ensure stories with comments exactly MIN_COMMENT_LENGTH are kept."""
+    search_url = f"{ALGOLIA_BASE}/search"
+    respx.get(search_url).mock(
+        return_value=Response(
+            200,
+            json={"hits": [{"objectID": "42"}], "nbPages": 1},
+        )
+    )
+
+    min_length_text = "a" * MIN_COMMENT_LENGTH
+    comments = [
+        {
+            "type": "comment",
+            "text": min_length_text,
+            "points": 5,
+            "children": [],
+        }
+        for _ in range(MIN_STORY_COMMENTS)
+    ]
+
+    respx.get(f"{ALGOLIA_BASE}/items/42").mock(
+        return_value=Response(
+            200,
+            json={
+                "id": 42,
+                "type": "story",
+                "title": "Boundary Story",
+                "url": "http://example.com/boundary",
+                "points": 100,
+                "created_at_i": 1600000000,
+                "children": comments,
+            },
+        )
+    )
+
+    with pytest.MonkeyPatch().context() as mp:
+        mock_cache = MagicMock()
+        mp.setattr("api.fetching.CACHE_PATH", mock_cache)
+        mp.setattr("api.fetching.CANDIDATE_CACHE_PATH", mock_cache)
+        mock_cache.__truediv__.return_value.exists.return_value = False
+        mp.setattr("api.fetching._atomic_write_json", lambda p, d: None)
+        mp.setattr("api.fetching._evict_old_cache_files", lambda: None)
+
+        stories = await get_best_stories(limit=1)
+        assert len(stories) == 1
+        assert stories[0].id == 42
 
 
 @pytest.mark.asyncio
@@ -137,12 +214,12 @@ async def test_get_best_stories_pagination():
 
     respx.get(f"{ALGOLIA_BASE}/search").mock(side_effect=itertools.cycle(responses))
 
-    # Mock item fetches - all return valid stories with 20+ comments (MIN_STORY_COMMENTS=20)
+    # Mock item fetches - each story returns plenty of comments (>= MIN_STORY_COMMENTS)
     # We cheat and return the same content for any ID, but distinct IDs matter for the count
     comments = [
         {
             "type": "comment",
-            "text": f"Comment {i} with enough text to pass the minimum length filter requirement which is fifty characters or more.",
+            "text": f"Comment {i} with enough text to pass the minimum length filter requirement (MIN_COMMENT_LENGTH).",
             "children": [],
         }
         for i in range(25)

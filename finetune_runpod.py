@@ -19,7 +19,7 @@ from pathlib import Path
 import runpod
 
 # Config
-GPU_TYPE = "NVIDIA GeForce RTX 4090"
+GPU_TYPE = "NVIDIA GeForce RTX 3090"
 CONTAINER = "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04"
 VOLUME_SIZE = 10
 POD_NAME = "hn-finetune"

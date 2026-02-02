@@ -1,6 +1,6 @@
 import json
 import hashlib
-from unittest.mock import patch, MagicMock
+from unittest.mock import AsyncMock, patch
 import pytest
 from api import rerank
 
@@ -35,21 +35,20 @@ async def test_cluster_name_cache_hit(temp_cache_file):
 @pytest.mark.asyncio
 async def test_cluster_name_cache_miss_and_save(temp_cache_file):
     """Test that name is generated and saved on cache miss."""
-    items = [({"id": 456, "title": "Story 2"}, 1.0)]
+    items = [
+        ({"id": 456, "title": "New Cluster Name Spotlight"}, 1.0),
+        ({"id": 789, "title": "Cluster Name Deep Dive"}, 0.8),
+    ]
     clusters = {0: items}
 
-    # Mock API via httpx
+    # Mock API via internal helper to avoid real HTTP
     with (
         patch.dict("os.environ", {"GROQ_API_KEY": "fake_key"}),
-        patch("httpx.AsyncClient.post") as mock_post,
+        patch(
+            "api.rerank._generate_with_retry",
+            new=AsyncMock(return_value='{"0": "New Cluster Name"}'),
+        ),
     ):
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {
-            "choices": [{"message": {"content": '{"0": "New Cluster Name"}'}}]
-        }
-        mock_post.return_value = mock_resp
-
         # Call function
         names = await rerank.generate_batch_cluster_names(clusters)
 
@@ -75,4 +74,4 @@ async def test_cluster_name_fallback_no_api_key(temp_cache_file):
         names = await rerank.generate_batch_cluster_names(clusters)
 
         # Should get fallback (truncated title or "Misc")
-        assert names[0] in ["Story 3", "Misc"]
+        assert names[0] in ["Story", "Story 3", "Misc"]

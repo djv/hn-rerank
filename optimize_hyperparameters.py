@@ -76,7 +76,8 @@ async def main():
             SEMANTIC_SIGMOID_K=sigmoid_k,
             KNN_NEIGHBORS=knn_k,
         ):
-            metrics = evaluator.evaluate(
+            metrics = evaluator.evaluate_cv(
+                n_folds=3,  # Use 3-fold CV for speed while retaining robustness
                 diversity=diversity_lambda,
                 knn=knn_k,
                 neg_weight=neg_weight,
@@ -84,13 +85,9 @@ async def main():
                 k_metrics=[10, 30]
             )
 
-        # Combined objective: NDCG + MAP (rewards both ranking quality and precision)
-        ndcg_30 = metrics["ndcg@30"]
-        map_30 = metrics["map@30"]
-        ndcg_10 = metrics["ndcg@10"]
-
-        # Weight early precision higher (NDCG@10) + overall ranking (NDCG@30) + precision (MAP@30)
-        return 0.3 * ndcg_10 + 0.4 * ndcg_30 + 0.3 * map_30
+        # Combined objective: MRR (Robustness) + NDCG (Quality)
+        # MRR is heavily weighted to ensure relevant items appear at all
+        return 0.5 * metrics["mrr"] + 0.3 * metrics["ndcg@30"] + 0.2 * metrics["map@30"]
 
     # 3. Run Optimization
     study = optuna.create_study(direction="maximize")
