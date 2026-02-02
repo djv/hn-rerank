@@ -553,13 +553,27 @@ _CLUSTER_NAME_STOPWORDS = {
 }
 
 
-def _is_valid_cluster_name(name: str) -> bool:
+def _cluster_keywords(items: list[tuple[dict[str, Any], float]]) -> set[str]:
+    keywords: set[str] = set()
+    sorted_items = sorted(items, key=lambda x: -x[1])[:3]
+    for s, _ in sorted_items:
+        title = str(s.get("title", "")).strip()
+        tokens = re.findall(r"[A-Za-z0-9+#]+", title)
+        keywords.update(
+            t.lower() for t in tokens if t.lower() not in _CLUSTER_NAME_STOPWORDS
+        )
+    return keywords
+
+
+def _is_valid_cluster_name(name: str, keywords: set[str] | None = None) -> bool:
     normalized = name.strip()
     if not normalized:
         return False
     if normalized.lower() in _INVALID_CLUSTER_NAMES:
         return False
     words = normalized.split()
+    if keywords and not any(word.lower() in keywords for word in words):
+        return False
     return 2 <= len(words) <= 3
 
 

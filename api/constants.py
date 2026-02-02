@@ -49,7 +49,7 @@ KNN_NEIGHBORS = 5  # Optuna (10-fold CV, 500 candidates)
 # Multi-Interest Clustering
 DEFAULT_CLUSTER_COUNT = 25
 MIN_CLUSTERS = 2
-MAX_CLUSTERS = 25
+MAX_CLUSTERS = 40
 MIN_SAMPLES_PER_CLUSTER = 2  # Smaller clusters = more granularity
 MAX_CLUSTER_FRACTION = 0.25  # Max cluster size vs total signals
 CLUSTER_SIMILARITY_THRESHOLD = 0.85  # Min similarity to belong to a cluster (raised for fine-tuned model)
