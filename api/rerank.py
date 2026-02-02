@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import math
+import re
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -40,7 +41,7 @@ from api.constants import (
     LLM_TLDR_MAX_TOKENS,
     LLM_TLDR_MODEL,
     MAX_CLUSTERS,
-    MAX_CLUSTER_SIZE_MULTIPLIER,
+    MAX_CLUSTER_FRACTION,
     MIN_CLUSTERS,
     MIN_SAMPLES_PER_CLUSTER,
     RANKING_DIVERSITY_LAMBDA,
@@ -300,17 +301,17 @@ def cluster_interests_with_labels(
 
     labels = _merge_small_clusters(embeddings, labels, MIN_SAMPLES_PER_CLUSTER)
 
-    avg_size = int(math.ceil(n_samples / effective_n_clusters))
     max_size = max(
         MIN_SAMPLES_PER_CLUSTER,
-        int(avg_size * MAX_CLUSTER_SIZE_MULTIPLIER),
+        int(math.ceil(n_samples * MAX_CLUSTER_FRACTION)),
     )
+    max_clusters = min(MAX_CLUSTERS, n_samples // MIN_SAMPLES_PER_CLUSTER)
     labels = _split_large_clusters(
         embeddings,
         labels,
-        desired_clusters=effective_n_clusters,
         min_size=MIN_SAMPLES_PER_CLUSTER,
         max_size=max_size,
+        max_clusters=max_clusters,
     )
 
     centroids = _centroids_from_labels(embeddings, labels, weights)
@@ -379,23 +380,61 @@ def _merge_small_clusters(
     return np.array([remap[int(lbl)] for lbl in new_labels], dtype=np.int32)
 
 
+def _reassign_small_subclusters(
+    embeddings_norm: NDArray[np.float32],
+    labels: NDArray[np.int32],
+    min_size: int,
+) -> NDArray[np.int32]:
+    """Reassign samples from tiny subclusters to nearest large centroid."""
+    unique_labels, counts = np.unique(labels, return_counts=True)
+    small = {int(lbl) for lbl, cnt in zip(unique_labels, counts) if cnt < min_size}
+    if not small:
+        return labels
+
+    large = [int(lbl) for lbl, cnt in zip(unique_labels, counts) if cnt >= min_size]
+    if not large:
+        return labels
+
+    centroids = []
+    for lbl in unique_labels:
+        mask = labels == lbl
+        centroids.append(embeddings_norm[mask].mean(axis=0))
+    centroids = np.array(centroids, dtype=np.float32)
+
+    # Normalize centroids to ensure cosine similarity.
+    norms = np.linalg.norm(centroids, axis=1, keepdims=True)
+    norms = np.maximum(norms, 1e-9)
+    centroids_norm = centroids / norms
+
+    new_labels = labels.copy()
+    large_indices = [int(np.where(unique_labels == lbl)[0][0]) for lbl in large]
+
+    for idx, lbl in enumerate(labels):
+        if int(lbl) in small:
+            sims = embeddings_norm[idx] @ centroids_norm[large_indices].T
+            target_idx = large_indices[int(np.argmax(sims))]
+            new_labels[idx] = int(unique_labels[target_idx])
+
+    remap = {old: i for i, old in enumerate(sorted(set(new_labels)))}
+    return np.array([remap[int(lbl)] for lbl in new_labels], dtype=np.int32)
+
+
 def _split_large_clusters(
     embeddings: NDArray[np.float32],
     labels: NDArray[np.int32],
-    desired_clusters: int,
     min_size: int,
     max_size: int,
+    max_clusters: int,
 ) -> NDArray[np.int32]:
-    """Split clusters larger than max_size, without exceeding desired_clusters."""
-    from sklearn.cluster import AgglomerativeClustering
-    if desired_clusters <= 0 or max_size <= 0:
+    """Split clusters larger than max_size, without exceeding max_clusters."""
+    from sklearn.cluster import KMeans
+    if max_clusters <= 0 or max_size <= 0:
         return labels
 
     while True:
         unique_labels, counts = np.unique(labels, return_counts=True)
         cluster_count = len(unique_labels)
-        available = desired_clusters - cluster_count
-        if available <= 0:
+        if cluster_count >= max_clusters:
             return labels
 
         oversized = {
@@ -410,6 +449,7 @@ def _split_large_clusters(
         target_label = max(oversized, key=lambda label: oversized[label])
         target_size = oversized[target_label]
         needed = max(2, int(math.ceil(target_size / max_size)))
+        available = max_clusters - cluster_count
         split_k = min(available + 1, needed)
         if split_k <= 1:
             return labels
@@ -421,13 +461,9 @@ def _split_large_clusters(
         norms = np.maximum(norms, 1e-9)
         sub_norm = sub_emb / norms
 
-        agg = AgglomerativeClustering(
-            n_clusters=split_k,
-            metric="cosine",
-            linkage="average",
-        )
-        sub_labels = agg.fit_predict(sub_norm).astype(np.int32)
-        sub_labels = _merge_small_clusters(sub_emb, sub_labels, min_size)
+        kmeans = KMeans(n_clusters=split_k, n_init=10, random_state=0)
+        sub_labels = kmeans.fit_predict(sub_norm).astype(np.int32)
+        sub_labels = _reassign_small_subclusters(sub_norm, sub_labels, min_size)
 
         sub_unique = sorted(set(sub_labels))
         new_label_start = int(labels.max()) + 1
@@ -476,12 +512,106 @@ async def _rate_limit() -> None:
 
 
 CLUSTER_NAME_CACHE_PATH = Path(".cache/cluster_names.json")
+_INVALID_CLUSTER_NAMES = {
+    "",
+    "misc",
+    "not provided",
+    "n/a",
+    "none",
+    "unknown",
+}
+_CLUSTER_NAME_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "ask",
+    "askhn",
+    "by",
+    "for",
+    "from",
+    "hn",
+    "how",
+    "in",
+    "is",
+    "it",
+    "of",
+    "on",
+    "or",
+    "show",
+    "tell",
+    "the",
+    "to",
+    "vs",
+    "with",
+    "what",
+    "when",
+    "where",
+    "why",
+}
+
+
+def _is_valid_cluster_name(name: str) -> bool:
+    normalized = name.strip()
+    if not normalized:
+        return False
+    if normalized.lower() in _INVALID_CLUSTER_NAMES:
+        return False
+    words = normalized.split()
+    return 2 <= len(words) <= 3
+
+
+def _title_to_label(title: str) -> str:
+    # Clean HN prefixes
+    for prefix in ["Show HN:", "Ask HN:", "Tell HN:"]:
+        if title.startswith(prefix):
+            title = title[len(prefix) :].strip()
+    tokens = re.findall(r"[A-Za-z0-9+#]+", title)
+    filtered = [t for t in tokens if t.lower() not in _CLUSTER_NAME_STOPWORDS]
+    base = filtered if len(filtered) >= 2 else tokens
+
+    if len(base) >= 3:
+        words = base[:3]
+    elif len(base) == 2:
+        words = base
+    elif len(base) == 1:
+        if len(tokens) >= 2:
+            words = tokens[:2]
+        else:
+            words = [base[0], "Topic"]
+    else:
+        words = ["Misc", "Topic"]
+
+    return " ".join(words[:3])
+
+
+def _fallback_cluster_name(items: list[tuple[dict[str, Any], float]]) -> str:
+    sorted_items = sorted(items, key=lambda x: -x[1])
+    for s, _ in sorted_items:
+        title = str(s.get("title", "")).strip()
+        if title:
+            return _title_to_label(title)
+    return "Misc Topic"
+
+
+def _normalize_cluster_name(
+    name: str, items: list[tuple[dict[str, Any], float]]
+) -> str:
+    trimmed = " ".join(name.strip().split()[:3])
+    if _is_valid_cluster_name(trimmed):
+        return trimmed
+    return _fallback_cluster_name(items)
 
 
 def _load_cluster_name_cache() -> dict[str, str]:
     if CLUSTER_NAME_CACHE_PATH.exists():
         try:
-            return json.loads(CLUSTER_NAME_CACHE_PATH.read_text())
+            cache = json.loads(CLUSTER_NAME_CACHE_PATH.read_text())
+            return {
+                key: val for key, val in cache.items() if _is_valid_cluster_name(val)
+            }
         except Exception as e:
             logger.warning(f"Failed to load cluster name cache: {e}")
     return {}
@@ -632,7 +762,7 @@ async def generate_batch_cluster_names(
         cache_key = hashlib.sha256(",".join(story_ids).encode()).hexdigest()
 
         cached_val = cache.get(cache_key)
-        if cached_val and cached_val != "Misc" and len(cached_val.strip()) > 0:
+        if cached_val and _is_valid_cluster_name(cached_val):
             results[cid] = cached_val
         else:
             to_generate[cid] = items
@@ -672,10 +802,10 @@ async def generate_batch_cluster_names(
             batch_prompts.append(f"Cluster {cid}: {json.dumps(cluster_data)}")
 
         full_prompt = f"""
-Name each cluster with a SPECIFIC, TECHNICAL 2-4 word label.
+Name each cluster with a SPECIFIC, TECHNICAL 2-3 word label.
 
 Rules:
-- NO generic terms like "Technology", "Software", "Computers", "Analysis", "Misc".
+- NO generic terms like "Technology", "Software", "Computers", "Analysis", "Misc", "Not Provided".
 - BE PRECISE: "Rust Memory Safety" > "Programming", "PostgreSQL Performance" > "Databases".
 - IF MIXED: Combine top 2 topics (e.g., "AI & Distributed Systems").
 - USE key terms found in the titles (e.g., "LLM", "Wasm", "k8s").
@@ -712,16 +842,17 @@ JSON:"""
                         if final_name.endswith(" and") or final_name.endswith(" or"):
                             final_name = final_name.rsplit(" ", 1)[0]
 
-                        results[cid] = final_name
-                        # Save to cache
                         items = to_generate[cid]
-                        story_ids = sorted(
-                            [str(s.get("id", s.get("objectID", ""))) for s, _ in items]
-                        )
-                        cache_key = hashlib.sha256(
-                            ",".join(story_ids).encode()
-                        ).hexdigest()
-                        cache[cache_key] = final_name
+                        normalized = _normalize_cluster_name(str(name), items)
+                        results[cid] = normalized
+                        if _is_valid_cluster_name(normalized):
+                            story_ids = sorted(
+                                [str(s.get("id", s.get("objectID", ""))) for s, _ in items]
+                            )
+                            cache_key = hashlib.sha256(
+                                ",".join(story_ids).encode()
+                            ).hexdigest()
+                            cache[cache_key] = normalized
                     except (ValueError, TypeError) as e:
                         logger.debug(f"Failed to parse cluster name for {cid_str}: {e}")
                         continue
@@ -736,25 +867,10 @@ JSON:"""
     # Final results with better fallback than "Misc"
     final_results = {}
     for cid, items in clusters.items():
-        if cid in results:
+        if cid in results and _is_valid_cluster_name(results[cid]):
             final_results[cid] = results[cid]
         else:
-            # Fallback to the top story title if LLM naming failed
-            sorted_items = sorted(items, key=lambda x: -x[1])
-            fallback_name = "Misc"
-            if sorted_items:
-                top_title = str(sorted_items[0][0].get("title", "")).strip()
-                # Clean up HN prefixes
-                for prefix in ["Show HN:", "Ask HN:", "Tell HN:"]:
-                    if top_title.startswith(prefix):
-                        top_title = top_title[len(prefix) :].strip()
-
-                if top_title:
-                    fallback_name = (
-                        (top_title[:30] + "...") if len(top_title) > 33 else top_title
-                    )
-
-            final_results[cid] = fallback_name
+            final_results[cid] = _fallback_cluster_name(items)
 
     return final_results
 

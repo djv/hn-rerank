@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 import numpy as np
-from unittest.mock import patch, MagicMock
+from unittest.mock import AsyncMock, patch, MagicMock
 from hypothesis import given, settings, assume
 from hypothesis import strategies as st
 from hypothesis.extra.numpy import arrays
@@ -16,7 +16,7 @@ from api.rerank import (
     _merge_small_clusters,
     _split_large_clusters,
 )
-from api.constants import MIN_SAMPLES_PER_CLUSTER, MAX_CLUSTER_SIZE_MULTIPLIER
+from api.constants import MIN_SAMPLES_PER_CLUSTER, MAX_CLUSTER_FRACTION
 
 
 # Strategy for generating valid embeddings (L2-normalized vectors)
@@ -171,15 +171,17 @@ def test_split_large_clusters_limits_max_size():
     labels = np.array([0] * 8 + [1] * 2, dtype=np.int32)
     desired_clusters = 6
 
-    avg_size = int(np.ceil(len(labels) / desired_clusters))
-    max_size = max(MIN_SAMPLES_PER_CLUSTER, int(avg_size * MAX_CLUSTER_SIZE_MULTIPLIER))
+    max_size = max(
+        MIN_SAMPLES_PER_CLUSTER,
+        int(np.ceil(len(labels) * MAX_CLUSTER_FRACTION)),
+    )
 
     split = _split_large_clusters(
         embeddings,
         labels,
-        desired_clusters=desired_clusters,
         min_size=MIN_SAMPLES_PER_CLUSTER,
         max_size=max_size,
+        max_clusters=desired_clusters,
     )
     counts = np.bincount(split)
 
@@ -256,7 +258,7 @@ async def test_cluster_names_non_empty():
 
 @pytest.mark.asyncio
 async def test_fallback_group_name_on_empty_titles():
-    """Empty titles → 'Misc' fallback."""
+    """Empty titles → two-word fallback."""
     clusters = {
         0: [
             ({"title": ""}, 1.0),
@@ -267,7 +269,7 @@ async def test_fallback_group_name_on_empty_titles():
     names = await generate_batch_cluster_names(clusters)
 
     assert len(names) == 1
-    assert names[0] == "Misc"
+    assert names[0] == "Misc Topic"
 
 
 @pytest.mark.asyncio
@@ -300,3 +302,22 @@ async def test_names_stripped_of_hn_prefixes():
         names = await generate_batch_cluster_names(clusters)
 
     assert "Show" not in names[0] or "Hn" not in names[0]
+
+
+@pytest.mark.asyncio
+async def test_invalid_cluster_name_falls_back():
+    clusters = {
+        0: [
+            ({"title": "Show HN: My Tool"}, 1.0),
+        ],
+    }
+
+    with patch("api.rerank._load_cluster_name_cache", return_value={}), patch(
+        "api.rerank._save_cluster_name_cache", lambda _cache: None
+    ), patch(
+        "api.rerank._generate_with_retry",
+        new=AsyncMock(return_value='{"0": "Not Provided"}'),
+    ):
+        names = await generate_batch_cluster_names(clusters)
+
+    assert names[0] == "My Tool"
