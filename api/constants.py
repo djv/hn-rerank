@@ -47,11 +47,12 @@ SEMANTIC_MATCH_THRESHOLD = 0.50
 KNN_NEIGHBORS = 5  # Optuna (10-fold CV, 500 candidates)
 
 # Multi-Interest Clustering
-DEFAULT_CLUSTER_COUNT = 25
+DEFAULT_CLUSTER_COUNT = 30
 MIN_CLUSTERS = 2
 MAX_CLUSTERS = 40
-MIN_SAMPLES_PER_CLUSTER = 2  # Smaller clusters = more granularity
+MIN_SAMPLES_PER_CLUSTER = 3  # Minimum cluster size (samples per cluster)
 MAX_CLUSTER_FRACTION = 0.25  # Max cluster size vs total signals
+MAX_CLUSTER_SIZE = 40  # Absolute max cluster size
 CLUSTER_SIMILARITY_THRESHOLD = 0.85  # Min similarity to belong to a cluster (raised for fine-tuned model)
 
 # Ranking Weights
@@ -95,6 +96,7 @@ LLM_TLDR_MAX_TOKENS = 2000
 LLM_CLUSTER_BATCH_SIZE = 10  # Clusters per API request
 LLM_TLDR_BATCH_SIZE = 5  # Stories per TLDR request
 LLM_CLUSTER_NAME_MAX_WORDS = 6  # Max words in cluster name
+LLM_CLUSTER_NAME_MIN_COVERAGE = 0.35  # Min title token overlap with label
 
 # Rate Limiting (Token Bucket)
 RATE_LIMIT_REFILL_RATE = 0.25  # Tokens per second (1 call per 4 seconds)

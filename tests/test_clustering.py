@@ -16,7 +16,12 @@ from api.rerank import (
     _merge_small_clusters,
     _split_large_clusters,
 )
-from api.constants import MIN_SAMPLES_PER_CLUSTER, MAX_CLUSTER_FRACTION
+from api.constants import (
+    MIN_SAMPLES_PER_CLUSTER,
+    MAX_CLUSTER_FRACTION,
+    MAX_CLUSTER_SIZE,
+    MAX_CLUSTERS,
+)
 
 
 # Strategy for generating valid embeddings (L2-normalized vectors)
@@ -53,7 +58,7 @@ def test_single_sample_returns_single_cluster():
     assert labels[0] == 0
 
 
-@given(st.integers(min_value=2, max_value=3))
+@given(st.integers(min_value=2, max_value=5))
 def test_small_sample_fallback(n_samples: int):
     """n < MIN_SAMPLES*2 returns single cluster."""
     assume(n_samples < MIN_SAMPLES_PER_CLUSTER * 2)
@@ -144,10 +149,10 @@ def test_merge_small_clusters_removes_singletons():
     )
     labels = np.array([0, 0, 1, 1, 2, 3], dtype=np.int32)
 
-    merged = _merge_small_clusters(embeddings, labels, min_size=2)
+    merged = _merge_small_clusters(embeddings, labels, min_size=MIN_SAMPLES_PER_CLUSTER)
     counts = np.bincount(merged)
 
-    assert counts.min() >= 2
+    assert counts.min() >= MIN_SAMPLES_PER_CLUSTER
     assert sorted(set(merged)) == list(range(len(set(merged))))
 
 
@@ -173,7 +178,10 @@ def test_split_large_clusters_limits_max_size():
 
     max_size = max(
         MIN_SAMPLES_PER_CLUSTER,
-        int(np.ceil(len(labels) * MAX_CLUSTER_FRACTION)),
+        min(
+            MAX_CLUSTER_SIZE,
+            int(np.ceil(len(labels) * MAX_CLUSTER_FRACTION)),
+        ),
     )
 
     split = _split_large_clusters(
@@ -185,8 +193,28 @@ def test_split_large_clusters_limits_max_size():
     )
     counts = np.bincount(split)
 
-    assert counts.max() <= max_size
+    allowed_max = max_size + MIN_SAMPLES_PER_CLUSTER - 1
+    assert counts.max() <= allowed_max
     assert sorted(set(split)) == list(range(len(set(split))))
+
+
+def test_split_large_clusters_respects_absolute_cap():
+    """Large clusters are split to respect absolute max cluster size."""
+    np.random.seed(0)
+    embeddings = np.random.randn(100, 8).astype(np.float32)
+    labels = np.zeros(100, dtype=np.int32)
+
+    split = _split_large_clusters(
+        embeddings,
+        labels,
+        min_size=MIN_SAMPLES_PER_CLUSTER,
+        max_size=MAX_CLUSTER_SIZE,
+        max_clusters=MAX_CLUSTERS,
+    )
+    counts = np.bincount(split)
+
+    allowed_max = MAX_CLUSTER_SIZE + MIN_SAMPLES_PER_CLUSTER - 1
+    assert counts.max() <= allowed_max
 
 
 def test_weighted_centroid():
@@ -320,4 +348,88 @@ async def test_invalid_cluster_name_falls_back():
     ):
         names = await generate_batch_cluster_names(clusters)
 
-    assert names[0] == "My Tool"
+    assert set(names[0].split()) == {"My", "Tool"}
+
+
+@pytest.mark.asyncio
+async def test_llm_cluster_name_requires_title_overlap():
+    clusters = {
+        0: [
+            ({"title": "Tree-sitter vs. Language Servers"}, 1.0),
+            ({"title": "Crafting Interpreters"}, 0.9),
+        ],
+    }
+
+    with patch("api.rerank._load_cluster_name_cache", return_value={}), patch(
+        "api.rerank._save_cluster_name_cache", lambda _cache: None
+    ), patch(
+        "api.rerank._generate_with_retry",
+        new=AsyncMock(return_value='{"0": "LLM Coding Agents"}'),
+    ), patch(
+        "api.rerank._fallback_cluster_name", return_value="Language Systems"
+    ):
+        names = await generate_batch_cluster_names(clusters)
+
+    assert names[0] == "Language Systems"
+
+
+@pytest.mark.asyncio
+async def test_llm_cluster_name_kept_without_keyword_overlap():
+    clusters = {
+        0: [
+            ({"title": "Transportation systems for urban transit"}, 1.0),
+            ({"title": "Systems reliability in autonomous transit"}, 0.9),
+        ],
+    }
+
+    with patch("api.rerank._load_cluster_name_cache", return_value={}), patch(
+        "api.rerank._save_cluster_name_cache", lambda _cache: None
+    ), patch(
+        "api.rerank._generate_with_retry",
+        new=AsyncMock(return_value='{"0": "Transportation Systems"}'),
+    ):
+        names = await generate_batch_cluster_names(clusters)
+
+    assert names[0] == "Transportation Systems"
+
+
+@pytest.mark.asyncio
+async def test_llm_cluster_name_allows_six_words():
+    clusters = {
+        0: [
+            ({"title": "Large language models for code generation"}, 1.0),
+            ({"title": "Neural networks and transformers"}, 0.9),
+        ],
+    }
+
+    with patch("api.rerank._load_cluster_name_cache", return_value={}), patch(
+        "api.rerank._save_cluster_name_cache", lambda _cache: None
+    ), patch(
+        "api.rerank._generate_with_retry",
+        new=AsyncMock(return_value='{"0": "Deep Learning for Large Language Models"}'),
+    ):
+        names = await generate_batch_cluster_names(clusters)
+
+    assert names[0] == "Deep Learning for Large Language Models"
+
+
+@pytest.mark.asyncio
+async def test_llm_cluster_name_truncates_to_max_words():
+    clusters = {
+        0: [
+            ({"title": "Graph neural networks in drug discovery"}, 1.0),
+            ({"title": "Protein structure prediction pipelines"}, 0.9),
+        ],
+    }
+
+    with patch("api.rerank._load_cluster_name_cache", return_value={}), patch(
+        "api.rerank._save_cluster_name_cache", lambda _cache: None
+    ), patch(
+        "api.rerank._generate_with_retry",
+        new=AsyncMock(
+            return_value='{"0": "Graph Neural Networks for Drug Discovery Pipelines"}'
+        ),
+    ):
+        names = await generate_batch_cluster_names(clusters)
+
+    assert names[0] == "Graph Neural Networks for Drug Discovery"

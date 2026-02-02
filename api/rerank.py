@@ -34,6 +34,7 @@ from api.constants import (
     KNN_NEIGHBORS,
     LLM_CLUSTER_BATCH_SIZE,
     LLM_CLUSTER_NAME_MAX_WORDS,
+    LLM_CLUSTER_NAME_MIN_COVERAGE,
     LLM_CLUSTER_NAME_MODEL,
     LLM_HTTP_TIMEOUT,
     LLM_TEMPERATURE,
@@ -42,6 +43,7 @@ from api.constants import (
     LLM_TLDR_MODEL,
     MAX_CLUSTERS,
     MAX_CLUSTER_FRACTION,
+    MAX_CLUSTER_SIZE,
     MIN_CLUSTERS,
     MIN_SAMPLES_PER_CLUSTER,
     RANKING_DIVERSITY_LAMBDA,
@@ -262,7 +264,7 @@ def cluster_interests_with_labels(
 ) -> tuple[NDArray[np.float32], NDArray[np.int32]]:
     """
     Cluster user interest embeddings using Agglomerative Clustering.
-    Uses fixed k (default 12); LLM naming handles semantic coherence.
+    Uses fixed k (default 25); LLM naming handles semantic coherence.
     Returns (centroids, labels) where:
       - centroids: shape (n_clusters, embedding_dim)
       - labels: shape (n_samples,) cluster assignment per sample
@@ -287,7 +289,7 @@ def cluster_interests_with_labels(
     norms = np.maximum(norms, 1e-9)
     normalized = embeddings / norms
 
-    # Use fixed number of clusters as requested (max 25)
+    # Use fixed number of clusters as requested (max MAX_CLUSTERS)
     # n_clusters is capped by n_samples / MIN_SAMPLES_PER_CLUSTER and MAX_CLUSTERS
     effective_n_clusters = min(n_clusters, MAX_CLUSTERS, n_samples // MIN_SAMPLES_PER_CLUSTER)
     effective_n_clusters = max(effective_n_clusters, MIN_CLUSTERS)
@@ -303,7 +305,10 @@ def cluster_interests_with_labels(
 
     max_size = max(
         MIN_SAMPLES_PER_CLUSTER,
-        int(math.ceil(n_samples * MAX_CLUSTER_FRACTION)),
+        min(
+            MAX_CLUSTER_SIZE,
+            int(math.ceil(n_samples * MAX_CLUSTER_FRACTION)),
+        ),
     )
     max_clusters = min(MAX_CLUSTERS, n_samples // MIN_SAMPLES_PER_CLUSTER)
     labels = _split_large_clusters(
@@ -553,28 +558,21 @@ _CLUSTER_NAME_STOPWORDS = {
 }
 
 
-def _cluster_keywords(items: list[tuple[dict[str, Any], float]]) -> set[str]:
-    keywords: set[str] = set()
-    sorted_items = sorted(items, key=lambda x: -x[1])[:3]
-    for s, _ in sorted_items:
-        title = str(s.get("title", "")).strip()
-        tokens = re.findall(r"[A-Za-z0-9+#]+", title)
-        keywords.update(
-            t.lower() for t in tokens if t.lower() not in _CLUSTER_NAME_STOPWORDS
-        )
-    return keywords
-
-
-def _is_valid_cluster_name(name: str, keywords: set[str] | None = None) -> bool:
+def _is_valid_cluster_name(name: str) -> bool:
     normalized = name.strip()
     if not normalized:
         return False
     if normalized.lower() in _INVALID_CLUSTER_NAMES:
         return False
     words = normalized.split()
-    if keywords and not any(word.lower() in keywords for word in words):
+    cleaned = [
+        re.sub(r"[^A-Za-z0-9]+", "", word)
+        for word in words
+        if re.sub(r"[^A-Za-z0-9]+", "", word)
+    ]
+    if len(cleaned) < 2:
         return False
-    return 2 <= len(words) <= 3
+    return 2 <= len(cleaned) <= LLM_CLUSTER_NAME_MAX_WORDS
 
 
 def _title_to_label(title: str) -> str:
@@ -601,7 +599,52 @@ def _title_to_label(title: str) -> str:
     return " ".join(words[:3])
 
 
+def _cluster_token_frequencies(items: list[tuple[dict[str, Any], float]]) -> list[str]:
+    from collections import Counter
+
+    counter: Counter[str] = Counter()
+    sorted_items = sorted(items, key=lambda x: -x[1])[:20]
+    for s, _ in sorted_items:
+        title = str(s.get("title", "")).strip()
+        if not title:
+            continue
+        tokens = re.findall(r"[A-Za-z0-9+#]+", title)
+        for t in tokens:
+            tl = t.lower()
+            if tl in _CLUSTER_NAME_STOPWORDS or len(tl) < 2:
+                continue
+            counter[tl] += 1
+
+    if not counter:
+        return []
+
+    def _sort_key(item: tuple[str, int]) -> tuple[int, int, str]:
+        token, freq = item
+        return (freq, len(token), token)
+
+    top = [t for t, _ in sorted(counter.items(), key=_sort_key, reverse=True)[:3]]
+    return top
+
+
+def _format_label_tokens(tokens: list[str]) -> str:
+    if not tokens:
+        return "Misc Topic"
+    upper = {"ai", "llm", "api", "gpu", "sql", "k8s", "wasm", "ios", "mac"}
+    formatted: list[str] = []
+    for t in tokens:
+        if t in upper:
+            formatted.append(t.upper())
+        elif t.isupper():
+            formatted.append(t)
+        else:
+            formatted.append(t.capitalize())
+    return " ".join(formatted[:3])
+
+
 def _fallback_cluster_name(items: list[tuple[dict[str, Any], float]]) -> str:
+    tokens = _cluster_token_frequencies(items)
+    if tokens:
+        return _format_label_tokens(tokens)
     sorted_items = sorted(items, key=lambda x: -x[1])
     for s, _ in sorted_items:
         title = str(s.get("title", "")).strip()
@@ -610,12 +653,34 @@ def _fallback_cluster_name(items: list[tuple[dict[str, Any], float]]) -> str:
     return "Misc Topic"
 
 
+def _label_coverage(label: str, items: list[tuple[dict[str, Any], float]]) -> float:
+    if not label or not items:
+        return 0.0
+    label_tokens = [t.lower() for t in re.findall(r"[A-Za-z0-9+#]+", label)]
+    if not label_tokens:
+        return 0.0
+    match_count = 0
+    total = 0
+    for s, _ in items:
+        title = str(s.get("title", "")).strip().lower()
+        if not title:
+            continue
+        total += 1
+        if any(tok in title for tok in label_tokens):
+            match_count += 1
+    return match_count / max(total, 1)
+
+
 def _normalize_cluster_name(
-    name: str, items: list[tuple[dict[str, Any], float]]
+    name: str,
+    items: list[tuple[dict[str, Any], float]],
 ) -> str:
-    trimmed = " ".join(name.strip().split()[:3])
-    if _is_valid_cluster_name(trimmed):
-        return trimmed
+    cleaned = " ".join(name.strip().split()[:LLM_CLUSTER_NAME_MAX_WORDS])
+    cleaned = cleaned.rstrip(" ,&/").rstrip()
+    if cleaned.endswith(" and") or cleaned.endswith(" or"):
+        cleaned = cleaned.rsplit(" ", 1)[0]
+    if _is_valid_cluster_name(cleaned):
+        return cleaned
     return _fallback_cluster_name(items)
 
 
@@ -816,7 +881,7 @@ async def generate_batch_cluster_names(
             batch_prompts.append(f"Cluster {cid}: {json.dumps(cluster_data)}")
 
         full_prompt = f"""
-Name each cluster with a SPECIFIC, TECHNICAL 2-3 word label.
+Name each cluster with a SPECIFIC, TECHNICAL 2-6 word label.
 
 Rules:
 - NO generic terms like "Technology", "Software", "Computers", "Analysis", "Misc", "Not Provided".
@@ -842,6 +907,7 @@ JSON:"""
             )
 
             if text:
+                logger.debug("Groq cluster naming raw response: %s", text)
                 batch_results = _safe_json_loads(text)
                 for cid_str, name in batch_results.items():
                     try:
@@ -852,12 +918,15 @@ JSON:"""
                         )
                         final_name = " ".join(final_name)
                         # Strip trailing conjunctions/punctuation left by truncation
-                        final_name = final_name.rstrip(" ,&").rstrip()
+                        final_name = final_name.rstrip(" ,&/").rstrip()
                         if final_name.endswith(" and") or final_name.endswith(" or"):
                             final_name = final_name.rsplit(" ", 1)[0]
 
                         items = to_generate[cid]
-                        normalized = _normalize_cluster_name(str(name), items)
+                        normalized = _normalize_cluster_name(final_name, items)
+                        if _label_coverage(normalized, items) < LLM_CLUSTER_NAME_MIN_COVERAGE:
+                            normalized = _fallback_cluster_name(items)
+
                         results[cid] = normalized
                         if _is_valid_cluster_name(normalized):
                             story_ids = sorted(

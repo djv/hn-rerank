@@ -22,12 +22,12 @@ HN Rerank is a local-first application that personalizes Hacker News content usi
 - **Hybrid Approach**:
     - **Discovery**: Uses Algolia API to find candidate stories (search by date/points).
     - **Time Windows**: Fetches candidates in **7-day windows** to stay under Algolia's 1000-hit limit while minimizing API calls.
-    - **Detail**: Uses Algolia item API (`/api/v1/items/<id>`) to fetch story details and nested comments for ranking.
-- **Caching**:
-    - **Positive Cache**: Stores valid story data for 24h.
-    - **Negative Cache**: Stores failures/invalid items (e.g., jobs, comments) to prevent infinite re-fetching loops.
-    - **Candidate Cache**: Stores Algolia search results per time-window. Recent window (30m TTL), older windows (1w TTL).
-- **Smart Scraping**:
+    - **Detail**: Uses Algolia item API (`/api/v1/items/<id>`) to fetch story details and nested comments for ranking, so no HTML scraping is necessary for story content.
+    - **Caching**:
+        - **Positive Cache**: Stores valid story data for 24h.
+        - **Negative Cache**: Stores failures/invalid items (e.g., jobs, comments) to prevent infinite re-fetching loops.
+        - **Candidate Cache**: Stores Algolia search results per time-window. Recent window (30m TTL), older windows (1w TTL).
+    - **Smart Scraping**: HTML scraping is only used by `api/client.py` to collect upvote/favorite IDs via BeautifulSoup; the candidate pipeline relies entirely on Algolia.
 
 ### 4. Reranking Engine (`api/rerank.py`)
 - **Model**: Uses a local **fine-tuned** ONNX embedding model (`bge-base-en-v1.5`).
@@ -35,15 +35,18 @@ HN Rerank is a local-first application that personalizes Hacker News content usi
     - Fine-tuning scripts (`prepare_data.py`, `tune_embeddings.py`, `export_tuned.py`) allow for local retraining on updated interaction data.
 - **Multi-Interest Clustering**:
     - Uses **Agglomerative Clustering** with **Average Linkage** and **Cosine Metric**.
-    - **Default k=25** (configurable via `--clusters`). LLM naming handles semantic coherence.
-    - Enforces a minimum cluster size of **2** by merging small clusters into nearest larger groups.
-    - Splits oversized clusters to keep max size under **25%** of total signals.
+    - **Default k=30** (configurable via `--clusters`). LLM naming handles semantic coherence.
+    - Enforces a minimum cluster size of **3** by merging tiny clusters into larger neighbors before splitting oversized groups.
+    - Splits oversized clusters to keep max size under **min(25% of signals, 40)**.
     - `cluster_interests_with_labels(embeddings, weights, n_clusters)` returns `(centroids, labels)`.
 - **Cluster Naming** (`generate_batch_cluster_names()` via Groq API):
-    - Uses Groq API (`llama-3.3-70b-versatile`) to generate contextual 2-3 word labels.
+    - Uses Groq API (`llama-3.3-70b-versatile`) to generate contextual 2-6 word labels from top titles + comment snippets.
     - Batches naming requests (10 per call) to optimize quota.
-    - Strips HN prefixes (Show HN:, Ask HN:, Tell HN:) before sending to LLM.
-    - Falls back to "Misc" if API unavailable.
+    - Labels are validated to be non-generic and 2-6 words before caching.
+    - Names must share at least 35% of their tokens with the cluster titles; otherwise we fall back to keyword-derived labels.
+    - Debug logging records raw LLM naming responses for troubleshooting.
+    - Falls back to keyword-derived labels if the API is unavailable or returns invalid output.
+    - HN prefixes (Show HN:, Ask HN:, Tell HN:) are stripped in fallback label generation.
     - Cached by cluster content hash in `.cache/cluster_names.json`.
     - Progress bar shows per-cluster naming progress.
 - **Scoring Algorithm** (two modes):
