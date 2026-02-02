@@ -44,38 +44,38 @@ EMBEDDING_MODEL_VERSION = "v10-tuned"  # Fine-tuned on 218 triplets (96% accurac
 SIMILARITY_MIN = -1.0
 SIMILARITY_MAX = 1.0
 SEMANTIC_MATCH_THRESHOLD = 0.50
-KNN_NEIGHBORS = 2  # Optimization: k=2 for broader matching
+KNN_NEIGHBORS = 5  # Optuna (10-fold CV, 500 candidates)
 
 # Multi-Interest Clustering
-DEFAULT_CLUSTER_COUNT = 12  # Fixed k; LLM naming handles coherence
+DEFAULT_CLUSTER_COUNT = 25
 MIN_CLUSTERS = 2
-MAX_CLUSTERS = 50
+MAX_CLUSTERS = 25
 MIN_SAMPLES_PER_CLUSTER = 2  # Smaller clusters = more granularity
-CLUSTER_SIMILARITY_THRESHOLD = 0.70  # Min similarity to belong to a cluster
+CLUSTER_SIMILARITY_THRESHOLD = 0.85  # Min similarity to belong to a cluster (raised for fine-tuned model)
 
 # Ranking Weights
 RANKING_HN_WEIGHT = 0.05  # Weight for HN score vs semantic (legacy, unused with adaptive)
-RANKING_NEGATIVE_WEIGHT = 0.35  # Penalty for similarity to hidden stories (Robust CV)
-RANKING_DIVERSITY_LAMBDA = 0.47  # MMR diversity penalty (Robust CV)
-RANKING_DIVERSITY_LAMBDA_CLASSIFIER = 0.47  # Match default for classifier
+RANKING_NEGATIVE_WEIGHT = 0.3829876086  # Optuna (10-fold CV, 500 candidates)
+RANKING_DIVERSITY_LAMBDA = 0.1730644067  # Optuna (10-fold CV, 500 candidates)
+RANKING_DIVERSITY_LAMBDA_CLASSIFIER = 0.1730644067  # Match default for classifier
 RANKING_MAX_RESULTS = 500  # Max stories to rank via MMR (Increased)
 
 # Adaptive HN Weight (age-based)
 # Optimization showed preference for strong semantic signal (low HN weight)
-ADAPTIVE_HN_WEIGHT_MIN = 0.086  # For stories < 6h old
-ADAPTIVE_HN_WEIGHT_MAX = 0.149  # For stories > 48h old
+ADAPTIVE_HN_WEIGHT_MIN = 0.0808211678  # For stories < 6h old (Optuna 10-fold CV)
+ADAPTIVE_HN_WEIGHT_MAX = 0.1142705634  # For stories > 48h old (Optuna 10-fold CV)
 ADAPTIVE_HN_THRESHOLD_YOUNG = 6  # Hours - below this, use min weight
 ADAPTIVE_HN_THRESHOLD_OLD = 48  # Hours - above this, use max weight
 
 # Freshness Decay
-FRESHNESS_HALF_LIFE_HOURS = 80.7  # Slower decay (Robust CV)
-FRESHNESS_MAX_BOOST = 0.002  # Lower boost (Robust CV)
+FRESHNESS_HALF_LIFE_HOURS = 71.4907953229  # Optuna (10-fold CV, 500 candidates)
+FRESHNESS_MAX_BOOST = 0.00220351924156  # Optuna (10-fold CV, 500 candidates)
 
 # Semantic Scoring
 SEMANTIC_MAXSIM_WEIGHT = 0.95  # Weight for max cluster similarity
 SEMANTIC_MEANSIM_WEIGHT = 0.05  # Weight for mean cluster similarity
-SEMANTIC_SIGMOID_K = 14.8  # Sigmoid steepness (Robust CV)
-SEMANTIC_SIGMOID_THRESHOLD = 0.65  # Threshold (Robust CV)
+SEMANTIC_SIGMOID_K = 31.2249293861  # Optuna (10-fold CV, 500 candidates)
+SEMANTIC_SIGMOID_THRESHOLD = 0.4749411784  # Optuna (10-fold CV, 500 candidates)
 HN_SCORE_NORMALIZATION_CAP = 500  # Cap for log normalization of HN points
 
 # Comment Pool

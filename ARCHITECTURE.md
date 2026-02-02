@@ -13,7 +13,7 @@ HN Rerank is a local-first application that personalizes Hacker News content usi
 - **Concurrency**: Uses `asyncio` for parallel fetching of stories and non-blocking rate-limited LLM calls.
 
 ### 2. Client API (`api/client.py`)
-- **HN Client**: Handles authentication and user profile scraping.
+- **HN Client**: Handles authentication and user profile scraping (favorites/upvoted/hidden via HTML + `BeautifulSoup`).
 - **Session Management**: Stores login cookies in `.cache/user/cookies.json`.
 - **Signal Fetching**: Retrieves IDs of favorited, upvoted, and hidden stories.
 - **Security Note**: Cookies are stored in plain text. This is intended for local single-user use only.
@@ -22,7 +22,7 @@ HN Rerank is a local-first application that personalizes Hacker News content usi
 - **Hybrid Approach**:
     - **Discovery**: Uses Algolia API to find candidate stories (search by date/points).
     - **Time Windows**: Fetches candidates in **7-day windows** to stay under Algolia's 1000-hit limit while minimizing API calls.
-    - **Detail**: Uses HTML Scraping (`BeautifulSoup`) against `news.ycombinator.com` to fetch story details and *ranked comments*.
+    - **Detail**: Uses Algolia item API (`/api/v1/items/<id>`) to fetch story details and nested comments for ranking.
 - **Caching**:
     - **Positive Cache**: Stores valid story data for 24h.
     - **Negative Cache**: Stores failures/invalid items (e.g., jobs, comments) to prevent infinite re-fetching loops.
@@ -35,10 +35,10 @@ HN Rerank is a local-first application that personalizes Hacker News content usi
     - Fine-tuning scripts (`prepare_data.py`, `tune_embeddings.py`, `export_tuned.py`) allow for local retraining on updated interaction data.
 - **Multi-Interest Clustering**:
     - Uses **Agglomerative Clustering** with **Average Linkage** and **Cosine Metric**.
-    - **Fixed k=12** (configurable). LLM naming handles semantic coherence—silhouette optimizes geometry, not usefulness.
+    - **Default k=25** (configurable via `--clusters`). LLM naming handles semantic coherence.
     - `cluster_interests_with_labels(embeddings, weights, n_clusters)` returns `(centroids, labels)`.
 - **Cluster Naming** (`generate_batch_cluster_names()` via Groq API):
-    - Uses Google Groq API (`llama-3.3-70b-versatile`) to generate contextual 1-3 word labels.
+    - Uses Groq API (`llama-3.3-70b-versatile`) to generate contextual 1-3 word labels.
     - Batches naming requests (10 per call) to optimize quota.
     - Strips HN prefixes (Show HN:, Ask HN:, Tell HN:) before sending to LLM.
     - Falls back to "Misc" if API unavailable.
@@ -49,14 +49,14 @@ HN Rerank is a local-first application that personalizes Hacker News content usi
     - **k-NN Fallback**: When classifier is disabled or insufficient data:
         - Calculates the **median** similarity of the top 2 nearest neighbors from your history.
         - Hidden stories also use k-NN (top-2 median). Penalty applied when negative k-NN > positive k-NN (contrastive). Weight: 0.5.
-    - **Soft Sigmoid Activation**: Applies a sigmoid (k=15, threshold=0.30) to semantic scores to suppress noise while preserving strong signals.
+    - **Soft Sigmoid Activation**: Applies a sigmoid (k=31.2, threshold=0.475) to semantic scores to suppress noise while preserving strong signals.
     - **Display Score**: k-NN score (median of top-k neighbors) for consistent ranking/display alignment.
     - **Adaptive HN Weighting**: Story age determines HN weight:
-        - Young stories (<6h): 2% HN weight (trust semantic similarity)
-        - Old stories (>48h): 15% HN weight (trust social proof)
+        - Young stories (<6h): ~8.1% HN weight (trust semantic similarity)
+        - Old stories (>48h): ~11.4% HN weight (trust social proof)
         - Linear interpolation between thresholds
-    - **Freshness Boost**: Exponential decay (half-life: 24h) adds up to 15% boost for new stories. Prevents stale high-match stories from dominating.
-- **Diversity**: Applies Maximal Marginal Relevance (MMR, λ=0.35) to prevent redundant results.
+    - **Freshness Boost**: Exponential decay (half-life: ~71h) adds up to ~0.22% boost for new stories. Prevents stale high-match stories from dominating.
+- **Diversity**: Applies Maximal Marginal Relevance (MMR, λ=0.17) to prevent redundant results.
 - **Story TL;DR** (`generate_batch_tldrs()` via Groq API):
     - Generates concise summaries using `llama-3.1-8b-instant`.
     - Batches requests (5 per call) to minimize API quota consumption.
