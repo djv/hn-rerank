@@ -1,8 +1,20 @@
 import json
-import hashlib
 from unittest.mock import AsyncMock, patch
 import pytest
 from api import rerank
+from api.models import StoryDict
+
+
+def make_story(story_id: int, title: str) -> StoryDict:
+    return {
+        "id": story_id,
+        "title": title,
+        "url": None,
+        "score": 0,
+        "time": 0,
+        "comments": [],
+        "text_content": title,
+    }
 
 
 @pytest.fixture
@@ -15,12 +27,14 @@ def temp_cache_file(tmp_path):
 @pytest.mark.asyncio
 async def test_cluster_name_cache_hit(temp_cache_file):
     """Test that cached name is returned if present."""
-    items = [({"id": 123, "title": "Story 1"}, 1.0)]
-    clusters = {0: items}
+    items: list[tuple[StoryDict, float]] = [(make_story(123, "Story 1"), 1.0)]
+    clusters: dict[int, list[tuple[StoryDict, float]]] = {0: items}
 
     # Calculate expected hash
     story_ids = sorted([str(s.get("id")) for s, _ in items])
-    cache_key = hashlib.sha256(",".join(story_ids).encode()).hexdigest()
+    cache_key = rerank._cluster_name_cache_key(
+        story_ids, rerank.LLM_CLUSTER_NAME_MODEL_PRIMARY
+    )
 
     # Seed cache
     cache_content = {cache_key: "Cached Cluster Name"}
@@ -35,11 +49,11 @@ async def test_cluster_name_cache_hit(temp_cache_file):
 @pytest.mark.asyncio
 async def test_cluster_name_cache_miss_and_save(temp_cache_file):
     """Test that name is generated and saved on cache miss."""
-    items = [
-        ({"id": 456, "title": "New Cluster Name Spotlight"}, 1.0),
-        ({"id": 789, "title": "Cluster Name Deep Dive"}, 0.8),
+    items: list[tuple[StoryDict, float]] = [
+        (make_story(456, "New Cluster Name Spotlight"), 1.0),
+        (make_story(789, "Cluster Name Deep Dive"), 0.8),
     ]
-    clusters = {0: items}
+    clusters: dict[int, list[tuple[StoryDict, float]]] = {0: items}
 
     # Mock API via internal helper to avoid real HTTP
     with (
@@ -58,7 +72,9 @@ async def test_cluster_name_cache_miss_and_save(temp_cache_file):
         cache_content = json.loads(temp_cache_file.read_text())
 
         story_ids = sorted([str(s.get("id")) for s, _ in items])
-        cache_key = hashlib.sha256(",".join(story_ids).encode()).hexdigest()
+        cache_key = rerank._cluster_name_cache_key(
+            story_ids, rerank.LLM_CLUSTER_NAME_MODEL_PRIMARY
+        )
 
         assert cache_key in cache_content
         assert cache_content[cache_key] == "New Cluster Name"
@@ -66,12 +82,10 @@ async def test_cluster_name_cache_miss_and_save(temp_cache_file):
 
 @pytest.mark.asyncio
 async def test_cluster_name_fallback_no_api_key(temp_cache_file):
-    """Test that fallback name is returned if API key is missing."""
-    items = [({"id": 789, "title": "Story 3"}, 1.0)]
-    clusters = {0: items}
+    """Test that missing API key raises an error when naming is required."""
+    items: list[tuple[StoryDict, float]] = [(make_story(789, "Story 3"), 1.0)]
+    clusters: dict[int, list[tuple[StoryDict, float]]] = {0: items}
 
     with patch.dict("os.environ", {}, clear=True):
-        names = await rerank.generate_batch_cluster_names(clusters)
-
-        # Should get fallback (truncated title or "Misc")
-        assert names[0] in ["Story", "Story 3", "Misc"]
+        with pytest.raises(RuntimeError):
+            await rerank.generate_batch_cluster_names(clusters)

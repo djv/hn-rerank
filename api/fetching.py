@@ -10,7 +10,7 @@ import time
 import logging
 from pathlib import Path
 from datetime import UTC, datetime, timedelta
-from typing import Any, Callable, Optional
+from typing import Awaitable, Callable, Optional, TypedDict, cast
 import httpx
 
 from api.constants import (
@@ -28,8 +28,12 @@ from api.constants import (
     CANDIDATE_CACHE_TTL_SHORT,
     CANDIDATE_CACHE_TTL_LONG,
     CANDIDATE_CACHE_TTL_ARCHIVE,
+    RSS_MAX_FEEDS,
+    RSS_OPML_URL,
+    RSS_PER_FEED_LIMIT,
 )
-from api.models import Story
+from api.models import Story, StoryDict
+from api.rss import fetch_rss_stories
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +62,9 @@ def save_cached_candidates(key: str, ids: list[int]) -> None:
     _atomic_write_json(path, ids)
 
 
-def _atomic_write_json(path: Path, data: dict[str, Any] | list[int]) -> None:
+def _atomic_write_json(
+    path: Path, data: dict[str, object] | list[int] | CachedStory
+) -> None:
     """Write JSON atomically using temp file + rename."""
     import tempfile
 
@@ -113,12 +119,46 @@ def _clean_text(txt: str) -> Optional[str]:
     return txt_clean
 
 
+class AlgoliaComment(TypedDict, total=False):
+    type: str
+    points: int
+    text: str
+    children: list["AlgoliaComment"]
+
+
+class AlgoliaItem(TypedDict, total=False):
+    type: str
+    title: str
+    url: str
+    points: int
+    created_at_i: int
+    children: list[AlgoliaComment]
+
+
+class AlgoliaSearchHit(TypedDict):
+    objectID: str
+
+
+class AlgoliaSearchResponse(TypedDict, total=False):
+    hits: list[AlgoliaSearchHit]
+
+
+class CommentScore(TypedDict):
+    text: str
+    score: int
+
+
+class CachedStory(TypedDict):
+    ts: float
+    story: StoryDict | None
+
+
 def _extract_comments_recursive(
-    children: list[dict[str, Any]],
+    children: list[AlgoliaComment],
     depth: int = 0,
     max_depth: int = 3,
     parent_points: int = 0,
-) -> list[dict[str, Any]]:
+) -> list[CommentScore]:
     """
     Extract comments from Algolia's nested children structure.
 
@@ -126,7 +166,7 @@ def _extract_comments_recursive(
     Uses parent's points for replies to maintain thread coherence.
     """
     DEPTH_PENALTY = 50  # Points penalty per depth level
-    results: list[dict[str, Any]] = []
+    results: list[CommentScore] = []
 
     for child in children:
         if child.get("type") != "comment":
@@ -163,10 +203,14 @@ async def fetch_story(client: httpx.AsyncClient, sid: int) -> Optional[Story]:
     cache_file: Path = CACHE_PATH / f"{sid}.json"
     if cache_file.exists():
         try:
-            data: dict[str, Any] = json.loads(cache_file.read_text())
+            data = cast(CachedStory, json.loads(cache_file.read_text()))
             if time.time() - float(data["ts"]) < STORY_CACHE_TTL:
                 cached_story = data.get("story")
-                return Story.from_dict(cached_story) if cached_story else None
+                return (
+                    Story.from_dict(cast(StoryDict, cached_story))
+                    if cached_story
+                    else None
+                )
         except Exception as e:
             logger.debug(f"Failed to load story cache {cache_file}: {e}")
 
@@ -179,7 +223,7 @@ async def fetch_story(client: httpx.AsyncClient, sid: int) -> Optional[Story]:
                 _atomic_write_json(cache_file, {"ts": time.time(), "story": None})
                 return None
 
-            item = resp.json()
+            item = cast(AlgoliaItem, resp.json())
 
             # Validate it's a story
             if item.get("type") != "story":
@@ -217,9 +261,8 @@ async def fetch_story(client: httpx.AsyncClient, sid: int) -> Optional[Story]:
                 comments=ui_comments,
                 text_content=f"{title_context} {top_for_rank}",
             )
-            _atomic_write_json(
-                cache_file, {"ts": time.time(), "story": story.to_dict()}
-            )
+            cache_payload: CachedStory = {"ts": time.time(), "story": story.to_dict()}
+            _atomic_write_json(cache_file, cache_payload)
             _evict_old_cache_files()
             return story
         except Exception as e:
@@ -234,6 +277,7 @@ async def get_best_stories(
     exclude_urls: Optional[set[str]] = None,
     progress_callback: Optional[Callable[[int, int], None]] = None,
     days: int = ALGOLIA_DEFAULT_DAYS,
+    include_rss: bool = True,
 ) -> list[Story]:
     if exclude_ids is None:
         exclude_ids = set()
@@ -342,7 +386,7 @@ async def get_best_stories(
                 # Always add upper bound (< end) to prevent overlap and bound live window
                 filters.append(f"created_at_i<{ts_end}")
 
-                params: dict[str, Any] = {
+                params: dict[str, str | int] = {
                     "tags": "story",
                     "numericFilters": ",".join(filters),
                     "hitsPerPage": fetch_count,
@@ -353,7 +397,7 @@ async def get_best_stories(
                 if resp.status_code != 200 or not resp.content:
                     continue
                 try:
-                    data = resp.json()
+                    data = cast(AlgoliaSearchResponse, resp.json())
                     page_hits = data.get("hits", [])
                     page_ids = [int(h["objectID"]) for h in page_hits]
                     save_cached_candidates(cache_key, page_ids)
@@ -377,7 +421,9 @@ async def get_best_stories(
         if not hits:
             return []
 
-        tasks: list[Any] = [fetch_story(client, sid) for sid in hits]
+        tasks: list[Awaitable[Optional[Story]]] = [
+            fetch_story(client, sid) for sid in hits
+        ]
         for i, task in enumerate(asyncio.as_completed(tasks)):
             res: Optional[Story] = await task
             if res:
@@ -390,4 +436,18 @@ async def get_best_stories(
             if progress_callback:
                 progress_callback(i + 1, len(hits))
 
-        return results
+        rss_stories: list[Story] = []
+        if include_rss:
+            try:
+                rss_stories = await fetch_rss_stories(
+                    opml_url=RSS_OPML_URL,
+                    days=days,
+                    max_feeds=RSS_MAX_FEEDS,
+                    per_feed=RSS_PER_FEED_LIMIT,
+                    exclude_urls=exclude_urls,
+                    fetch_full_content=True,
+                )
+            except Exception as e:
+                logger.warning(f"RSS fetch failed: {e}")
+
+        return results + rss_stories

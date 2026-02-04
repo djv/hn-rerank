@@ -3,24 +3,30 @@ import argparse
 import asyncio
 import getpass
 import html
+import json
+import logging
 import os
+import sys
 import time
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
+from types import ModuleType
+from importlib import import_module
+from importlib.util import find_spec
 
 import numpy as np
 from numpy.typing import NDArray
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskID
 from rich.console import Console
 
 from sklearn.metrics.pairwise import cosine_similarity
 
 from api import rerank
-from api.client import HNClient
+from api.client import HNClient, UserSignals
 from api.fetching import get_best_stories, fetch_story
-from api.models import RankResult, Story, StoryDisplay
+from api.models import RankResult, Story, StoryDict, StoryDisplay
 from api.constants import (
     ALGOLIA_DEFAULT_DAYS,
     CANDIDATE_FETCH_COUNT,
@@ -31,7 +37,78 @@ from api.constants import (
     MAX_USER_STORIES,
 )
 
+_tomllib: ModuleType | None = None
+if find_spec("tomllib") is not None:  # pragma: no cover - Python 3.11+ only
+    _tomllib = import_module("tomllib")
+
+tomllib: ModuleType | None = _tomllib
+
 console: Console = Console()
+
+DEFAULT_CONFIG_PATH = Path("hn_rerank.toml")
+
+
+def _find_config_path(argv: list[str]) -> Optional[Path]:
+    for i, arg in enumerate(argv):
+        if arg == "--config" and i + 1 < len(argv):
+            return Path(argv[i + 1])
+        if arg.startswith("--config="):
+            return Path(arg.split("=", 1)[1])
+    return None
+
+
+def _load_config(argv: list[str]) -> tuple[dict[str, object], Optional[Path]]:
+    config_path = _find_config_path(argv)
+    explicit = config_path is not None
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH if DEFAULT_CONFIG_PATH.exists() else None
+
+    if config_path is None:
+        return {}, None
+    if not config_path.exists():
+        if explicit:
+            raise FileNotFoundError(f"Config file not found: {config_path}")
+        return {}, None
+    if tomllib is None:
+        raise RuntimeError("tomllib not available; cannot load config.")
+
+    raw = tomllib.loads(config_path.read_text())
+    if isinstance(raw, dict) and isinstance(raw.get("hn_rerank"), dict):
+        raw = raw["hn_rerank"]
+
+    if not isinstance(raw, dict):
+        return {}, config_path
+
+    allowed_types: dict[str, type] = {
+        "username": str,
+        "output": str,
+        "count": int,
+        "signals": int,
+        "candidates": int,
+        "clusters": int,
+        "days": int,
+        "use_hidden_signal": bool,
+        "use_classifier": bool,
+        "contrastive": bool,
+        "knn": int,
+        "no_naming": bool,
+        "no_rss": bool,
+        "no_tldr": bool,
+        "debug_scores": bool,
+        "debug_scores_path": str,
+        "debug_clusters": bool,
+        "debug_clusters_path": str,
+    }
+    config: dict[str, object] = {}
+    for key, value in raw.items():
+        expected_type = allowed_types.get(key)
+        if expected_type is None:
+            continue
+        if expected_type is int and isinstance(value, bool):
+            continue
+        if isinstance(value, expected_type):
+            config[key] = value
+    return config, config_path
 
 HTML_TEMPLATE: str = """
 <!DOCTYPE html>
@@ -57,6 +134,8 @@ HTML_TEMPLATE: str = """
             body {{ @apply bg-stone-50 text-stone-800 antialiased; }}
         }}
         .story-card {{ @apply bg-white border border-stone-200 rounded-lg p-2.5 shadow-sm transition-all hover:border-hn hover:shadow-md h-full flex flex-col; }}
+        .story-card.rss-story {{ @apply border-amber-200 bg-amber-50/50; }}
+        .rss-badge {{ @apply px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 text-[10px] font-bold; }}
         .cluster-chip {{ @apply px-1.5 py-0.5 bg-stone-50 border border-stone-200 rounded text-[10px] font-medium text-stone-600 hover:border-hn hover:text-hn transition-colors cursor-default whitespace-nowrap; }}
     </style>
 </head>
@@ -72,7 +151,7 @@ HTML_TEMPLATE: str = """
             <p class="text-[10px] text-stone-400 font-mono">{timestamp}</p>
         </header>
 
-        <div class="grid gap-3 grid-cols-2 items-start">
+        <div class="grid gap-3 items-start grid-cols-[repeat(auto-fit,minmax(280px,1fr))]">
             {stories_html}
         </div>
 
@@ -174,54 +253,57 @@ def get_relative_time(timestamp: int) -> str:
 
 
 STORY_CARD_TEMPLATE: str = """
-<div class="story-card group">
+<div class="story-card group{rss_class}">
     <div class="flex items-center gap-2 mb-0.5 flex-wrap">
         <span class="px-1.5 py-0.5 rounded bg-hn/10 text-hn text-[10px] font-bold">
             {score}%
         </span>
+        {rss_badge}
         {cluster_chip}
         <span class="text-[10px] text-stone-400 font-mono">{points} pts</span>
         <span class="text-[10px] text-stone-400 font-mono">{time_ago}</span>
     </div>
     <h2 class="text-sm font-semibold text-stone-900 leading-snug mb-1">
         <a href="{url}" target="_blank" class="hover:text-hn transition-colors">{title}</a>
-        <a href="{hn_url}" target="_blank" class="ml-2 text-xs font-medium text-hn/70 hover:text-hn transition-colors" title="Comments">💬</a>
+        {comment_link}
     </h2>
-    {reason_html}
     {tldr_html}
 </div>
 """
 
 
 def generate_story_html(story: StoryDisplay) -> str:
-    reason_html: str = ""
-    if story.reason:
-        escaped_reason_title: str = html.escape(story.reason, quote=False)
-
-        if story.reason_url:
-            reason_html = f'<p class="text-[11px] text-emerald-600 mb-2">↳ <a href="{story.reason_url}" target="_blank" class="hover:underline">"{escaped_reason_title}"</a></p>'
-        else:
-            reason_html = f'<p class="text-[11px] text-emerald-600 mb-2">↳ "{escaped_reason_title}"</p>'
-
     cluster_chip: str = ""
     if story.cluster_name:
         cluster_chip = (
             f'<span class="cluster-chip">{html.escape(story.cluster_name)}</span>'
         )
 
+    is_rss: bool = story.id < 0
+    rss_badge: str = '<span class="rss-badge">RSS</span>' if is_rss else ""
+    rss_class: str = " rss-story" if is_rss else ""
+
     tldr_html: str = ""
     if story.tldr:
         tldr_html = f'<div class="text-xs text-stone-600 bg-stone-50 p-2 rounded border border-stone-100 leading-relaxed whitespace-pre-line">{html.escape(story.tldr)}</div>'
 
+    comment_link: str = ""
+    if story.hn_url:
+        comment_link = (
+            f'<a href="{story.hn_url}" target="_blank" class="ml-2 text-xs font-medium text-hn/70 hover:text-hn transition-colors" title="Comments">💬</a>'
+        )
+
+    link_url = story.url or story.hn_url or "#"
     return STORY_CARD_TEMPLATE.format(
         score=story.match_percent,
+        rss_class=rss_class,
+        rss_badge=rss_badge,
         cluster_chip=cluster_chip,
         points=story.points,
         time_ago=story.time_ago,
-        url=story.url or story.hn_url,
+        url=link_url,
         title=html.escape(story.title, quote=False),
-        hn_url=story.hn_url,
-        reason_html=reason_html,
+        comment_link=comment_link,
         tldr_html=tldr_html,
     )
 
@@ -234,10 +316,21 @@ def resolve_cluster_name(cluster_names: dict[int, str], cluster_id: int) -> str:
 
 
 async def main() -> None:
+    config_defaults, config_path = _load_config(sys.argv[1:])
+
     parser: argparse.ArgumentParser = argparse.ArgumentParser(
         description="Generate personalized HN dashboard"
     )
-    parser.add_argument("username", help="Hacker News username")
+    parser.add_argument(
+        "--config",
+        default=str(config_path) if config_path else None,
+        help="Path to hn_rerank.toml config file",
+    )
+    parser.add_argument(
+        "username",
+        nargs="?",
+        help="Hacker News username",
+    )
     parser.add_argument("-o", "--output", default="index.html", help="Output file path")
     parser.add_argument(
         "-c", "--count", type=int, default=30, help="Number of stories to show"
@@ -309,7 +402,56 @@ async def main() -> None:
         action="store_true",
         help="Disable LLM-based cluster naming",
     )
+    parser.add_argument(
+        "--no-rss",
+        action="store_true",
+        help="Disable RSS candidate fetching",
+    )
+    parser.add_argument(
+        "--no-tldr",
+        action="store_true",
+        default=True,
+        help="Disable TL;DR generation (default: True, enable with --tldr)",
+    )
+    parser.add_argument(
+        "--tldr",
+        action="store_false",
+        dest="no_tldr",
+        help="Enable TL;DR generation",
+    )
+    parser.add_argument(
+        "--debug-scores",
+        action="store_true",
+        help="Write score breakdown JSON for selected stories",
+    )
+    parser.add_argument(
+        "--debug-scores-path",
+        default=None,
+        help="Optional path for score breakdown JSON (defaults next to output)",
+    )
+    parser.add_argument(
+        "--debug-clusters",
+        action="store_true",
+        help="Write cluster naming prompts/responses to JSON for debugging",
+    )
+    parser.add_argument(
+        "--debug-clusters-path",
+        default=None,
+        help="Optional path for cluster naming debug JSON (defaults next to output)",
+    )
+    if config_defaults:
+        parser.set_defaults(**config_defaults)
     args: argparse.Namespace = parser.parse_args()
+
+    if args.debug_clusters:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        )
+
+    if not args.username:
+        console.print("[red][bold][-] Error:[/bold] username is required.[/red]")
+        raise SystemExit(1)
 
     # Implication: Classifier requires negative signals
     if args.use_classifier:
@@ -336,7 +478,7 @@ async def main() -> None:
         console=console,
     ) as progress:
         # 1. Profile Building
-        p_task: Any = progress.add_task(
+        p_task: TaskID = progress.add_task(
             f"[*] Building profile for @{args.username}...", total=100
         )
         async with HNClient() as hn:
@@ -357,7 +499,7 @@ async def main() -> None:
                 console.print("[green][+] Login successful![/green]")
                 progress.start()
 
-            data: dict[str, set[int]] = await hn.fetch_user_data(args.username)
+            data: UserSignals = await hn.fetch_user_data(args.username)
             progress.update(
                 p_task, completed=20, description="[*] Fetching signal details..."
             )
@@ -404,7 +546,7 @@ async def main() -> None:
             )
 
         # 2. Embedding
-        e_task: Any = progress.add_task("[*] Embedding preferences...", total=100)
+        e_task: TaskID = progress.add_task("[*] Embedding preferences...", total=100)
 
         def emb_cb(curr: int, total: int) -> None:
             progress.update(e_task, total=total, completed=curr)
@@ -429,14 +571,30 @@ async def main() -> None:
         )
         progress.update(e_task, description="[green][+] Preferences embedded.")
 
+        cluster_emb: Optional[NDArray[np.float32]] = None
+        if pos_stories:
+            ce_task: TaskID = progress.add_task(
+                "[*] Embedding cluster content...", total=100
+            )
+
+            def cluster_emb_cb(curr: int, total: int) -> None:
+                progress.update(ce_task, total=total, completed=curr)
+
+            cluster_emb = rerank.get_cluster_embeddings(
+                [s.text_content for s in pos_stories],
+                progress_callback=cluster_emb_cb,
+            )
+            progress.update(ce_task, description="[green][+] Cluster content embedded.")
+
         # 2b. Clustering interests
         cluster_labels: Optional[NDArray[np.int32]] = None
         cluster_centroids: Optional[NDArray[np.float32]] = None
         cluster_names: dict[int, str] = {}
-        if p_emb is not None and len(p_emb) > 0:
-            cl_task: Any = progress.add_task("[cyan]Clustering interests...", total=1)
+        cluster_source = cluster_emb if cluster_emb is not None else p_emb
+        if cluster_source is not None and len(cluster_source) > 0:
+            cl_task: TaskID = progress.add_task("[cyan]Clustering interests...", total=1)
             cluster_centroids, cluster_labels = rerank.cluster_interests_with_labels(
-                p_emb, n_clusters=args.clusters
+                cluster_source, n_clusters=args.clusters
             )
             progress.update(
                 cl_task, completed=1, description="[green][+] Interests clustered."
@@ -444,7 +602,7 @@ async def main() -> None:
 
             # Build cluster names (LLM calls)
             # Use story score as weight for LLM to see most popular stories first
-            clusters_for_naming: dict[int, list[tuple[dict[str, Any], float]]] = (
+            clusters_for_naming: dict[int, list[tuple[StoryDict, float]]] = (
                 defaultdict(list)
             )
             for i, label in enumerate(cluster_labels):
@@ -454,7 +612,7 @@ async def main() -> None:
                 )
 
             n_clusters = len(clusters_for_naming)
-            name_task: Any = progress.add_task(
+            name_task: TaskID = progress.add_task(
                 "[cyan]Naming clusters...", total=n_clusters
             )
 
@@ -465,13 +623,29 @@ async def main() -> None:
                 cluster_names = {cid: f"Interest Group {cid + 1}" for cid in clusters_for_naming}
                 progress.update(name_task, completed=n_clusters, description="[yellow][!] Using generic cluster names.")
             else:
-                cluster_names = await rerank.generate_batch_cluster_names(
-                    clusters_for_naming, progress_callback=name_cb
-                )
-                progress.update(name_task, description="[green][+] Clusters named.")
+                try:
+                    debug_path = None
+                    if args.debug_clusters:
+                        debug_path = (
+                            Path(args.debug_clusters_path)
+                            if args.debug_clusters_path
+                            else Path(args.output).with_name("cluster_name_debug.json")
+                        )
+                    cluster_names = await rerank.generate_batch_cluster_names(
+                        clusters_for_naming,
+                        progress_callback=name_cb,
+                        debug_path=debug_path,
+                    )
+                    progress.update(name_task, description="[green][+] Clusters named.")
+                except RuntimeError as exc:
+                    progress.stop()
+                    console.print(
+                        f"[red][bold][-] Groq naming failed:[/bold] {exc}[/red]"
+                    )
+                    raise
 
         # 3. Candidates
-        c_task: Any = progress.add_task(
+        c_task: TaskID = progress.add_task(
             f"[*] Fetching {args.candidates} candidates...", total=args.candidates
         )
         # Exclude everything we've already interacted with
@@ -486,13 +660,14 @@ async def main() -> None:
                 c_task, total=tot, completed=curr
             ),
             days=args.days,
+            include_rss=not args.no_rss,
         )
         progress.update(
             c_task, description=f"[green][+] Candidates fetched.   ({len(cands)} valid)"
         )
 
         # 4. Reranking
-        r_task: Any = progress.add_task("[*] Reranking stories...", total=100)
+        r_task: TaskID = progress.add_task("[*] Reranking stories...", total=100)
 
         def rank_cb(curr: int, total: int) -> None:
             progress.update(r_task, total=total, completed=curr)
@@ -514,7 +689,7 @@ async def main() -> None:
     cand_cluster_map: dict[int, int] = {}  # cand_idx -> cluster_id (-1 = no cluster)
     if cluster_centroids is not None and len(cands) > 0:
         cand_texts = [c.text_content for c in cands]
-        cand_emb = rerank.get_embeddings(cand_texts)
+        cand_emb = rerank.get_cluster_embeddings(cand_texts)
         if len(cand_emb) > 0:
             sim_to_clusters = cosine_similarity(cand_emb, cluster_centroids)
             for i in range(len(cands)):
@@ -569,6 +744,8 @@ async def main() -> None:
         cid = get_cluster_id(result)
         cluster_name: str = resolve_cluster_name(cluster_names, cid)
 
+        hn_url = f"https://news.ycombinator.com/item?id={s.id}" if s.id > 0 else None
+
         return StoryDisplay(
             id=s.id,
             match_percent=int(result.knn_score * 100),
@@ -577,7 +754,7 @@ async def main() -> None:
             time_ago=get_relative_time(s.time),
             url=s.url,
             title=s.title or "Untitled",
-            hn_url=f"https://news.ycombinator.com/item?id={s.id}",
+            hn_url=hn_url,
             reason=reason,
             reason_url=reason_url,
             comments=list(s.comments),
@@ -605,9 +782,60 @@ async def main() -> None:
         selected_results.append(result)
         used_indices.add(result.index)
 
+    # Ensure at least 1/3 of results are RSS stories (best-effort)
+    rss_target: int = max(1, (args.count + 2) // 3)
+
+    def is_rss_result(result: RankResult) -> bool:
+        return cands[result.index].id < 0
+
+    rss_selected = sum(1 for r in selected_results if is_rss_result(r))
+    if rss_selected < rss_target:
+        rss_needed = rss_target - rss_selected
+        rss_candidates = [
+            r for r in ranked if is_rss_result(r) and r.index not in used_indices
+        ]
+        non_rss_selected = [r for r in selected_results if not is_rss_result(r)]
+        non_rss_selected.sort(key=lambda r: r.hybrid_score)
+
+        for new_rss in rss_candidates[:rss_needed]:
+            if not non_rss_selected:
+                break
+            to_remove = non_rss_selected.pop(0)
+            selected_results.remove(to_remove)
+            used_indices.discard(to_remove.index)
+            selected_results.append(new_rss)
+            used_indices.add(new_rss.index)
+
     # FINAL STEP: Re-sort selected stories by hybrid_score to ensure best ranking
     # The cluster logic ensures diversity, but we want the best of those stories at the top.
     selected_results.sort(key=lambda x: x.hybrid_score, reverse=True)
+    rss_count = sum(1 for r in selected_results if is_rss_result(r))
+    print(f"[+] Selected {rss_count}/{len(selected_results)} RSS stories.")
+
+    if args.debug_scores:
+        debug_path = (
+            Path(args.debug_scores_path)
+            if args.debug_scores_path
+            else Path(args.output).with_name("scores_debug.json")
+        )
+        debug_rows: list[dict[str, object]] = []
+        for result in selected_results:
+            story = cands[result.index]
+            debug_rows.append(
+                {
+                    "id": story.id,
+                    "title": story.title,
+                    "url": story.url,
+                    "is_rss": story.id < 0,
+                    "hybrid_score": result.hybrid_score,
+                    "semantic_score": result.semantic_score,
+                    "hn_score": result.hn_score,
+                    "freshness_boost": result.freshness_boost,
+                    "knn_score": result.knn_score,
+                }
+            )
+        debug_path.write_text(json.dumps(debug_rows, indent=2))
+        print(f"[+] Score breakdown saved to: {os.path.abspath(debug_path)}")
 
     stories_data: list[StoryDisplay] = []
     seen_urls: set[str] = set()
@@ -618,31 +846,32 @@ async def main() -> None:
         if sd:
             stories_data.append(sd)
 
-    # Generate TL;DRs for stories
-    print("[*] Generating content via LLM...")
-    with progress:
-        llm_task = progress.add_task(
-            "[cyan]Generating TL;DRs...", total=len(stories_data)
-        )
+    if not args.no_tldr:
+        # Generate TL;DRs for stories
+        print("[*] Generating content via LLM...")
+        with progress:
+            llm_task: TaskID = progress.add_task(
+                "[cyan]Generating TL;DRs...", total=len(stories_data)
+            )
 
-        # Batch TL;DR generation (convert to dicts for API)
-        stories_for_tldr = [sd.to_dict() for sd in stories_data]
-        tldrs = await rerank.generate_batch_tldrs(
-            stories_for_tldr,
-            progress_callback=lambda curr, tot: progress.update(
-                llm_task, completed=curr
-            ),
-        )
+            # Batch TL;DR generation (convert to dicts for API)
+            stories_for_tldr = [sd.to_dict() for sd in stories_data]
+            tldrs = await rerank.generate_batch_tldrs(
+                stories_for_tldr,
+                progress_callback=lambda curr, tot: progress.update(
+                    llm_task, completed=curr
+                ),
+            )
 
-        for sd in stories_data:
-            # Assign batched TL;DR
-            sd.tldr = tldrs.get(sd.id, "")
+            for sd in stories_data:
+                # Assign batched TL;DR
+                sd.tldr = tldrs.get(sd.id, "")
 
-        progress.update(
-            llm_task,
-            completed=len(stories_data),
-            description="[green][+] LLM content generated.",
-        )
+            progress.update(
+                llm_task,
+                completed=len(stories_data),
+                description="[green][+] LLM content generated.",
+            )
 
     print("[*] Generating HTML...")
 
@@ -665,8 +894,14 @@ async def main() -> None:
             items = clusters[cid]
             stories_in_cluster: str = ""
             for story in items[:15]:  # Limit display
+                hn_url = (
+                    f"https://news.ycombinator.com/item?id={story.id}"
+                    if story.id > 0
+                    else None
+                )
+                link_url = story.url or hn_url or ""
                 stories_in_cluster += CLUSTER_STORY_TEMPLATE.format(
-                    hn_url=f"https://news.ycombinator.com/item?id={story.id}",
+                    hn_url=link_url,
                     title=html.escape(story.title or "Untitled", quote=False),
                     points=story.score,
                     time_ago=get_relative_time(story.time),

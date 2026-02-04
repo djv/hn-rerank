@@ -27,7 +27,6 @@ def test_generate_story_html_special_chars():
     try:
         html = generate_story_html(story)
         assert "React {hooks}" in html
-        assert "Interest in {technology}" in html
         # Comments are no longer displayed directly; TL;DR replaces them
     except (KeyError, ValueError) as e:
         pytest.fail(f"generate_story_html crashed with special characters: {e}")
@@ -157,7 +156,7 @@ class TestHtmlEscaping:
         assert "<script>" not in html
         assert "&lt;script&gt;" in html
 
-    def test_reason_escaped(self):
+    def test_reason_not_rendered(self):
         story = StoryDisplay(
             id=1,
             match_percent=80,
@@ -172,5 +171,24 @@ class TestHtmlEscaping:
             comments=[],
         )
         html = generate_story_html(story)
-        assert "<b>" not in html
-        assert "&lt;b&gt;" in html
+        assert "<b>Bold</b> reason" not in html
+        assert "&lt;b&gt;Bold&lt;/b&gt; reason" not in html
+
+
+def test_generate_story_html_without_hn_url_hides_comment_link():
+    story = StoryDisplay(
+        id=-1,
+        match_percent=60,
+        cluster_name="",
+        points=0,
+        time_ago="1h",
+        url="https://example.com/rss",
+        title="RSS Story",
+        hn_url=None,
+        reason="",
+        reason_url="",
+        comments=[],
+    )
+    html = generate_story_html(story)
+    assert "RSS Story" in html
+    assert "title=\"Comments\"" not in html

@@ -71,7 +71,9 @@ async def test_generate_html_integration(tmp_path):
 
         # Mock sys.argv
         with patch.object(
-            sys, "argv", ["generate_html.py", username, "-o", str(output_file)]
+            sys,
+            "argv",
+            ["generate_html.py", username, "-o", str(output_file), "--tldr"],
         ):
             await main()
 

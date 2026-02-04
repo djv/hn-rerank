@@ -48,7 +48,7 @@ async def test_candidate_cache_ttl_logic():
         mock_client_cls.return_value = mock_client
 
         # We ask for 40 days of stories
-        await fetching.get_best_stories(limit=10, days=40)
+        await fetching.get_best_stories(limit=10, days=40, include_rss=False)
 
         # Now analyze the calls to get_cached_candidates(key, ttl)
         # We expect multiple calls for different windows.

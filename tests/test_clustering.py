@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import pytest
 import numpy as np
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, patch
 from hypothesis import given, settings, assume
 from hypothesis import strategies as st
 from hypothesis.extra.numpy import arrays
 
+from api.models import StoryDict
 from api.rerank import (
     cluster_interests_with_labels,
     cluster_interests,
     generate_batch_cluster_names,
+    _normalize_embeddings,
+    _refine_cluster_assignments,
     _merge_small_clusters,
     _split_large_clusters,
 )
@@ -22,6 +25,18 @@ from api.constants import (
     MAX_CLUSTER_SIZE,
     MAX_CLUSTERS,
 )
+
+
+def make_story(story_id: int, title: str) -> StoryDict:
+    return {
+        "id": story_id,
+        "title": title,
+        "url": None,
+        "score": 0,
+        "time": 0,
+        "comments": [],
+        "text_content": title,
+    }
 
 
 # Strategy for generating valid embeddings (L2-normalized vectors)
@@ -117,6 +132,28 @@ def test_deterministic_with_same_input():
 
     np.testing.assert_array_equal(labels1, labels2)
     np.testing.assert_array_almost_equal(centroids1, centroids2)
+
+
+def test_refine_cluster_assignments_moves_misassigned_point():
+    """Refinement reassigns points to their closest centroid."""
+    embeddings = np.array(
+        [
+            [1.0, 0.0],
+            [0.9, 0.1],
+            [0.95, -0.05],
+            [-1.0, 0.0],
+            [-0.9, 0.1],
+            [-0.95, -0.05],
+        ],
+        dtype=np.float32,
+    )
+    embeddings_norm = _normalize_embeddings(embeddings)
+    labels = np.array([0, 0, 0, 1, 1, 0], dtype=np.int32)
+
+    refined = _refine_cluster_assignments(embeddings_norm, labels, iters=2)
+
+    assert refined[5] == refined[3] == refined[4]
+    assert refined[5] != refined[0]
 
 
 def test_centroid_is_cluster_mean():
@@ -259,24 +296,22 @@ async def test_cluster_names_non_empty():
     """Every cluster gets a non-empty name."""
     clusters = {
         0: [
-            ({"title": "Introduction to Machine Learning"}, 1.0),
-            ({"title": "Deep Learning Fundamentals"}, 0.9),
+            (make_story(1, "Introduction to Machine Learning"), 1.0),
+            (make_story(2, "Deep Learning Fundamentals"), 0.9),
         ],
         1: [
-            ({"title": "Python Programming"}, 0.8),
-            ({"title": "JavaScript Tutorial"}, 0.7),
+            (make_story(3, "Python Programming"), 0.8),
+            (make_story(4, "JavaScript Tutorial"), 0.7),
         ],
     }
 
-    # Mock Groq API via httpx
-    with patch("httpx.AsyncClient.post") as mock_post:
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {
-            "choices": [{"message": {"content": "Technology"}}]
-        }
-        mock_post.return_value = mock_resp
-
+    with (
+        patch.dict("os.environ", {"GROQ_API_KEY": "fake_key"}),
+        patch(
+            "api.rerank._generate_with_retry",
+            new=AsyncMock(return_value='{"0": "Technology", "1": "Programming"}'),
+        ),
+    ):
         names = await generate_batch_cluster_names(clusters)
 
     assert len(names) == 2
@@ -289,12 +324,19 @@ async def test_fallback_group_name_on_empty_titles():
     """Empty titles → two-word fallback."""
     clusters = {
         0: [
-            ({"title": ""}, 1.0),
-            ({"title": ""}, 0.9),
+            (make_story(5, ""), 1.0),
+            (make_story(6, ""), 0.9),
         ],
     }
 
-    names = await generate_batch_cluster_names(clusters)
+    with (
+        patch.dict("os.environ", {"GROQ_API_KEY": "fake_key"}),
+        patch(
+            "api.rerank._generate_with_retry",
+            new=AsyncMock(return_value='{"0": "Misc Topic"}'),
+        ),
+    ):
+        names = await generate_batch_cluster_names(clusters)
 
     assert len(names) == 1
     assert names[0] == "Misc Topic"
@@ -312,31 +354,29 @@ async def test_names_stripped_of_hn_prefixes():
     """Show HN:, Ask HN:, Tell HN: prefixes are stripped before TF-IDF."""
     clusters = {
         0: [
-            ({"title": "Show HN: My Cool Project"}, 1.0),
-            ({"title": "Ask HN: Best Practices"}, 0.9),
-            ({"title": "Tell HN: Something"}, 0.8),
+            (make_story(7, "Show HN: My Cool Project"), 1.0),
+            (make_story(8, "Ask HN: Best Practices"), 0.9),
+            (make_story(9, "Tell HN: Something"), 0.8),
         ],
     }
 
-    # Mock API via httpx
-    with patch("httpx.AsyncClient.post") as mock_post:
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {
-            "choices": [{"message": {"content": "Projects"}}]
-        }
-        mock_post.return_value = mock_resp
-
+    with (
+        patch.dict("os.environ", {"GROQ_API_KEY": "fake_key"}),
+        patch(
+            "api.rerank._generate_with_retry",
+            new=AsyncMock(return_value='{"0": "Projects"}'),
+        ),
+    ):
         names = await generate_batch_cluster_names(clusters)
 
-    assert "Show" not in names[0] or "Hn" not in names[0]
+    assert names[0] == "Projects"
 
 
 @pytest.mark.asyncio
 async def test_invalid_cluster_name_falls_back():
     clusters = {
         0: [
-            ({"title": "Show HN: My Tool"}, 1.0),
+            (make_story(10, "Show HN: My Tool"), 1.0),
         ],
     }
 
@@ -348,15 +388,15 @@ async def test_invalid_cluster_name_falls_back():
     ):
         names = await generate_batch_cluster_names(clusters)
 
-    assert set(names[0].split()) == {"My", "Tool"}
+    assert names[0] == "Not Provided"
 
 
 @pytest.mark.asyncio
 async def test_llm_cluster_name_requires_title_overlap():
     clusters = {
         0: [
-            ({"title": "Tree-sitter vs. Language Servers"}, 1.0),
-            ({"title": "Crafting Interpreters"}, 0.9),
+            (make_story(11, "Tree-sitter vs. Language Servers"), 1.0),
+            (make_story(12, "Crafting Interpreters"), 0.9),
         ],
     }
 
@@ -365,20 +405,18 @@ async def test_llm_cluster_name_requires_title_overlap():
     ), patch(
         "api.rerank._generate_with_retry",
         new=AsyncMock(return_value='{"0": "LLM Coding Agents"}'),
-    ), patch(
-        "api.rerank._fallback_cluster_name", return_value="Language Systems"
     ):
         names = await generate_batch_cluster_names(clusters)
 
-    assert names[0] == "Language Systems"
+    assert names[0] == "LLM Coding Agents"
 
 
 @pytest.mark.asyncio
 async def test_llm_cluster_name_kept_without_keyword_overlap():
     clusters = {
         0: [
-            ({"title": "Transportation systems for urban transit"}, 1.0),
-            ({"title": "Systems reliability in autonomous transit"}, 0.9),
+            (make_story(13, "Transportation systems for urban transit"), 1.0),
+            (make_story(14, "Systems reliability in autonomous transit"), 0.9),
         ],
     }
 
@@ -397,8 +435,8 @@ async def test_llm_cluster_name_kept_without_keyword_overlap():
 async def test_llm_cluster_name_allows_six_words():
     clusters = {
         0: [
-            ({"title": "Large language models for code generation"}, 1.0),
-            ({"title": "Neural networks and transformers"}, 0.9),
+            (make_story(15, "Large language models for code generation"), 1.0),
+            (make_story(16, "Neural networks and transformers"), 0.9),
         ],
     }
 
@@ -417,8 +455,8 @@ async def test_llm_cluster_name_allows_six_words():
 async def test_llm_cluster_name_truncates_to_max_words():
     clusters = {
         0: [
-            ({"title": "Graph neural networks in drug discovery"}, 1.0),
-            ({"title": "Protein structure prediction pipelines"}, 0.9),
+            (make_story(17, "Graph neural networks in drug discovery"), 1.0),
+            (make_story(18, "Protein structure prediction pipelines"), 0.9),
         ],
     }
 

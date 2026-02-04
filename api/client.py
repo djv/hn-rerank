@@ -3,9 +3,10 @@ import json
 import time
 import logging
 from pathlib import Path
-from typing import Any
+from typing import TypedDict, cast
 import httpx
 from bs4 import BeautifulSoup
+from bs4.element import Tag
 from api.constants import USER_CACHE_DIR, USER_CACHE_TTL
 
 logger = logging.getLogger(__name__)
@@ -13,6 +14,27 @@ logger = logging.getLogger(__name__)
 USER_CACHE_DIR_PATH: Path = Path(USER_CACHE_DIR)
 USER_CACHE_DIR_PATH.mkdir(parents=True, exist_ok=True)
 COOKIES_FILE: Path = USER_CACHE_DIR_PATH / "cookies.json"
+
+
+class UserCacheIds(TypedDict):
+    pos: list[int]
+    upvoted: list[int]
+    hidden: list[int]
+    hidden_urls: list[str]
+    favorites: list[int]
+
+
+class UserCacheFile(TypedDict):
+    ts: float
+    ids: UserCacheIds
+
+
+class UserSignals(TypedDict):
+    pos: set[int]
+    upvoted: set[int]
+    hidden: set[int]
+    hidden_urls: set[str]
+    favorites: set[int]
 
 
 class HNClient:
@@ -30,7 +52,7 @@ class HNClient:
     def _load_cookies(self) -> None:
         if COOKIES_FILE.exists():
             try:
-                cookies: dict[str, Any] = json.loads(COOKIES_FILE.read_text())
+                cookies = cast(dict[str, str], json.loads(COOKIES_FILE.read_text()))
                 self.client.cookies.update(cookies)
             except Exception:
                 pass
@@ -38,11 +60,11 @@ class HNClient:
     async def login(self, user: str, pw: str) -> tuple[bool, str]:
         resp: httpx.Response = await self.client.get("/login")
         soup: BeautifulSoup = BeautifulSoup(resp.text, "html.parser")
-        fnid_tag: Any = soup.find("input", {"name": "fnid"})
+        fnid_tag = soup.find("input", {"name": "fnid"})
 
         data: dict[str, str] = {"acct": user, "pw": pw}
-        if fnid_tag:
-            data["fnid"] = str(fnid_tag["value"])
+        if isinstance(fnid_tag, Tag):
+            data["fnid"] = str(fnid_tag.get("value", ""))
 
         resp = await self.client.post("/login", data=data)
         if "logout" in resp.text:
@@ -68,20 +90,27 @@ class HNClient:
             url: str = f"{path}&p={p}" if "?" in path else f"{path}?p={p}"
             resp: httpx.Response = await self.client.get(url)
             soup: BeautifulSoup = BeautifulSoup(resp.text, "html.parser")
-            rows: Any = soup.find_all("tr", class_="athing")
+            rows: list[Tag] = list(soup.find_all("tr", class_="athing"))
             for r in rows:
-                sid = int(r["id"])
+                sid_attr = r.get("id")
+                if isinstance(sid_attr, list):
+                    sid_attr = sid_attr[0] if sid_attr else None
+                if not isinstance(sid_attr, str) or not sid_attr.isdigit():
+                    continue
+                sid = int(sid_attr)
                 ids.add(sid)
                 
                 # Extract URL for duplicate/hidden detection
                 title_span = r.find("span", class_="titleline")
-                if title_span:
+                if isinstance(title_span, Tag):
                     a = title_span.find("a")
-                    if a and a.get("href"):
-                        href = a["href"]
-                        if not href.startswith("item?id="):
+                    if isinstance(a, Tag):
+                        href_val = a.get("href")
+                        if isinstance(href_val, str) and not href_val.startswith(
+                            "item?id="
+                        ):
                             # Normalize: strip query params and trailing slash
-                            norm_url = href.split("?")[0].rstrip("/")
+                            norm_url = href_val.split("?")[0].rstrip("/")
                             urls.add(norm_url)
             if not soup.find("a", class_="morelink"):
                 break
@@ -93,11 +122,20 @@ class HNClient:
             f"https://hacker-news.firebaseio.com/v0/user/{username}.json"
         )
         if resp.status_code == 200:
-            data: dict[str, Any] = resp.json()
-            return set(data.get("submitted", []))
+            data = cast(dict[str, object], resp.json())
+            submitted = data.get("submitted", [])
+            if not isinstance(submitted, list):
+                return set()
+            out: set[int] = set()
+            for item in submitted:
+                if isinstance(item, int):
+                    out.add(item)
+                elif isinstance(item, str) and item.isdigit():
+                    out.add(int(item))
+            return out
         return set()
 
-    async def fetch_user_data(self, user: str) -> dict[str, set[Any]]:
+    async def fetch_user_data(self, user: str) -> UserSignals:
         cache_path: Path = USER_CACHE_DIR_PATH / f"{user}.json"
 
         # Check login status first (needed for hidden list)
@@ -122,7 +160,7 @@ class HNClient:
 
         if cache_path.exists():
             try:
-                data: dict[str, Any] = json.loads(cache_path.read_text())
+                data = cast(UserCacheFile, json.loads(cache_path.read_text()))
                 if time.time() - float(data["ts"]) < USER_CACHE_TTL:
                     cache_valid = True
                     favorites = set(data["ids"].get("favorites", []))
@@ -172,5 +210,5 @@ class HNClient:
     async def __aenter__(self) -> HNClient:
         return self
 
-    async def __aexit__(self, *args: Any) -> None:
+    async def __aexit__(self, *args: object) -> None:
         await self.close()

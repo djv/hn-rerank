@@ -12,8 +12,14 @@ HN Rerank fetches stories from the last 30 days and re-ranks them based on seman
 - **Story TL;DRs**: LLM-generated summaries (up to 800 chars) covering the story and key discussion points, replacing the raw comments view.
 - **Personalized Ranking**: Uses local BGE-base embeddings to find stories matching your specific interests.
 - **MMR Diversity**: Maximal Marginal Relevance prevents showing 30 stories on the same topic.
+- **RSS Expansion**: Pulls additional candidates from a curated OPML list of high-signal feeds.
 - **Privacy-First**: Your credentials and history stay in `.cache/`. Embeddings run locally.
 - **Smart Summaries**: Weighted breadth-first comment selection to capture diverse viewpoints.
+
+**Notes**
+- RSS items fetch full article text (via `trafilatura`) for embeddings and cache results in `.cache/rss`.
+- RSS ranking uses semantic score only (no HN score or freshness boost), and the final list targets at least one-third RSS items (best-effort).
+- Cluster names are required to come from the Groq call; missing or empty Groq responses raise an error.
 
 ## Quick Start
 
@@ -36,6 +42,7 @@ HN Rerank fetches stories from the last 30 days and re-ranks them based on seman
    ```bash
    uv run generate_html.py <your-hn-username> --days 7 --clusters 30
    ```
+   (Add `--no-rss` to disable RSS candidates.)
    Outputs:
    - `index.html` - Ranked story recommendations with cluster tags and TL;DRs
    - `clusters.html` - Detailed interest cluster visualization
@@ -48,13 +55,30 @@ HN Rerank fetches stories from the last 30 days and re-ranks them based on seman
    4. **Ranking**: Scores candidates by similarity to your interest clusters
    5. **Diversity**: Applies MMR to ensure variety in recommendations
    
-   ## Configuration
+## Configuration
    
-   Key parameters in `api/constants.py`:
+Key parameters in `api/constants.py`:
    - `MAX_USER_STORIES`: Number of upvotes to analyze (default: 1000)
    - `CANDIDATE_FETCH_COUNT`: Stories to consider (default: 200)
    - `ALGOLIA_DEFAULT_DAYS`: Time window for candidates (default: 30)
    - `MIN_CLUSTERS` / `MAX_CLUSTERS`: Clustering bounds (2-40)
+- `RSS_OPML_URL`: Curated OPML list of RSS feeds
+- `RSS_MAX_FEEDS` / `RSS_PER_FEED_LIMIT`: RSS candidate limits
+
+You can also create a `hn_rerank.toml` in the repo root to avoid long CLI flags:
+
+```toml
+# hn_rerank.toml
+username = "your-hn-username"
+days = 7
+clusters = 30
+count = 30
+no_rss = false
+no_tldr = true
+debug_scores = false
+```
+
+When `debug_scores = true` (or `--debug-scores`), a `scores_debug.json` file is written next to `index.html` with a per‑story score breakdown.
 ## Documentation
 
 - [**ARCHITECTURE.md**](ARCHITECTURE.md): Deep dive into the scoring algorithms, clustering, and data flow.

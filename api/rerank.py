@@ -4,11 +4,14 @@ import hashlib
 import json
 import logging
 import math
+import random
 import re
 import time
+from datetime import datetime
+from email.utils import parsedate_to_datetime
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Optional, cast
+from typing import Optional, Sequence, TypeAlias, cast
 
 import httpx
 import numpy as np
@@ -16,7 +19,7 @@ import onnxruntime as ort
 from numpy.typing import NDArray
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics.pairwise import cosine_similarity
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, BatchEncoding, PreTrainedTokenizerBase
 
 from api.constants import (
     ADAPTIVE_HN_THRESHOLD_OLD,
@@ -26,17 +29,38 @@ from api.constants import (
     DEFAULT_CLUSTER_COUNT,
     DEFAULT_EMBEDDING_BATCH_SIZE,
     EMBEDDING_CACHE_DIR,
+    EMBEDDING_CACHE_MAX_FILES,
     EMBEDDING_MIN_CLIP,
     EMBEDDING_MODEL_VERSION,
+    CLUSTER_EMBEDDING_CACHE_DIR,
+    CLUSTER_EMBEDDING_MODEL_DIR,
+    CLUSTER_EMBEDDING_MODEL_VERSION,
+    CLUSTER_ALGORITHM,
+    CLUSTER_AGGLOMERATIVE_LINKAGE,
+    CLUSTER_AGGLOMERATIVE_METRIC,
+    CLUSTER_REFINE_ITERS,
+    CLUSTER_SPECTRAL_NEIGHBORS,
     FRESHNESS_HALF_LIFE_HOURS,
     FRESHNESS_MAX_BOOST,
     HN_SCORE_NORMALIZATION_CAP,
     KNN_NEIGHBORS,
-    LLM_CLUSTER_BATCH_SIZE,
+    LLM_CLUSTER_MAX_TOKENS,
     LLM_CLUSTER_NAME_MAX_WORDS,
-    LLM_CLUSTER_NAME_MIN_COVERAGE,
-    LLM_CLUSTER_NAME_MODEL,
-    LLM_HTTP_TIMEOUT,
+    LLM_CLUSTER_TITLE_SAMPLES,
+    LLM_CLUSTER_TITLE_MAX_CHARS,
+    LLM_CLUSTER_MAX_RETRIES,
+    LLM_CLUSTER_MAX_ROUNDS,
+    LLM_CLUSTER_MAX_TOTAL_SECONDS,
+    LLM_429_COOLDOWN_BASE,
+    LLM_429_COOLDOWN_MAX,
+    LLM_CLUSTER_NAME_MODEL_FALLBACK,
+    LLM_CLUSTER_NAME_MODEL_PRIMARY,
+    LLM_CLUSTER_NAME_PROMPT_VERSION,
+    LLM_HTTP_CONNECT_TIMEOUT,
+    LLM_HTTP_READ_TIMEOUT,
+    LLM_HTTP_WRITE_TIMEOUT,
+    LLM_HTTP_POOL_TIMEOUT,
+    LLM_MIN_REQUEST_INTERVAL,
     LLM_TEMPERATURE,
     LLM_TLDR_BATCH_SIZE,
     LLM_TLDR_MAX_TOKENS,
@@ -51,25 +75,49 @@ from api.constants import (
     RANKING_HN_WEIGHT,
     RANKING_MAX_RESULTS,
     RANKING_NEGATIVE_WEIGHT,
-    RATE_LIMIT_429_BACKOFF_BASE,
     RATE_LIMIT_ERROR_BACKOFF_BASE,
+    RATE_LIMIT_ERROR_BACKOFF_MAX,
     RATE_LIMIT_JITTER_MAX,
     RATE_LIMIT_MAX_TOKENS,
     RATE_LIMIT_REFILL_RATE,
     SEMANTIC_SIGMOID_K,
     SEMANTIC_SIGMOID_THRESHOLD,
-    TEXT_CONTENT_MAX_LENGTH,
+    TEXT_CONTENT_MAX_TOKENS,
 )
-from api.models import RankResult, Story
+from api.models import RankResult, Story, StoryDict, StoryForTldr
 
 logger = logging.getLogger(__name__)
 
 
+class GroqQuotaError(RuntimeError):
+    """Raised when Groq returns a non-retryable quota error (e.g., TPD)."""
+
+
+ClusterItem: TypeAlias = tuple[StoryDict, float]
+
+
 # Global singleton for the model
 _model: Optional[ONNXEmbeddingModel] = None
+_cluster_model: Optional[ONNXEmbeddingModel] = None
 
 CACHE_DIR: Path = Path(EMBEDDING_CACHE_DIR)
-CACHE_DIR.mkdir(parents=True, exist_ok=True)
+CLUSTER_CACHE_DIR: Path = Path(CLUSTER_EMBEDDING_CACHE_DIR)
+for _cache_dir in (CACHE_DIR, CLUSTER_CACHE_DIR):
+    _cache_dir.mkdir(parents=True, exist_ok=True)
+
+
+def _evict_old_embedding_cache_files(
+    cache_dir: Path, max_files: int = EMBEDDING_CACHE_MAX_FILES
+) -> None:
+    cache_files = list(cache_dir.glob("*.npz")) + list(cache_dir.glob("*.npy"))
+    if len(cache_files) <= max_files:
+        return
+    cache_files.sort(key=lambda p: p.stat().st_mtime)
+    for f in cache_files[: len(cache_files) - max_files]:
+        try:
+            f.unlink()
+        except OSError:
+            pass
 
 
 class ONNXEmbeddingModel:
@@ -80,7 +128,9 @@ class ONNXEmbeddingModel:
                 f"Model not found in {model_dir}. Please run setup_model.py."
             )
 
-        self.tokenizer: Any = AutoTokenizer.from_pretrained(model_dir)
+        self.tokenizer: PreTrainedTokenizerBase = AutoTokenizer.from_pretrained(
+            model_dir
+        )
 
         providers = ["CPUExecutionProvider"]
 
@@ -104,7 +154,7 @@ class ONNXEmbeddingModel:
                 progress_callback(i, total_items)
 
             batch: list[str] = texts[i : i + batch_size]
-            inputs: Any = self.tokenizer(
+            inputs: BatchEncoding = self.tokenizer(
                 batch,
                 padding=True,
                 truncation=True,
@@ -113,30 +163,30 @@ class ONNXEmbeddingModel:
             )
 
             input_names: list[str] = [node.name for node in self.session.get_inputs()]
-            ort_inputs: dict[str, Any] = {
+            ort_inputs: dict[str, NDArray[np.int64]] = {
                 k: v.astype(np.int64) for k, v in inputs.items() if k in input_names
             }
 
-            outputs: Any = self.session.run(None, ort_inputs)
+            outputs = self.session.run(None, ort_inputs)
             last_hidden_state: NDArray[np.float32] = cast(
                 NDArray[np.float32], outputs[0]
             )
 
             # Mean Pooling
-            attention_mask: NDArray[Any] = inputs["attention_mask"]
-            mask_expanded: NDArray[Any] = np.expand_dims(attention_mask, -1).astype(
-                float
-            )
+            attention_mask = cast(NDArray[np.int64], inputs["attention_mask"])
+            mask_expanded: NDArray[np.float64] = np.expand_dims(
+                attention_mask, -1
+            ).astype(float)
             sum_embeddings: NDArray[np.float32] = np.sum(
                 last_hidden_state * mask_expanded, axis=1
             )
-            sum_mask: NDArray[Any] = np.clip(
+            sum_mask: NDArray[np.float64] = np.clip(
                 mask_expanded.sum(axis=1), a_min=EMBEDDING_MIN_CLIP, a_max=None
             )
             batch_embeddings: NDArray[np.float32] = sum_embeddings / sum_mask
 
             if normalize_embeddings:
-                norm: NDArray[Any] = np.linalg.norm(
+                norm: NDArray[np.float64] = np.linalg.norm(
                     batch_embeddings, axis=1, keepdims=True
                 )
                 batch_embeddings = batch_embeddings / np.clip(
@@ -165,23 +215,64 @@ def init_model() -> ONNXEmbeddingModel:
 def get_model() -> ONNXEmbeddingModel:
     return init_model()
 
+def init_cluster_model() -> ONNXEmbeddingModel:
+    global _cluster_model
+    if _cluster_model is None:
+        _cluster_model = ONNXEmbeddingModel(model_dir=CLUSTER_EMBEDDING_MODEL_DIR)
+    return _cluster_model
 
-def get_embeddings(
+
+def _get_embeddings_with_model(
     texts: list[str],
+    model: ONNXEmbeddingModel,
+    cache_dir: Path,
+    cache_version: str,
     is_query: bool = False,
     progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> NDArray[np.float32]:
     if not texts:
         return np.array([], dtype=np.float32)
 
-    model: ONNXEmbeddingModel = get_model()
     # BGE-style prefix for queries only
     prefix: str = (
         "Represent this sentence for searching relevant passages: " if is_query else ""
     )
-    processed_texts: list[str] = [
-        f"{prefix}{t[:TEXT_CONTENT_MAX_LENGTH]}" for t in texts
-    ]
+    truncated_count = 0
+    processed_texts: list[str] = []
+
+    def _truncate_to_token_budget(text: str) -> tuple[str, bool]:
+        encoded = model.tokenizer(
+            text,
+            truncation=True,
+            max_length=TEXT_CONTENT_MAX_TOKENS,
+            return_tensors=None,
+        )
+        input_ids = encoded.get("input_ids", [])
+        if isinstance(input_ids, list) and input_ids:
+            if isinstance(input_ids[0], list):
+                token_ids = input_ids[0]
+            else:
+                token_ids = input_ids
+        else:
+            return text, False
+
+        truncated = len(token_ids) >= TEXT_CONTENT_MAX_TOKENS
+        if not truncated:
+            return text, False
+        return model.tokenizer.decode(token_ids, skip_special_tokens=True), True
+    for t in texts:
+        text = f"{prefix}{t}"
+        truncated_text, was_truncated = _truncate_to_token_budget(text)
+        if was_truncated:
+            truncated_count += 1
+        processed_texts.append(truncated_text)
+    if truncated_count:
+        logger.info(
+            "Embedding input truncated for %d/%d texts (max %d tokens).",
+            truncated_count,
+            len(texts),
+            TEXT_CONTENT_MAX_TOKENS,
+        )
 
     vectors: list[Optional[NDArray[np.float32]]] = []
     to_compute_indices: list[int] = []
@@ -191,10 +282,10 @@ def get_embeddings(
     for idx, text in enumerate(processed_texts):
         # Include model version in hash to invalidate cache on model change
         h: str = hashlib.sha256(
-            f"{EMBEDDING_MODEL_VERSION}:{text}".encode()
+            f"{cache_version}:{model.model_id}:{text}".encode()
         ).hexdigest()
-        cache_path_npz: Path = CACHE_DIR / f"{h}.npz"
-        cache_path_npy: Path = CACHE_DIR / f"{h}.npy"
+        cache_path_npz: Path = cache_dir / f"{h}.npz"
+        cache_path_npy: Path = cache_dir / f"{h}.npy"
 
         vec: Optional[NDArray[np.float32]] = None
         if cache_path_npz.exists():
@@ -234,15 +325,47 @@ def get_embeddings(
             vec_res: NDArray[np.float32] = computed[i]
             vectors[original_idx] = vec_res
             h_res: str = hashlib.sha256(
-                f"{EMBEDDING_MODEL_VERSION}:{processed_texts[original_idx]}".encode()
+                f"{cache_version}:{model.model_id}:{processed_texts[original_idx]}".encode()
             ).hexdigest()
             # Use compressed format for cache efficiency
-            np.savez_compressed(CACHE_DIR / f"{h_res}.npz", embedding=vec_res)
+            np.savez_compressed(cache_dir / f"{h_res}.npz", embedding=vec_res)
+        _evict_old_embedding_cache_files(cache_dir)
 
     if not vectors or all(v is None for v in vectors):
         return np.zeros((0, expected_dim), dtype=np.float32)
 
     return np.stack([v for v in vectors if v is not None]).astype(np.float32)
+
+
+def get_embeddings(
+    texts: list[str],
+    is_query: bool = False,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+) -> NDArray[np.float32]:
+    model: ONNXEmbeddingModel = get_model()
+    return _get_embeddings_with_model(
+        texts,
+        model=model,
+        cache_dir=CACHE_DIR,
+        cache_version=EMBEDDING_MODEL_VERSION,
+        is_query=is_query,
+        progress_callback=progress_callback,
+    )
+
+
+def get_cluster_embeddings(
+    texts: list[str],
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+) -> NDArray[np.float32]:
+    model: ONNXEmbeddingModel = init_cluster_model()
+    return _get_embeddings_with_model(
+        texts,
+        model=model,
+        cache_dir=CLUSTER_CACHE_DIR,
+        cache_version=CLUSTER_EMBEDDING_MODEL_VERSION,
+        is_query=False,
+        progress_callback=progress_callback,
+    )
 
 
 def cluster_interests(
@@ -263,13 +386,13 @@ def cluster_interests_with_labels(
     n_clusters: int = DEFAULT_CLUSTER_COUNT,
 ) -> tuple[NDArray[np.float32], NDArray[np.int32]]:
     """
-    Cluster user interest embeddings using Agglomerative Clustering.
-    Uses fixed k (default 25); LLM naming handles semantic coherence.
+    Cluster user interest embeddings using a cosine-aware algorithm.
+    Uses fixed k (default 30); LLM naming handles semantic coherence.
     Returns (centroids, labels) where:
       - centroids: shape (n_clusters, embedding_dim)
       - labels: shape (n_samples,) cluster assignment per sample
     """
-    from sklearn.cluster import AgglomerativeClustering
+    from sklearn.cluster import AgglomerativeClustering, KMeans, SpectralClustering
 
     n_samples = len(embeddings)
     if n_samples == 0:
@@ -285,22 +408,41 @@ def cluster_interests_with_labels(
         return centroid.astype(np.float32), labels
 
     # Normalize embeddings for cosine-like behavior
-    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-    norms = np.maximum(norms, 1e-9)
-    normalized = embeddings / norms
+    normalized = _normalize_embeddings(embeddings)
 
     # Use fixed number of clusters as requested (max MAX_CLUSTERS)
     # n_clusters is capped by n_samples / MIN_SAMPLES_PER_CLUSTER and MAX_CLUSTERS
     effective_n_clusters = min(n_clusters, MAX_CLUSTERS, n_samples // MIN_SAMPLES_PER_CLUSTER)
     effective_n_clusters = max(effective_n_clusters, MIN_CLUSTERS)
 
-    agg = AgglomerativeClustering(
-        n_clusters=effective_n_clusters,
-        metric="cosine",
-        linkage="average",
-    )
-    labels = agg.fit_predict(normalized).astype(np.int32)
+    if CLUSTER_ALGORITHM == "spectral":
+        neighbors = min(CLUSTER_SPECTRAL_NEIGHBORS, max(2, n_samples - 1))
+        clustering = SpectralClustering(
+            n_clusters=effective_n_clusters,
+            affinity="nearest_neighbors",
+            n_neighbors=neighbors,
+            assign_labels="kmeans",
+            random_state=0,
+        )
+        labels = clustering.fit_predict(normalized).astype(np.int32)
+    elif CLUSTER_ALGORITHM == "agglomerative":
+        clustering = AgglomerativeClustering(
+            n_clusters=effective_n_clusters,
+            metric=CLUSTER_AGGLOMERATIVE_METRIC,
+            linkage=CLUSTER_AGGLOMERATIVE_LINKAGE,
+        )
+        labels = clustering.fit_predict(normalized).astype(np.int32)
+    else:
+        kmeans = KMeans(
+            n_clusters=effective_n_clusters,
+            n_init=10,
+            random_state=0,
+        )
+        labels = kmeans.fit_predict(normalized).astype(np.int32)
 
+    labels = _refine_cluster_assignments(
+        normalized, labels, CLUSTER_REFINE_ITERS
+    )
     labels = _merge_small_clusters(embeddings, labels, MIN_SAMPLES_PER_CLUSTER)
 
     max_size = max(
@@ -340,6 +482,61 @@ def _centroids_from_labels(
             centroid = embeddings[mask].mean(axis=0)
         centroids.append(centroid)
     return np.array(centroids, dtype=np.float32)
+
+
+def _normalize_embeddings(
+    embeddings: NDArray[np.float32],
+) -> NDArray[np.float32]:
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    norms = np.maximum(norms, 1e-9)
+    return embeddings / norms
+
+
+def _refine_cluster_assignments(
+    embeddings_norm: NDArray[np.float32],
+    labels: NDArray[np.int32],
+    iters: int,
+) -> NDArray[np.int32]:
+    """Iteratively reassign samples to the nearest centroid (cosine space)."""
+    if iters <= 0 or len(labels) == 0:
+        remap = {old: i for i, old in enumerate(sorted(set(labels)))}
+        return np.array([remap[int(lbl)] for lbl in labels], dtype=np.int32)
+
+    current = labels.astype(np.int32, copy=True)
+    for _ in range(iters):
+        unique_labels = sorted(set(current))
+        if len(unique_labels) <= 1:
+            break
+
+        centroids = []
+        for lbl in unique_labels:
+            mask = current == lbl
+            centroid = embeddings_norm[mask].mean(axis=0)
+            norm = np.linalg.norm(centroid)
+            if norm > 1e-9:
+                centroid = centroid / norm
+            centroids.append(centroid)
+        centroids = np.array(centroids, dtype=np.float32)
+
+        sims = embeddings_norm @ centroids.T
+        best_idx = np.argmax(sims, axis=1)
+        label_to_idx = {label: i for i, label in enumerate(unique_labels)}
+        curr_idx = np.array([label_to_idx[int(lbl)] for lbl in current], dtype=np.int32)
+
+        best_sim = sims[np.arange(len(current)), best_idx]
+        curr_sim = sims[np.arange(len(current)), curr_idx]
+        move = best_sim > curr_sim
+        if not np.any(move):
+            break
+
+        next_idx = np.where(move, best_idx, curr_idx)
+        next_labels = np.array([unique_labels[int(i)] for i in next_idx], dtype=np.int32)
+        if np.array_equal(next_labels, current):
+            break
+        current = next_labels
+
+    remap = {old: i for i, old in enumerate(sorted(set(current)))}
+    return np.array([remap[int(lbl)] for lbl in current], dtype=np.int32)
 
 
 def _merge_small_clusters(
@@ -490,15 +687,23 @@ def _split_large_clusters(
 # Global rate limiter state
 _token_bucket: float = RATE_LIMIT_MAX_TOKENS
 _last_refill: float = time.time()
+_last_request_time: float = 0.0
+_cooldown_until: float = 0.0
 
 
 async def _rate_limit() -> None:
     """Enforce rate limiting using a Token Bucket algorithm."""
-    global _token_bucket, _last_refill
+    global _token_bucket, _last_refill, _last_request_time, _cooldown_until
     import random
 
     while True:
         now = time.time()
+        if now < _cooldown_until:
+            await asyncio.sleep(
+                (_cooldown_until - now) + random.uniform(0, RATE_LIMIT_JITTER_MAX)
+            )
+            continue
+
         # Refill tokens based on time passed
         elapsed = now - _last_refill
         _token_bucket = min(
@@ -507,7 +712,15 @@ async def _rate_limit() -> None:
         _last_refill = now
 
         if _token_bucket >= 1.0:
+            since_last = now - _last_request_time
+            if since_last < LLM_MIN_REQUEST_INTERVAL:
+                await asyncio.sleep(
+                    (LLM_MIN_REQUEST_INTERVAL - since_last)
+                    + random.uniform(0, RATE_LIMIT_JITTER_MAX)
+                )
+                continue
             _token_bucket -= 1.0
+            _last_request_time = time.time()
             return
 
         # Calculate wait time needed for next token
@@ -516,7 +729,61 @@ async def _rate_limit() -> None:
         await asyncio.sleep(wait_time + 0.1 + random.uniform(0, RATE_LIMIT_JITTER_MAX))
 
 
+def _full_jitter_backoff(base: float, attempt: int, cap: float) -> float:
+    max_backoff = min(cap, base * (2**attempt))
+    return random.uniform(0, max_backoff)
+
+
+def _parse_retry_after(value: str) -> Optional[float]:
+    value = value.strip()
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        pass
+
+    try:
+        dt = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if dt is None:
+        return None
+    now = datetime.now(dt.tzinfo)
+    delta = (dt - now).total_seconds()
+    return max(0.0, delta)
+
+
+def _retry_after_seconds(resp: httpx.Response) -> Optional[float]:
+    header = resp.headers.get("retry-after") or resp.headers.get("Retry-After")
+    if not header:
+        return None
+    return _parse_retry_after(header)
+
+
+def _extract_groq_error_message(resp: httpx.Response) -> str:
+    try:
+        data = resp.json()
+    except Exception:
+        return resp.text.strip()
+    if isinstance(data, dict):
+        err = data.get("error")
+        if isinstance(err, dict):
+            msg = err.get("message")
+            if isinstance(msg, str):
+                return msg.strip()
+    return resp.text.strip()
+
+
 CLUSTER_NAME_CACHE_PATH = Path(".cache/cluster_names.json")
+
+
+def _cluster_name_cache_key(story_ids: Sequence[str], model: str) -> str:
+    key_src = ",".join(story_ids)
+    key_src += f"|model={model}|prompt={LLM_CLUSTER_NAME_PROMPT_VERSION}"
+    return hashlib.sha256(key_src.encode()).hexdigest()
+
+
 _INVALID_CLUSTER_NAMES = {
     "",
     "misc",
@@ -599,7 +866,7 @@ def _title_to_label(title: str) -> str:
     return " ".join(words[:3])
 
 
-def _cluster_token_frequencies(items: list[tuple[dict[str, Any], float]]) -> list[str]:
+def _cluster_token_frequencies(items: Sequence[ClusterItem]) -> list[str]:
     from collections import Counter
 
     counter: Counter[str] = Counter()
@@ -641,7 +908,7 @@ def _format_label_tokens(tokens: list[str]) -> str:
     return " ".join(formatted[:3])
 
 
-def _fallback_cluster_name(items: list[tuple[dict[str, Any], float]]) -> str:
+def _fallback_cluster_name(items: Sequence[ClusterItem]) -> str:
     tokens = _cluster_token_frequencies(items)
     if tokens:
         return _format_label_tokens(tokens)
@@ -653,7 +920,7 @@ def _fallback_cluster_name(items: list[tuple[dict[str, Any], float]]) -> str:
     return "Misc Topic"
 
 
-def _label_coverage(label: str, items: list[tuple[dict[str, Any], float]]) -> float:
+def _label_coverage(label: str, items: Sequence[ClusterItem]) -> float:
     if not label or not items:
         return 0.0
     label_tokens = [t.lower() for t in re.findall(r"[A-Za-z0-9+#]+", label)]
@@ -671,9 +938,32 @@ def _label_coverage(label: str, items: list[tuple[dict[str, Any], float]]) -> fl
     return match_count / max(total, 1)
 
 
+def _cluster_token_set(items: Sequence[ClusterItem]) -> set[str]:
+    tokens: set[str] = set()
+    for s, _ in items:
+        title = str(s.get("title", "")).strip()
+        if not title:
+            continue
+        for t in re.findall(r"[A-Za-z0-9+#]+", title):
+            if len(t) < 2:
+                continue
+            tokens.add(t.lower())
+    return tokens
+
+
+def _name_has_overlap(name: str, items: Sequence[ClusterItem]) -> bool:
+    name_tokens = [t.lower() for t in re.findall(r"[A-Za-z0-9+#]+", name)]
+    if not name_tokens:
+        return False
+    title_tokens = _cluster_token_set(items)
+    if not title_tokens:
+        return False
+    return any(tok in title_tokens for tok in name_tokens)
+
+
 def _normalize_cluster_name(
     name: str,
-    items: list[tuple[dict[str, Any], float]],
+    items: Sequence[ClusterItem],
 ) -> str:
     cleaned = " ".join(name.strip().split()[:LLM_CLUSTER_NAME_MAX_WORDS])
     cleaned = cleaned.rstrip(" ,&/").rstrip()
@@ -688,9 +978,12 @@ def _load_cluster_name_cache() -> dict[str, str]:
     if CLUSTER_NAME_CACHE_PATH.exists():
         try:
             cache = json.loads(CLUSTER_NAME_CACHE_PATH.read_text())
-            return {
-                key: val for key, val in cache.items() if _is_valid_cluster_name(val)
-            }
+            if isinstance(cache, dict):
+                return {
+                    str(key): str(val)
+                    for key, val in cache.items()
+                    if isinstance(val, str) and val.strip()
+                }
         except Exception as e:
             logger.warning(f"Failed to load cluster name cache: {e}")
     return {}
@@ -701,53 +994,86 @@ def _save_cluster_name_cache(cache: dict[str, str]) -> None:
     CLUSTER_NAME_CACHE_PATH.write_text(json.dumps(cache))
 
 
-def _safe_json_loads(text: str) -> dict[Any, Any]:
+def _safe_json_loads(text: str) -> dict[str, object]:
     """Safely load JSON, handling potential markdown blocks."""
     if not text:
         return {}
 
-    clean_text = text.strip()
-    if clean_text.startswith("```"):
-        # Extract content between triple backticks
-        lines = clean_text.split("\n")
-        # Find first line with { or [ after the first ```
-        start_idx = 1
-        while start_idx < len(lines) and not (
-            lines[start_idx].strip().startswith("{}")
-            or lines[start_idx].strip().startswith("[")
-        ):
-            start_idx += 1
+    def _strip_code_fence(src: str) -> str:
+        cleaned = src.strip()
+        if not cleaned.startswith("```"):
+            return cleaned
+        lines = cleaned.splitlines()
+        if lines and lines[0].strip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        return "\n".join(lines).strip()
 
-        # Find the last line with } or ] before the last ```
-        end_idx = len(lines) - 1
-        while end_idx > start_idx and not (
-            lines[end_idx].strip().endswith("}") or lines[end_idx].strip().endswith("]")
-        ):
-            end_idx -= 1
+    def _extract_json_substring(src: str) -> str | None:
+        first_obj = src.find("{")
+        first_arr = src.find("[")
+        if first_obj == -1 and first_arr == -1:
+            return None
+        if first_arr == -1 or (first_obj != -1 and first_obj < first_arr):
+            open_ch, close_ch, start = "{", "}", first_obj
+        else:
+            open_ch, close_ch, start = "[", "]", first_arr
 
-        if end_idx >= start_idx:
-            clean_text = "\n".join(lines[start_idx : end_idx + 1])
+        depth = 0
+        in_string = False
+        escape = False
+        for idx in range(start, len(src)):
+            ch = src[idx]
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+                continue
+            if ch == open_ch:
+                depth += 1
+            elif ch == close_ch:
+                depth -= 1
+                if depth == 0:
+                    return src[start : idx + 1]
+        return None
 
-    try:
-        return json.loads(clean_text)
-    except json.JSONDecodeError as e:
-        logger.debug(f"JSON decode failed, trying regex fallback: {e}")
-        # Fallback: try to find anything between { and }
-        import re
+    clean_text = _strip_code_fence(text)
+    candidates = [clean_text]
+    extracted = _extract_json_substring(clean_text)
+    if extracted and extracted not in candidates:
+        candidates.append(extracted)
 
-        match = re.search(r"({.*})", clean_text, re.DOTALL)
-        if match:
-            try:
-                return json.loads(match.group(1))
-            except Exception as e2:
-                logger.warning(f"JSON regex fallback also failed: {e2}")
-        return {}
+    import ast
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError as e:
+            logger.debug(f"JSON decode failed, trying fallback: {e}")
+        try:
+            parsed = ast.literal_eval(candidate)
+            if isinstance(parsed, dict):
+                return {str(k): v for k, v in parsed.items()}
+        except Exception:
+            continue
+    return {}
 
 
 async def _generate_with_retry(
     model: str = LLM_TLDR_MODEL,
-    contents: Optional[Any] = None,
-    config: Optional[dict[str, Any]] = None,
+    contents: Optional[object] = None,
+    config: Optional[dict[str, object]] = None,
     max_retries: int = 3,
 ) -> Optional[str]:
     """Call Groq API with exponential backoff retry logic using httpx."""
@@ -766,9 +1092,22 @@ async def _generate_with_retry(
         for item in contents:
             if isinstance(item, str):
                 messages.append({"role": "user", "content": item})
-            elif isinstance(item, dict) and "parts" in item:
-                text = "".join([p.get("text", "") for p in item["parts"]])
-                messages.append({"role": "user", "content": text})
+                continue
+            if not isinstance(item, dict):
+                continue
+            item_dict = cast(dict[str, object], item)
+            parts = item_dict.get("parts")
+            if not isinstance(parts, list):
+                continue
+            texts: list[str] = []
+            for part in parts:
+                if isinstance(part, dict):
+                    part_dict = cast(dict[str, object], part)
+                    text_val = part_dict.get("text")
+                    if isinstance(text_val, str):
+                        texts.append(text_val)
+            if texts:
+                messages.append({"role": "user", "content": "".join(texts)})
 
     payload = {
         "model": model,
@@ -778,10 +1117,22 @@ async def _generate_with_retry(
         else LLM_TEMPERATURE,
     }
 
+    if config:
+        max_tokens = config.get("max_tokens", config.get("max_output_tokens"))
+        if isinstance(max_tokens, (int, float)) and max_tokens > 0:
+            payload["max_tokens"] = int(max_tokens)
+
     if config and config.get("response_mime_type") == "application/json":
         payload["response_format"] = {"type": "json_object"}
 
-    async with httpx.AsyncClient() as client:
+    timeout = httpx.Timeout(
+        connect=LLM_HTTP_CONNECT_TIMEOUT,
+        read=LLM_HTTP_READ_TIMEOUT,
+        write=LLM_HTTP_WRITE_TIMEOUT,
+        pool=LLM_HTTP_POOL_TIMEOUT,
+    )
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
         for attempt in range(max_retries):
             try:
                 await _rate_limit()
@@ -792,7 +1143,6 @@ async def _generate_with_retry(
                         "Content-Type": "application/json",
                     },
                     json=payload,
-                    timeout=LLM_HTTP_TIMEOUT,
                 )
 
                 if resp.status_code == 200:
@@ -800,22 +1150,60 @@ async def _generate_with_retry(
                     return data["choices"][0]["message"]["content"]
 
                 if resp.status_code == 429:
-                    logger.warning(
-                        f"Groq rate limit hit (429). Attempt {attempt + 1}/{max_retries}"
+                    error_msg = _extract_groq_error_message(resp)
+                    msg_lower = error_msg.lower()
+                    if "tokens per day" in msg_lower or " tpd" in msg_lower:
+                        raise GroqQuotaError(error_msg)
+                    if "requests per day" in msg_lower or " rpd" in msg_lower:
+                        raise GroqQuotaError(error_msg)
+
+                    retry_after = _retry_after_seconds(resp)
+                    if retry_after is None:
+                        cooldown = _full_jitter_backoff(
+                            LLM_429_COOLDOWN_BASE, attempt, LLM_429_COOLDOWN_MAX
+                        )
+                    else:
+                        cooldown = retry_after + random.uniform(0, RATE_LIMIT_JITTER_MAX)
+                    global _cooldown_until
+                    _cooldown_until = max(_cooldown_until, time.time() + cooldown)
+                    logger.debug(
+                        "Groq rate limit hit (429). Attempt %d/%d. Cooling down for %.0fs.",
+                        attempt + 1,
+                        max_retries,
+                        cooldown,
                     )
-                    await asyncio.sleep(RATE_LIMIT_429_BACKOFF_BASE * (2**attempt))
+                    await asyncio.sleep(cooldown)
                     continue
+
+                if resp.status_code in {408, 500, 502, 503, 504}:
+                    if attempt < max_retries - 1:
+                        delay = _full_jitter_backoff(
+                            RATE_LIMIT_ERROR_BACKOFF_BASE,
+                            attempt,
+                            RATE_LIMIT_ERROR_BACKOFF_MAX,
+                        )
+                        logger.warning(
+                            "Groq API error %d. Retrying in %.1fs.",
+                            resp.status_code,
+                            delay,
+                        )
+                        await asyncio.sleep(delay)
+                        continue
 
                 logger.error(f"Groq API error {resp.status_code}: {resp.text}")
                 return None
 
             except Exception as e:
+                if isinstance(e, GroqQuotaError):
+                    raise
                 if attempt == max_retries - 1:
                     logger.error(
                         f"Groq API call failed after {max_retries} retries: {e}"
                     )
                     return None
-                delay = RATE_LIMIT_ERROR_BACKOFF_BASE * (2**attempt)
+                delay = _full_jitter_backoff(
+                    RATE_LIMIT_ERROR_BACKOFF_BASE, attempt, RATE_LIMIT_ERROR_BACKOFF_MAX
+                )
                 logger.warning(
                     f"Groq API attempt {attempt + 1} failed: {e}, retrying in {delay}s"
                 )
@@ -824,24 +1212,31 @@ async def _generate_with_retry(
 
 
 async def generate_batch_cluster_names(
-    clusters: dict[int, list[tuple[dict[str, Any], float]]],
+    clusters: dict[int, list[ClusterItem]],
     progress_callback: Optional[Callable[[int, int], None]] = None,
+    debug_path: Optional[Path] = None,
 ) -> dict[int, str]:
-    """Generate names for multiple clusters in a single API call to save quota."""
+    """Generate names for clusters one at a time to improve reliability."""
     if not clusters:
         return {}
 
     cache = _load_cluster_name_cache()
     results: dict[int, str] = {}
-    to_generate: dict[int, list[tuple[dict[str, Any], float]]] = {}
+    to_generate: dict[int, list[ClusterItem]] = {}
+    primary_model = LLM_CLUSTER_NAME_MODEL_PRIMARY
+    fallback_model = LLM_CLUSTER_NAME_MODEL_FALLBACK
+    active_model = primary_model
+    fallback_triggered = False
 
     for cid, items in clusters.items():
         # Generate cache key based on sorted story IDs
         story_ids = sorted([str(s.get("id", s.get("objectID", ""))) for s, _ in items])
-        cache_key = hashlib.sha256(",".join(story_ids).encode()).hexdigest()
-
-        cached_val = cache.get(cache_key)
-        if cached_val and _is_valid_cluster_name(cached_val):
+        primary_key = _cluster_name_cache_key(story_ids, primary_model)
+        cached_val = cache.get(primary_key)
+        if not cached_val and fallback_model:
+            fallback_key = _cluster_name_cache_key(story_ids, fallback_model)
+            cached_val = cache.get(fallback_key)
+        if cached_val and cached_val.strip():
             results[cid] = cached_val
         else:
             to_generate[cid] = items
@@ -849,45 +1244,125 @@ async def generate_batch_cluster_names(
     if not to_generate:
         if progress_callback:
             progress_callback(len(clusters), len(clusters))
-        return {cid: results.get(cid, "Misc") for cid in clusters}
+        return {cid: results.get(cid, "") for cid in clusters}
 
     cid_list = list(to_generate.keys())
+    total_batches = len(cid_list)
+    max_rounds = LLM_CLUSTER_MAX_ROUNDS
+    request_count = 0
+    start_time = time.time()
+    deadline = start_time + LLM_CLUSTER_MAX_TOTAL_SECONDS
+    missing_overall: set[int] = set()
 
-    for i in range(0, len(cid_list), LLM_CLUSTER_BATCH_SIZE):
-        batch_cids = cid_list[i : i + LLM_CLUSTER_BATCH_SIZE]
-        batch_prompts = []
+    debug_records: list[dict[str, object]] = []
 
-        for cid in batch_cids:
-            items = to_generate[cid]
-            # Use top 10 items for context (titles + comments) for richer naming
-            sorted_items = sorted(items, key=lambda x: -x[1])[:10]
+    payloads: dict[int, dict[str, object]] = {}
+    for cid, items in to_generate.items():
+        # Use top titles only to keep prompts compact and reduce latency.
+        sorted_items = sorted(items, key=lambda x: -x[1])[:LLM_CLUSTER_TITLE_SAMPLES]
+        cluster_titles: list[str] = []
+        for s, _ in sorted_items:
+            title = str(s.get("title", "")).strip()
+            if not title:
+                continue
+            title = " ".join(title.split())
+            if len(title) > LLM_CLUSTER_TITLE_MAX_CHARS:
+                title = title[:LLM_CLUSTER_TITLE_MAX_CHARS].rstrip()
+            cluster_titles.append(title)
 
-            cluster_data = []
-            for s, _ in sorted_items:
-                title = str(s.get("title", "")).strip()
-                if not title:
-                    continue
+        payloads[cid] = {"titles": cluster_titles}
 
-                # Get top 2 comments, truncate to 150 chars
-                comments = s.get("comments", [])
-                context = ""
-                if comments:
-                    snippets = [c[:150].replace("\n", " ") for c in comments[:2]]
-                    context = "; ".join(snippets)
+    def _flush_debug() -> None:
+        if debug_path is None:
+            return
+        debug_path.parent.mkdir(parents=True, exist_ok=True)
+        debug_path.write_text(json.dumps(debug_records, indent=2))
 
-                cluster_data.append({"title": title, "context": context})
+    def _remap_batch_results(
+        batch_results: dict[str, object],
+        pending_ids: Sequence[int],
+        context: str,
+        batch_index: int,
+        attempt: int,
+        model: str,
+    ) -> dict[str, object]:
+        if not batch_results or not pending_ids:
+            return batch_results
+        pending_set = set(pending_ids)
+        numeric_keys: list[str] = []
+        for k in batch_results.keys():
+            if isinstance(k, str) and k.strip().lstrip("-").isdigit():
+                numeric_keys.append(k)
+        if not numeric_keys:
+            return batch_results
+        if any(int(k) in pending_set for k in numeric_keys):
+            return batch_results
+        # No overlap: model ignored requested IDs. Remap by order.
+        ordered_items = sorted(
+            ((int(k), v) for k, v in batch_results.items() if k in numeric_keys),
+            key=lambda x: x[0],
+        )
+        if len(pending_ids) == 1:
+            return {str(pending_ids[0]): ordered_items[0][1]}
+        if len(ordered_items) != len(pending_ids):
+            return batch_results
+        remapped: dict[str, object] = {}
+        for cid, (_, value) in zip(sorted(pending_ids), ordered_items):
+            remapped[str(cid)] = value
+        if debug_path is not None:
+            debug_records.append(
+                {
+                    "event": "remap_keys",
+                    "context": context,
+                    "batch_index": batch_index,
+                    "attempt": attempt,
+                    "model": model,
+                    "pending_ids": sorted(pending_ids),
+                    "original_keys": numeric_keys,
+                }
+            )
+            _flush_debug()
+        return remapped
 
-            # Serialize to JSON for cleaner prompt structure
-            batch_prompts.append(f"Cluster {cid}: {json.dumps(cluster_data)}")
+    for batch_index, cid in enumerate(cid_list, start=1):
+        batch_cids = [cid]
+        pending: set[int] = {cid}
 
-        full_prompt = f"""
+        for attempt in range(1, max_rounds + 1):
+            if not pending:
+                break
+            if time.time() > deadline:
+                debug_records.append(
+                    {
+                        "event": "timeout",
+                        "batch_index": batch_index,
+                        "pending": sorted(pending),
+                        "elapsed": time.time() - start_time,
+                    }
+                )
+                _flush_debug()
+                raise RuntimeError(
+                    "Groq cluster naming timed out after "
+                    f"{LLM_CLUSTER_MAX_TOTAL_SECONDS:.0f}s. "
+                    "Try rerunning with fewer clusters/candidates or wait for quota reset."
+                )
+
+            batch_prompts: list[str] = []
+            for cid in sorted(pending):
+                payload = payloads.get(cid, {"items": [], "keywords": ""})
+
+                # Serialize to JSON for cleaner prompt structure
+                batch_prompts.append(f"Cluster {cid}: {json.dumps(payload)}")
+
+            full_prompt = f"""
 Name each cluster with a SPECIFIC, TECHNICAL 2-6 word label.
 
 Rules:
-- NO generic terms like "Technology", "Software", "Computers", "Analysis", "Misc", "Not Provided".
-- BE PRECISE: "Rust Memory Safety" > "Programming", "PostgreSQL Performance" > "Databases".
-- IF MIXED: Combine top 2 topics (e.g., "AI & Distributed Systems").
-- USE key terms found in the titles (e.g., "LLM", "Wasm", "k8s").
+- Prefer the most specific recurring technical topic in the titles.
+- Use 1-2 topics only if the cluster clearly spans two themes.
+- Avoid umbrella terms unless the titles are genuinely diverse.
+- Use key terms from the titles where possible.
+- Use normal spacing and Title Case (e.g., "Large Language Models", not "LargeLanguageModels" or "Large_Language_Models").
 
 Return JSON where keys are cluster IDs: {{ "0": "Label", "1": "Label" }}
 
@@ -896,66 +1371,422 @@ Groups:
 
 JSON:"""
 
-        try:
-            text = await _generate_with_retry(
-                model=LLM_CLUSTER_NAME_MODEL,
-                contents=full_prompt,
-                config={
-                    "temperature": LLM_TEMPERATURE,
-                    "response_mime_type": "application/json",
-                },
-            )
+            try:
+                pending_before = sorted(pending)
+                logger.info(
+                    "Groq cluster naming batch %d/%d attempt %d starting (%d pending).",
+                    batch_index,
+                    total_batches,
+                    attempt,
+                    len(pending),
+                )
+                request_count += 1
+                t0 = time.time()
+                attempt_model = active_model
+                text = await _generate_with_retry(
+                    model=attempt_model,
+                    contents=full_prompt,
+                    config={
+                        "temperature": LLM_TEMPERATURE,
+                        "max_output_tokens": LLM_CLUSTER_MAX_TOKENS,
+                    },
+                    max_retries=LLM_CLUSTER_MAX_RETRIES,
+                )
+                duration = time.time() - t0
 
-            if text:
-                logger.debug("Groq cluster naming raw response: %s", text)
-                batch_results = _safe_json_loads(text)
-                for cid_str, name in batch_results.items():
-                    try:
-                        cid = int(cid_str)
-                        # Truncate to max words (allows multi-topic names)
-                        final_name = (
-                            str(name).strip().split()[:LLM_CLUSTER_NAME_MAX_WORDS]
+                returned = 0
+                batch_results: dict[str, object] | None = None
+                if (
+                    text is None
+                    and attempt_model == primary_model
+                    and fallback_model
+                    and not fallback_triggered
+                ):
+                    fallback_triggered = True
+                    active_model = fallback_model
+                    if debug_path is not None:
+                        debug_records.append(
+                            {
+                                "event": "fallback",
+                                "reason": "empty_response",
+                                "batch_index": batch_index,
+                                "attempt": attempt,
+                                "from_model": primary_model,
+                                "to_model": fallback_model,
+                            }
                         )
-                        final_name = " ".join(final_name)
-                        # Strip trailing conjunctions/punctuation left by truncation
-                        final_name = final_name.rstrip(" ,&/").rstrip()
-                        if final_name.endswith(" and") or final_name.endswith(" or"):
-                            final_name = final_name.rsplit(" ", 1)[0]
-
-                        items = to_generate[cid]
-                        normalized = _normalize_cluster_name(final_name, items)
-                        if _label_coverage(normalized, items) < LLM_CLUSTER_NAME_MIN_COVERAGE:
-                            normalized = _fallback_cluster_name(items)
-
-                        results[cid] = normalized
-                        if _is_valid_cluster_name(normalized):
-                            story_ids = sorted(
-                                [str(s.get("id", s.get("objectID", ""))) for s, _ in items]
+                        _flush_debug()
+                if text:
+                    logger.debug("Groq cluster naming raw response: %s", text)
+                    batch_results = _safe_json_loads(text)
+                    if not batch_results and len(pending) == 1:
+                        # Some models return a bare label when only one cluster is present.
+                        only_cid = next(iter(pending))
+                        batch_results = {str(only_cid): text.strip()}
+                    if batch_results:
+                        batch_results = _remap_batch_results(
+                            batch_results=batch_results,
+                            pending_ids=sorted(pending),
+                            context="batch",
+                            batch_index=batch_index,
+                            attempt=attempt,
+                            model=attempt_model,
+                        )
+                    for cid_str, name in batch_results.items():
+                        try:
+                            cid = int(cid_str)
+                            if cid not in pending:
+                                continue
+                            raw_name = str(name).strip()
+                            if not raw_name:
+                                continue
+                            # Truncate to max words (allows multi-topic names)
+                            final_name = " ".join(
+                                raw_name.split()[:LLM_CLUSTER_NAME_MAX_WORDS]
                             )
-                            cache_key = hashlib.sha256(
-                                ",".join(story_ids).encode()
-                            ).hexdigest()
-                            cache[cache_key] = normalized
-                    except (ValueError, TypeError) as e:
-                        logger.debug(f"Failed to parse cluster name for {cid_str}: {e}")
-                        continue
+                            # Strip trailing conjunctions/punctuation left by truncation
+                            final_name = final_name.rstrip(" ,&/").rstrip()
+                            if final_name.endswith(" and") or final_name.endswith(" or"):
+                                final_name = final_name.rsplit(" ", 1)[0]
+                            if not final_name:
+                                continue
 
-            if progress_callback:
-                progress_callback(len(results), len(clusters))
-        except Exception as e:
-            logger.warning(f"Cluster naming batch failed: {e}")
+                            results[cid] = final_name
+                            items = to_generate[cid]
+                            story_ids = sorted(
+                                [
+                                    str(s.get("id", s.get("objectID", "")))
+                                    for s, _ in items
+                                ]
+                            )
+                            cache_key = _cluster_name_cache_key(
+                                story_ids, attempt_model
+                            )
+                            cache[cache_key] = final_name
+                            returned += 1
+                        except (ValueError, TypeError) as e:
+                            logger.debug(
+                                f"Failed to parse cluster name for {cid_str}: {e}"
+                            )
+                            continue
+                pending = {cid for cid in pending if cid not in results}
+                if debug_path is not None:
+                    debug_records.append(
+                        {
+                            "mode": "batch",
+                            "batch_index": batch_index,
+                            "attempt": attempt,
+                            "model": attempt_model,
+                            "batch_cids": batch_cids,
+                            "pending_before": pending_before,
+                            "payloads": {
+                                str(cid): payloads.get(cid, {})
+                                for cid in sorted(pending_before)
+                            },
+                            "prompt": full_prompt,
+                            "response": text,
+                            "parsed": batch_results if text else None,
+                            "returned": returned,
+                            "pending_after": sorted(pending),
+                        }
+                    )
+                    _flush_debug()
+                logger.info(
+                    "Groq cluster naming batch %d/%d attempt %d: %d/%d names in %.2fs (pending %d).",
+                    batch_index,
+                    total_batches,
+                    attempt,
+                    returned,
+                    len(batch_cids),
+                    duration,
+                    len(pending),
+                )
+
+                if pending and attempt < max_rounds:
+                    await asyncio.sleep(min(2**attempt, 8))
+            except GroqQuotaError as e:
+                if (
+                    not fallback_triggered
+                    and fallback_model
+                    and active_model == primary_model
+                ):
+                    fallback_triggered = True
+                    active_model = fallback_model
+                    if debug_path is not None:
+                        debug_records.append(
+                            {
+                                "event": "fallback",
+                                "reason": "quota_error",
+                                "batch_index": batch_index,
+                                "attempt": attempt,
+                                "batch_cids": batch_cids,
+                                "pending_before": sorted(pending),
+                                "error": str(e),
+                                "from_model": primary_model,
+                                "to_model": fallback_model,
+                            }
+                        )
+                        _flush_debug()
+                    if attempt < max_rounds:
+                        await asyncio.sleep(min(2**attempt, 8))
+                        continue
+                if debug_path is not None:
+                    debug_records.append(
+                        {
+                            "mode": "batch",
+                            "batch_index": batch_index,
+                            "attempt": attempt,
+                            "batch_cids": batch_cids,
+                            "pending_before": sorted(pending),
+                            "error": str(e),
+                            "model": active_model,
+                        }
+                    )
+                    _flush_debug()
+                raise RuntimeError(f"Groq quota exceeded: {e}") from e
+            except Exception as e:
+                logger.warning(f"Cluster naming batch failed: {e}")
+                if debug_path is not None:
+                    debug_records.append(
+                        {
+                            "mode": "batch",
+                            "batch_index": batch_index,
+                            "attempt": attempt,
+                            "batch_cids": batch_cids,
+                            "pending_before": sorted(pending),
+                            "error": repr(e),
+                        }
+                    )
+                    _flush_debug()
+                if attempt < max_rounds:
+                    await asyncio.sleep(min(2**attempt, 8))
+
+        if pending:
+            missing_overall.update(pending)
+
+        if progress_callback:
+            progress_callback(len(results), len(clusters))
 
     _save_cluster_name_cache(cache)
 
-    # Final results with better fallback than "Misc"
-    final_results = {}
-    for cid, items in clusters.items():
-        if cid in results and _is_valid_cluster_name(results[cid]):
-            final_results[cid] = results[cid]
-        else:
-            final_results[cid] = _fallback_cluster_name(items)
+    if missing_overall:
+        # Final rescue pass: retry missing clusters in small batches.
+        missing_list = sorted(missing_overall)
+        for rescue_index, cid in enumerate(missing_list, start=1):
+            batch_missing = [cid]
+            if time.time() > deadline:
+                debug_records.append(
+                    {
+                        "event": "timeout",
+                        "batch_index": "rescue",
+                        "pending": batch_missing,
+                        "elapsed": time.time() - start_time,
+                    }
+                )
+                _flush_debug()
+                raise RuntimeError(
+                    "Groq cluster naming timed out after "
+                    f"{LLM_CLUSTER_MAX_TOTAL_SECONDS:.0f}s. "
+                    "Try rerunning with fewer clusters/candidates or wait for quota reset."
+                )
 
-    return final_results
+            rescue_prompts = []
+            for cid in batch_missing:
+                payload = payloads.get(cid, {"titles": []})
+                rescue_prompts.append(f"Cluster {cid}: {json.dumps(payload)}")
+
+            rescue_prompt = f"""
+Name each cluster with a short 2-6 word label.
+
+Rules:
+- Prefer specific technical topics from the titles.
+- Generic labels are allowed only if the titles are genuinely diverse.
+- Use normal spacing and Title Case (e.g., "Large Language Models", not "LargeLanguageModels" or "Large_Language_Models").
+
+Return JSON where keys are cluster IDs: {{ "0": "Label", "1": "Label" }}
+
+Groups:
+{chr(10).join(rescue_prompts)}
+
+JSON:"""
+
+            try:
+                rescue_model = active_model
+                request_count += 1
+                t0 = time.time()
+                try:
+                    text = await _generate_with_retry(
+                        model=rescue_model,
+                        contents=rescue_prompt,
+                        config={
+                            "temperature": LLM_TEMPERATURE,
+                            "max_output_tokens": LLM_CLUSTER_MAX_TOKENS,
+                        },
+                        max_retries=1,
+                    )
+                except GroqQuotaError as e:
+                    if (
+                        not fallback_triggered
+                        and fallback_model
+                        and active_model == primary_model
+                    ):
+                        fallback_triggered = True
+                        active_model = fallback_model
+                        rescue_model = active_model
+                        if debug_path is not None:
+                            debug_records.append(
+                            {
+                                "event": "fallback",
+                                "reason": "quota_error_rescue",
+                                "batch_index": rescue_index,
+                                "batch_cids": batch_missing,
+                                "error": str(e),
+                                    "from_model": primary_model,
+                                    "to_model": fallback_model,
+                                }
+                            )
+                            _flush_debug()
+                        request_count += 1
+                        t0 = time.time()
+                        text = await _generate_with_retry(
+                            model=rescue_model,
+                            contents=rescue_prompt,
+                            config={
+                                "temperature": LLM_TEMPERATURE,
+                                "max_output_tokens": LLM_CLUSTER_MAX_TOKENS,
+                            },
+                            max_retries=1,
+                        )
+                    else:
+                        raise
+                duration = time.time() - t0
+                if (
+                    text is None
+                    and rescue_model == primary_model
+                    and fallback_model
+                    and not fallback_triggered
+                ):
+                    fallback_triggered = True
+                    active_model = fallback_model
+                    rescue_model = active_model
+                    if debug_path is not None:
+                        debug_records.append(
+                            {
+                                "event": "fallback",
+                                "reason": "empty_response_rescue",
+                                "batch_index": rescue_index,
+                                "batch_cids": batch_missing,
+                                "from_model": primary_model,
+                                "to_model": fallback_model,
+                            }
+                        )
+                        _flush_debug()
+                    request_count += 1
+                    t0 = time.time()
+                    text = await _generate_with_retry(
+                        model=rescue_model,
+                        contents=rescue_prompt,
+                        config={
+                            "temperature": LLM_TEMPERATURE,
+                            "max_output_tokens": LLM_CLUSTER_MAX_TOKENS,
+                        },
+                        max_retries=1,
+                    )
+                    duration = time.time() - t0
+
+                returned = 0
+                batch_results: dict[str, object] | None = None
+                if text:
+                    batch_results = _safe_json_loads(text)
+                    if batch_results:
+                        batch_results = _remap_batch_results(
+                            batch_results=batch_results,
+                            pending_ids=batch_missing,
+                            context="rescue_batch",
+                            batch_index=rescue_index,
+                            attempt=1,
+                            model=rescue_model,
+                        )
+                    for cid_str, name in batch_results.items():
+                        try:
+                            cid = int(cid_str)
+                        except (ValueError, TypeError):
+                            continue
+                        if cid not in batch_missing:
+                            continue
+                        raw_name = str(name).strip()
+                        if not raw_name:
+                            continue
+                        final_name = " ".join(
+                            raw_name.split()[:LLM_CLUSTER_NAME_MAX_WORDS]
+                        )
+                        final_name = final_name.rstrip(" ,&/").rstrip()
+                        if final_name.endswith(" and") or final_name.endswith(" or"):
+                            final_name = final_name.rsplit(" ", 1)[0]
+                        if not final_name:
+                            continue
+                        results[cid] = final_name
+                        items = to_generate[cid]
+                        story_ids = sorted(
+                            [
+                                str(s.get("id", s.get("objectID", "")))
+                                for s, _ in items
+                            ]
+                        )
+                        cache_key = _cluster_name_cache_key(
+                            story_ids, rescue_model
+                        )
+                        cache[cache_key] = final_name
+                        returned += 1
+
+                if debug_path is not None:
+                    debug_records.append(
+                        {
+                            "mode": "rescue_batch",
+                            "batch_index": rescue_index,
+                            "model": rescue_model,
+                            "batch_cids": batch_missing,
+                            "payloads": {
+                                str(cid): payloads.get(cid, {})
+                                for cid in batch_missing
+                            },
+                            "prompt": rescue_prompt,
+                            "response": text,
+                            "parsed": batch_results if text else None,
+                            "returned": returned,
+                            "duration": duration,
+                        }
+                    )
+                    _flush_debug()
+            except GroqQuotaError as e:
+                if debug_path is not None:
+                    debug_records.append(
+                        {
+                            "mode": "rescue_batch",
+                            "batch_index": rescue_index,
+                            "batch_cids": batch_missing,
+                            "error": str(e),
+                        }
+                    )
+                    _flush_debug()
+                raise RuntimeError(f"Groq quota exceeded: {e}") from e
+            except Exception as e:
+                logger.warning(f"Cluster naming rescue batch failed: {e}")
+
+    _flush_debug()
+
+    missing = [cid for cid in clusters if not results.get(cid)]
+    if missing:
+        elapsed = time.time() - start_time
+        raise RuntimeError(
+            "Groq cluster naming failed for "
+            f"{len(missing)} clusters after {request_count} requests "
+            f"({elapsed:.1f}s). Missing IDs: {sorted(missing)}. "
+            "Likely rate-limited or incomplete JSON. "
+            "Try rerunning, lowering --clusters, or waiting for quota reset."
+        )
+
+    return {cid: results.get(cid, "") for cid in clusters}
 
 
 TLDR_CACHE_PATH = Path(".cache/tldrs.json")
@@ -978,7 +1809,7 @@ def _save_tldr_cache(cache: dict[str, str]) -> None:
 
 
 async def generate_batch_tldrs(
-    stories: list[dict[str, Any]],
+    stories: Sequence[StoryForTldr],
     progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> dict[int, str]:
     """Generate TL;DRs for multiple stories in batches to save API quota."""
@@ -987,7 +1818,7 @@ async def generate_batch_tldrs(
 
     cache = _load_tldr_cache()
     results: dict[int, str] = {}
-    to_generate: list[dict[str, Any]] = []
+    to_generate: list[StoryForTldr] = []
 
     for s in stories:
         sid = int(s["id"])
@@ -1010,7 +1841,9 @@ async def generate_batch_tldrs(
 
     for i in range(0, total_to_gen, LLM_TLDR_BATCH_SIZE):
         original_batch = to_generate[i : i + LLM_TLDR_BATCH_SIZE]
-        pending_stories = {int(s["id"]): s for s in original_batch}
+        pending_stories: dict[int, StoryForTldr] = {
+            int(s["id"]): s for s in original_batch
+        }
 
         # Try up to 2 times to get all summaries for this batch
         for attempt in range(2):
@@ -1065,6 +1898,11 @@ JSON:"""
                     for sid_str, tldr in batch_results.items():
                         try:
                             sid = int(sid_str)
+                            if not isinstance(tldr, str):
+                                logger.debug(
+                                    f"TLDR value for {sid_str} was not a string"
+                                )
+                                continue
                             tldr_clean = tldr.strip().strip('"').strip("'")
                             if sid in pending_stories:
                                 results[sid] = tldr_clean
@@ -1271,7 +2109,9 @@ def rank_stories(
 
     # 4. HN Gravity Score (Log-scaled)
     # We use a log scale so that high-point stories punch through without dominating
-    points: NDArray[Any] = np.array([float(s.score) for s in stories])
+    points: NDArray[np.float32] = np.array(
+        [float(s.score) for s in stories], dtype=np.float32
+    )
     hn_scores = np.log1p(points) / np.log1p(
         max(points.max(), HN_SCORE_NORMALIZATION_CAP)
     )
@@ -1281,9 +2121,11 @@ def rank_stories(
     ages_hours: NDArray[np.float64] = np.array(
         [(now - s.time) / 3600.0 for s in stories]
     )
+    rss_mask: NDArray[np.bool_] = np.array([s.id < 0 for s in stories], dtype=bool)
 
     # 6. Adaptive HN weight based on age (only if hn_weight > 0)
     # hn_weight=0 means pure semantic mode (for testing invariants)
+    freshness_boost: NDArray[np.float32] = np.zeros(len(stories), dtype=np.float32)
     if hn_weight > 0:
         # Young stories (<6h): trust semantic more (low HN weight)
         # Old stories (>48h): trust HN score more (higher HN weight)
@@ -1309,9 +2151,13 @@ def rank_stories(
             2.0, -ages_hours / FRESHNESS_HALF_LIFE_HOURS
         )
         freshness = np.clip(freshness, 0.0, 1.0)
-        hybrid_scores = hybrid_scores + (FRESHNESS_MAX_BOOST * freshness).astype(
-            np.float32
-        )
+        freshness_boost = (FRESHNESS_MAX_BOOST * freshness).astype(np.float32)
+        hybrid_scores = hybrid_scores + freshness_boost
+
+        # RSS stories use semantic score only (no HN score or freshness)
+        if np.any(rss_mask):
+            hybrid_scores[rss_mask] = semantic_scores[rss_mask]
+            freshness_boost[rss_mask] = 0.0
     else:
         # Pure semantic mode (hn_weight=0): no HN score, no freshness
         hybrid_scores = semantic_scores.astype(np.float32)
@@ -1344,6 +2190,9 @@ def rank_stories(
                 best_fav_index=int(best_fav_indices[best_idx]),
                 max_sim_score=float(max_sim_scores[best_idx]),
                 knn_score=float(raw_knn_scores[best_idx]),
+                semantic_score=float(semantic_scores[best_idx]),
+                hn_score=float(hn_scores[best_idx]),
+                freshness_boost=float(freshness_boost[best_idx]),
             )
         )
         selected_mask[best_idx] = True

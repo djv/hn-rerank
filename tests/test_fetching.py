@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 from api.constants import MIN_COMMENT_LENGTH, MIN_STORY_COMMENTS
 from api.fetching import (
     ALGOLIA_BASE,
+    AlgoliaComment,
     _clean_text,
     _extract_comments_recursive,
     get_best_stories,
@@ -58,7 +59,7 @@ class TestExtractComments:
 
     def test_min_comment_length_inclusive(self):
         text = "a" * MIN_COMMENT_LENGTH
-        children = [
+        children: list[AlgoliaComment] = [
             {
                 "type": "comment",
                 "text": text,
@@ -119,7 +120,7 @@ async def test_get_best_stories_accepts_min_comment_length():
         mp.setattr("api.fetching._atomic_write_json", lambda p, d: None)
         mp.setattr("api.fetching._evict_old_cache_files", lambda: None)
 
-        stories = await get_best_stories(limit=1)
+        stories = await get_best_stories(limit=1, include_rss=False)
         assert len(stories) == 1
         assert stories[0].id == 42
 
@@ -187,7 +188,7 @@ async def test_get_best_stories_filtering():
         mp.setattr("api.fetching._atomic_write_json", lambda p, d: None)
         mp.setattr("api.fetching._evict_old_cache_files", lambda: None)
 
-        stories = await get_best_stories(limit=limit, exclude_ids=exclude, days=1)
+        stories = await get_best_stories(limit=limit, exclude_ids=exclude, days=1, include_rss=False)
 
         # The fetcher uses a buffer and minimum window size (20), so it may return more than limit
         assert len(stories) >= 2
@@ -259,7 +260,7 @@ async def test_get_best_stories_pagination():
         mp.setattr("api.fetching._atomic_write_json", lambda p, d: None)
         mp.setattr("api.fetching._evict_old_cache_files", lambda: None)
 
-        stories = await get_best_stories(limit=1100)
+        stories = await get_best_stories(limit=1100, include_rss=False)
         # We expect 1100 unique stories
         assert len(stories) >= 1100
 
@@ -281,7 +282,7 @@ async def test_get_best_stories_empty_response():
         mp.setattr("api.fetching._atomic_write_json", lambda p, d: None)
         mp.setattr("api.fetching._evict_old_cache_files", lambda: None)
 
-        stories = await get_best_stories(limit=10, days=7)
+        stories = await get_best_stories(limit=10, days=7, include_rss=False)
         assert stories == []
 
 
@@ -338,7 +339,7 @@ async def test_get_best_stories_partial_failure():
         mp.setattr("api.fetching._atomic_write_json", lambda p, d: None)
         mp.setattr("api.fetching._evict_old_cache_files", lambda: None)
 
-        stories = await get_best_stories(limit=10, days=14)
+        stories = await get_best_stories(limit=10, days=14, include_rss=False)
         # Should still return the stories from successful window
         assert len(stories) >= 1
 

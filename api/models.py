@@ -3,7 +3,41 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, TypedDict
+
+
+class StoryDict(TypedDict):
+    """Serialized Story payload for caching and API boundaries."""
+
+    id: int
+    title: str
+    url: Optional[str]
+    score: int
+    time: int
+    comments: list[str]
+    text_content: str
+
+
+class StoryForTldr(TypedDict):
+    """Minimum fields needed for TL;DR generation."""
+
+    id: int
+    title: str
+    comments: list[str]
+
+
+class StoryDisplayDict(StoryForTldr):
+    """Serialized StoryDisplay payload for templates and LLMs."""
+
+    match_percent: int
+    cluster_name: str
+    points: int
+    time_ago: str
+    url: Optional[str]
+    hn_url: Optional[str]
+    reason: str
+    reason_url: str
+    tldr: str
 
 
 @dataclass
@@ -19,7 +53,7 @@ class Story:
     text_content: str = ""
 
     @classmethod
-    def from_dict(cls, d: dict) -> Story:
+    def from_dict(cls, d: StoryDict) -> Story:
         """Create Story from dict (e.g., from cache/API response)."""
         return cls(
             id=int(d.get("id", 0)),
@@ -31,7 +65,7 @@ class Story:
             text_content=str(d.get("text_content", "")),
         )
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> StoryDict:
         """Serialize to dict for caching."""
         return {
             "id": self.id,
@@ -53,6 +87,9 @@ class RankResult:
     best_fav_index: int  # Index of most similar positive signal (-1 if none)
     max_sim_score: float  # Similarity to best matching positive signal
     knn_score: float  # Mean similarity to top-k neighbors (for display)
+    semantic_score: float = 0.0  # Raw semantic score (classifier or k-NN)
+    hn_score: float = 0.0  # HN score contribution (log-scaled)
+    freshness_boost: float = 0.0  # Freshness boost applied to hybrid score
 
 
 @dataclass
@@ -66,13 +103,13 @@ class StoryDisplay:
     time_ago: str
     url: Optional[str]
     title: str
-    hn_url: str
+    hn_url: Optional[str]
     reason: str  # Title of matched positive signal
     reason_url: str  # URL to matched positive signal
     comments: list[str]
     tldr: str = ""
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> StoryDisplayDict:
         """Convert to dict for template rendering."""
         return {
             "id": self.id,

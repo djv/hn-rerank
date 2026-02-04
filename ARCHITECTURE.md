@@ -23,10 +23,12 @@ HN Rerank is a local-first application that personalizes Hacker News content usi
     - **Discovery**: Uses Algolia API to find candidate stories (search by date/points).
     - **Time Windows**: Fetches candidates in **7-day windows** to stay under Algolia's 1000-hit limit while minimizing API calls.
     - **Detail**: Uses Algolia item API (`/api/v1/items/<id>`) to fetch story details and nested comments for ranking, so no HTML scraping is necessary for story content.
+    - **RSS Feeds**: Pulls additional candidates from a curated OPML list, parsing RSS/Atom entries into `Story` objects and fetching full article text for embeddings (cached in `.cache/rss`).
     - **Caching**:
         - **Positive Cache**: Stores valid story data for 24h.
         - **Negative Cache**: Stores failures/invalid items (e.g., jobs, comments) to prevent infinite re-fetching loops.
         - **Candidate Cache**: Stores Algolia search results per time-window. Recent window (30m TTL), older windows (1w TTL).
+        - **RSS Cache**: Stores OPML feed lists (daily TTL) and per-feed entries (hourly TTL).
     - **Smart Scraping**: HTML scraping is only used by `api/client.py` to collect upvote/favorite IDs via BeautifulSoup; the candidate pipeline relies entirely on Algolia.
 
 ### 4. Reranking Engine (`api/rerank.py`)
@@ -42,11 +44,8 @@ HN Rerank is a local-first application that personalizes Hacker News content usi
 - **Cluster Naming** (`generate_batch_cluster_names()` via Groq API):
     - Uses Groq API (`llama-3.3-70b-versatile`) to generate contextual 2-6 word labels from top titles + comment snippets.
     - Batches naming requests (10 per call) to optimize quota.
-    - Labels are validated to be non-generic and 2-6 words before caching.
-    - Names must share at least 35% of their tokens with the cluster titles; otherwise we fall back to keyword-derived labels.
     - Debug logging records raw LLM naming responses for troubleshooting.
-    - Falls back to keyword-derived labels if the API is unavailable or returns invalid output.
-    - HN prefixes (Show HN:, Ask HN:, Tell HN:) are stripped in fallback label generation.
+    - Groq responses are required; missing or empty names raise an error.
     - Cached by cluster content hash in `.cache/cluster_names.json`.
     - Progress bar shows per-cluster naming progress.
 - **Scoring Algorithm** (two modes):
