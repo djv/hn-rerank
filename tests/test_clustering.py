@@ -305,12 +305,12 @@ async def test_cluster_names_non_empty():
         ],
     }
 
+    mock_gen = AsyncMock(return_value="Software Engineering")
     with (
         patch.dict("os.environ", {"GROQ_API_KEY": "fake_key"}),
-        patch(
-            "api.rerank._generate_with_retry",
-            new=AsyncMock(return_value='{"0": "Technology", "1": "Programming"}'),
-        ),
+        patch("api.rerank._load_cluster_name_cache", return_value={}),
+        patch("api.rerank._save_cluster_name_cache", lambda _cache: None),
+        patch("api.rerank._generate_with_retry", new=mock_gen),
     ):
         names = await generate_batch_cluster_names(clusters)
 
@@ -333,7 +333,7 @@ async def test_fallback_group_name_on_empty_titles():
         patch.dict("os.environ", {"GROQ_API_KEY": "fake_key"}),
         patch(
             "api.rerank._generate_with_retry",
-            new=AsyncMock(return_value='{"0": "Misc Topic"}'),
+            new=AsyncMock(return_value="Misc Topic"),
         ),
     ):
         names = await generate_batch_cluster_names(clusters)
@@ -351,7 +351,7 @@ async def test_empty_clusters_returns_empty():
 
 @pytest.mark.asyncio
 async def test_names_stripped_of_hn_prefixes():
-    """Show HN:, Ask HN:, Tell HN: prefixes are stripped before TF-IDF."""
+    """Cluster naming accepts a valid 2-6 word label."""
     clusters = {
         0: [
             (make_story(7, "Show HN: My Cool Project"), 1.0),
@@ -362,18 +362,20 @@ async def test_names_stripped_of_hn_prefixes():
 
     with (
         patch.dict("os.environ", {"GROQ_API_KEY": "fake_key"}),
+        patch("api.rerank._load_cluster_name_cache", return_value={}),
+        patch("api.rerank._save_cluster_name_cache", lambda _cache: None),
         patch(
             "api.rerank._generate_with_retry",
-            new=AsyncMock(return_value='{"0": "Projects"}'),
+            new=AsyncMock(return_value="Project Tools"),
         ),
     ):
         names = await generate_batch_cluster_names(clusters)
 
-    assert names[0] == "Projects"
+    assert names[0] == "Project Tools"
 
 
 @pytest.mark.asyncio
-async def test_invalid_cluster_name_falls_back():
+async def test_invalid_cluster_name_kept_as_label():
     clusters = {
         0: [
             (make_story(10, "Show HN: My Tool"), 1.0),
@@ -384,7 +386,7 @@ async def test_invalid_cluster_name_falls_back():
         "api.rerank._save_cluster_name_cache", lambda _cache: None
     ), patch(
         "api.rerank._generate_with_retry",
-        new=AsyncMock(return_value='{"0": "Not Provided"}'),
+        new=AsyncMock(return_value="Not Provided"),
     ):
         names = await generate_batch_cluster_names(clusters)
 
@@ -404,7 +406,7 @@ async def test_llm_cluster_name_requires_title_overlap():
         "api.rerank._save_cluster_name_cache", lambda _cache: None
     ), patch(
         "api.rerank._generate_with_retry",
-        new=AsyncMock(return_value='{"0": "LLM Coding Agents"}'),
+        new=AsyncMock(return_value="LLM Coding Agents"),
     ):
         names = await generate_batch_cluster_names(clusters)
 
@@ -424,7 +426,7 @@ async def test_llm_cluster_name_kept_without_keyword_overlap():
         "api.rerank._save_cluster_name_cache", lambda _cache: None
     ), patch(
         "api.rerank._generate_with_retry",
-        new=AsyncMock(return_value='{"0": "Transportation Systems"}'),
+        new=AsyncMock(return_value="Transportation Systems"),
     ):
         names = await generate_batch_cluster_names(clusters)
 
@@ -444,7 +446,7 @@ async def test_llm_cluster_name_allows_six_words():
         "api.rerank._save_cluster_name_cache", lambda _cache: None
     ), patch(
         "api.rerank._generate_with_retry",
-        new=AsyncMock(return_value='{"0": "Deep Learning for Large Language Models"}'),
+        new=AsyncMock(return_value="Deep Learning for Large Language Models"),
     ):
         names = await generate_batch_cluster_names(clusters)
 
@@ -452,7 +454,7 @@ async def test_llm_cluster_name_allows_six_words():
 
 
 @pytest.mark.asyncio
-async def test_llm_cluster_name_truncates_to_max_words():
+async def test_llm_cluster_name_truncates_overlong_label():
     clusters = {
         0: [
             (make_story(17, "Graph neural networks in drug discovery"), 1.0),
@@ -465,7 +467,7 @@ async def test_llm_cluster_name_truncates_to_max_words():
     ), patch(
         "api.rerank._generate_with_retry",
         new=AsyncMock(
-            return_value='{"0": "Graph Neural Networks for Drug Discovery Pipelines"}'
+            return_value="Graph Neural Networks for Drug Discovery Pipelines"
         ),
     ):
         names = await generate_batch_cluster_names(clusters)

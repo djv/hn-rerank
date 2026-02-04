@@ -72,6 +72,7 @@ MAX_CLUSTER_FRACTION = 0.25  # Max cluster size vs total signals
 MAX_CLUSTER_SIZE = 40  # Absolute max cluster size
 CLUSTER_REFINE_ITERS = 2  # Reassign to nearest centroid for tighter clusters
 CLUSTER_SIMILARITY_THRESHOLD = 0.85  # Min similarity to belong to a cluster (raised for fine-tuned model)
+CLUSTER_OUTLIER_SIMILARITY_THRESHOLD = 0.78  # Split low-similarity items into singleton clusters
 
 # Ranking Weights
 RANKING_HN_WEIGHT = 0.05  # Weight for HN score vs semantic (legacy, unused with adaptive)
@@ -115,7 +116,7 @@ MIN_COMMENT_LENGTH = 30  # Filter short low-value comments (relaxed)
 # LLM Configuration
 LLM_CLUSTER_NAME_MODEL_PRIMARY = "llama-3.3-70b-versatile"
 LLM_CLUSTER_NAME_MODEL_FALLBACK = "llama-3.1-8b-instant"
-LLM_CLUSTER_NAME_PROMPT_VERSION = "v2"
+LLM_CLUSTER_NAME_PROMPT_VERSION = "v3"
 LLM_TLDR_MODEL = "llama-3.1-8b-instant"
 LLM_TEMPERATURE = 0.2
 LLM_TLDR_MAX_TOKENS = 2000
@@ -141,6 +142,7 @@ LLM_HTTP_CONNECT_TIMEOUT = 10.0
 LLM_HTTP_READ_TIMEOUT = 30.0
 LLM_HTTP_WRITE_TIMEOUT = 10.0
 LLM_HTTP_POOL_TIMEOUT = 5.0
-LLM_MIN_REQUEST_INTERVAL = 6.0  # Minimum seconds between Groq requests
+LLM_MIN_REQUEST_INTERVAL = 8.0  # Minimum seconds between Groq requests
 LLM_429_COOLDOWN_BASE = 2.0  # Base cooldown when rate-limited
 LLM_429_COOLDOWN_MAX = 60.0  # Max cooldown when rate-limited
+LLM_HTTP_USER_AGENT = "hn-rerank/1.0"

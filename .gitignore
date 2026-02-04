@@ -29,3 +29,15 @@ reproduce_error.py
 # Generated output
 index.html
 clusters.html
+
+# Local artifacts / experiments
+.ralphy/
+checkpoints/
+onnx_model_backup*/
+onnx_model_*backup*/
+cluster_name_debug.json
+cluster_stats.json
+optimized_params.txt
+tuned_model/
+train*.jsonl
+val*.jsonl

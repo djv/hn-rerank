@@ -4,7 +4,6 @@ import hashlib
 import json
 import logging
 import math
-import random
 import re
 import time
 from datetime import datetime
@@ -20,6 +19,13 @@ from numpy.typing import NDArray
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics.pairwise import cosine_similarity
 from transformers import AutoTokenizer, BatchEncoding, PreTrainedTokenizerBase
+from aiolimiter import AsyncLimiter
+from tenacity import (
+    AsyncRetrying,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_random_exponential,
+)
 
 from api.constants import (
     ADAPTIVE_HN_THRESHOLD_OLD,
@@ -56,10 +62,12 @@ from api.constants import (
     LLM_CLUSTER_NAME_MODEL_FALLBACK,
     LLM_CLUSTER_NAME_MODEL_PRIMARY,
     LLM_CLUSTER_NAME_PROMPT_VERSION,
+    CLUSTER_OUTLIER_SIMILARITY_THRESHOLD,
     LLM_HTTP_CONNECT_TIMEOUT,
     LLM_HTTP_READ_TIMEOUT,
     LLM_HTTP_WRITE_TIMEOUT,
     LLM_HTTP_POOL_TIMEOUT,
+    LLM_HTTP_USER_AGENT,
     LLM_MIN_REQUEST_INTERVAL,
     LLM_TEMPERATURE,
     LLM_TLDR_BATCH_SIZE,
@@ -77,13 +85,12 @@ from api.constants import (
     RANKING_NEGATIVE_WEIGHT,
     RATE_LIMIT_ERROR_BACKOFF_BASE,
     RATE_LIMIT_ERROR_BACKOFF_MAX,
-    RATE_LIMIT_JITTER_MAX,
-    RATE_LIMIT_MAX_TOKENS,
-    RATE_LIMIT_REFILL_RATE,
     SEMANTIC_SIGMOID_K,
     SEMANTIC_SIGMOID_THRESHOLD,
+    SIMILARITY_MIN,
     TEXT_CONTENT_MAX_TOKENS,
 )
+from api.llm_utils import build_payload
 from api.models import RankResult, Story, StoryDict, StoryForTldr
 
 logger = logging.getLogger(__name__)
@@ -91,6 +98,17 @@ logger = logging.getLogger(__name__)
 
 class GroqQuotaError(RuntimeError):
     """Raised when Groq returns a non-retryable quota error (e.g., TPD)."""
+
+
+class GroqRetryableError(RuntimeError):
+    """Raised for retryable Groq errors."""
+
+    def __init__(
+        self, message: str, cooldown: Optional[float] = None, is_rate_limit: bool = False
+    ) -> None:
+        super().__init__(message)
+        self.cooldown = cooldown
+        self.is_rate_limit = is_rate_limit
 
 
 ClusterItem: TypeAlias = tuple[StoryDict, float]
@@ -462,6 +480,9 @@ def cluster_interests_with_labels(
     )
 
     centroids = _centroids_from_labels(embeddings, labels, weights)
+    centroids, labels, _ = split_outlier_clusters(
+        embeddings, labels, CLUSTER_OUTLIER_SIMILARITY_THRESHOLD, weights=weights
+    )
     return centroids, labels
 
 
@@ -490,6 +511,50 @@ def _normalize_embeddings(
     norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
     norms = np.maximum(norms, 1e-9)
     return embeddings / norms
+
+
+def split_outlier_clusters(
+    embeddings: NDArray[np.float32],
+    labels: NDArray[np.int32],
+    min_similarity: float,
+    weights: Optional[NDArray[np.float32]] = None,
+) -> tuple[NDArray[np.float32], NDArray[np.int32], int]:
+    """Split low-similarity items into singleton clusters.
+
+    Returns (new_centroids, new_labels, outlier_count).
+    """
+    if len(labels) == 0:
+        return embeddings, labels, 0
+    if min_similarity <= SIMILARITY_MIN:
+        centroids = _centroids_from_labels(embeddings, labels)
+        return centroids, labels, 0
+
+    centroids = _centroids_from_labels(embeddings, labels, weights)
+    if len(centroids) == 0:
+        return centroids, labels, 0
+
+    emb_norm = _normalize_embeddings(embeddings)
+    cent_norm = _normalize_embeddings(centroids)
+    sims = np.sum(emb_norm * cent_norm[labels], axis=1)
+    outlier_idx = np.where(sims < min_similarity)[0]
+    if len(outlier_idx) == 0:
+        return centroids, labels, 0
+
+    new_labels = labels.copy()
+    next_label = int(np.max(labels)) + 1
+    for idx in outlier_idx:
+        new_labels[idx] = next_label
+        next_label += 1
+
+    remap = {old: i for i, old in enumerate(sorted(set(new_labels)))}
+    new_labels = np.array([remap[int(lbl)] for lbl in new_labels], dtype=np.int32)
+    new_centroids = _centroids_from_labels(embeddings, new_labels, weights)
+    logger.info(
+        "Split %d low-similarity items into singleton clusters (min %.2f).",
+        len(outlier_idx),
+        min_similarity,
+    )
+    return new_centroids, new_labels, len(outlier_idx)
 
 
 def _refine_cluster_assignments(
@@ -684,54 +749,9 @@ def _split_large_clusters(
             return labels
 
 
-# Global rate limiter state
-_token_bucket: float = RATE_LIMIT_MAX_TOKENS
-_last_refill: float = time.time()
-_last_request_time: float = 0.0
-_cooldown_until: float = 0.0
-
-
-async def _rate_limit() -> None:
-    """Enforce rate limiting using a Token Bucket algorithm."""
-    global _token_bucket, _last_refill, _last_request_time, _cooldown_until
-    import random
-
-    while True:
-        now = time.time()
-        if now < _cooldown_until:
-            await asyncio.sleep(
-                (_cooldown_until - now) + random.uniform(0, RATE_LIMIT_JITTER_MAX)
-            )
-            continue
-
-        # Refill tokens based on time passed
-        elapsed = now - _last_refill
-        _token_bucket = min(
-            RATE_LIMIT_MAX_TOKENS, _token_bucket + elapsed * RATE_LIMIT_REFILL_RATE
-        )
-        _last_refill = now
-
-        if _token_bucket >= 1.0:
-            since_last = now - _last_request_time
-            if since_last < LLM_MIN_REQUEST_INTERVAL:
-                await asyncio.sleep(
-                    (LLM_MIN_REQUEST_INTERVAL - since_last)
-                    + random.uniform(0, RATE_LIMIT_JITTER_MAX)
-                )
-                continue
-            _token_bucket -= 1.0
-            _last_request_time = time.time()
-            return
-
-        # Calculate wait time needed for next token
-        wait_time = (1.0 - _token_bucket) / RATE_LIMIT_REFILL_RATE
-        # Add a small buffer and jitter to prevent thundering herds
-        await asyncio.sleep(wait_time + 0.1 + random.uniform(0, RATE_LIMIT_JITTER_MAX))
-
-
-def _full_jitter_backoff(base: float, attempt: int, cap: float) -> float:
-    max_backoff = min(cap, base * (2**attempt))
-    return random.uniform(0, max_backoff)
+_LLM_LIMITER: AsyncLimiter = AsyncLimiter(
+    1, max(1.0, float(LLM_MIN_REQUEST_INTERVAL))
+)
 
 
 def _parse_retry_after(value: str) -> Optional[float]:
@@ -773,6 +793,24 @@ def _extract_groq_error_message(resp: httpx.Response) -> str:
             if isinstance(msg, str):
                 return msg.strip()
     return resp.text.strip()
+
+
+_RATE_LIMIT_WAIT = wait_random_exponential(
+    min=RATE_LIMIT_ERROR_BACKOFF_BASE, max=RATE_LIMIT_ERROR_BACKOFF_MAX
+)
+_RATE_LIMIT_429_WAIT = wait_random_exponential(
+    min=LLM_429_COOLDOWN_BASE, max=LLM_429_COOLDOWN_MAX
+)
+
+
+def _retry_wait(retry_state: object) -> float:
+    exc = getattr(retry_state.outcome, "exception", lambda: None)()
+    if isinstance(exc, GroqRetryableError):
+        if exc.cooldown is not None:
+            return exc.cooldown
+        if exc.is_rate_limit:
+            return _RATE_LIMIT_429_WAIT(retry_state)
+    return _RATE_LIMIT_WAIT(retry_state)
 
 
 CLUSTER_NAME_CACHE_PATH = Path(".cache/cluster_names.json")
@@ -974,6 +1012,20 @@ def _normalize_cluster_name(
     return _fallback_cluster_name(items)
 
 
+def _finalize_cluster_name(raw_name: str) -> Optional[str]:
+    """Normalize cluster name formatting without altering semantics."""
+    cleaned = raw_name.strip()
+    if not cleaned or "\n" in cleaned:
+        return None
+    if any(ch in cleaned for ch in ("{", "}", "[", "]")):
+        return None
+    cleaned = " ".join(cleaned.split()[:LLM_CLUSTER_NAME_MAX_WORDS])
+    cleaned = cleaned.rstrip(" ,&/").rstrip()
+    if cleaned.endswith(" and") or cleaned.endswith(" or"):
+        cleaned = cleaned.rsplit(" ", 1)[0].rstrip()
+    return cleaned or None
+
+
 def _load_cluster_name_cache() -> dict[str, str]:
     if CLUSTER_NAME_CACHE_PATH.exists():
         try:
@@ -1084,46 +1136,7 @@ async def _generate_with_retry(
         logger.warning("GROQ_API_KEY not set, skipping LLM call")
         return None
 
-    # Handle Gemini-style 'contents' to OpenAI-style 'messages'
-    messages = []
-    if isinstance(contents, str):
-        messages = [{"role": "user", "content": contents}]
-    elif isinstance(contents, list):
-        for item in contents:
-            if isinstance(item, str):
-                messages.append({"role": "user", "content": item})
-                continue
-            if not isinstance(item, dict):
-                continue
-            item_dict = cast(dict[str, object], item)
-            parts = item_dict.get("parts")
-            if not isinstance(parts, list):
-                continue
-            texts: list[str] = []
-            for part in parts:
-                if isinstance(part, dict):
-                    part_dict = cast(dict[str, object], part)
-                    text_val = part_dict.get("text")
-                    if isinstance(text_val, str):
-                        texts.append(text_val)
-            if texts:
-                messages.append({"role": "user", "content": "".join(texts)})
-
-    payload = {
-        "model": model,
-        "messages": messages,
-        "temperature": config.get("temperature", LLM_TEMPERATURE)
-        if config
-        else LLM_TEMPERATURE,
-    }
-
-    if config:
-        max_tokens = config.get("max_tokens", config.get("max_output_tokens"))
-        if isinstance(max_tokens, (int, float)) and max_tokens > 0:
-            payload["max_tokens"] = int(max_tokens)
-
-    if config and config.get("response_mime_type") == "application/json":
-        payload["response_format"] = {"type": "json_object"}
+    payload = build_payload(model=model, contents=contents, config=config)
 
     timeout = httpx.Timeout(
         connect=LLM_HTTP_CONNECT_TIMEOUT,
@@ -1133,81 +1146,62 @@ async def _generate_with_retry(
     )
 
     async with httpx.AsyncClient(timeout=timeout) as client:
-        for attempt in range(max_retries):
-            try:
-                await _rate_limit()
-                resp = await client.post(
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json=payload,
-                )
+        try:
+            async for attempt in AsyncRetrying(
+                stop=stop_after_attempt(max_retries),
+                retry=retry_if_exception_type(GroqRetryableError),
+                wait=_retry_wait,
+                reraise=True,
+            ):
+                with attempt:
+                    try:
+                        async with _LLM_LIMITER:
+                            resp = await client.post(
+                                "https://api.groq.com/openai/v1/chat/completions",
+                                headers={
+                                    "Authorization": f"Bearer {api_key}",
+                                    "Content-Type": "application/json",
+                                    "User-Agent": LLM_HTTP_USER_AGENT,
+                                },
+                                json=payload,
+                            )
+                    except httpx.HTTPError as e:
+                        raise GroqRetryableError(str(e)) from e
 
-                if resp.status_code == 200:
-                    data = resp.json()
-                    return data["choices"][0]["message"]["content"]
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        return data["choices"][0]["message"]["content"]
 
-                if resp.status_code == 429:
+                    if resp.status_code == 429:
+                        error_msg = _extract_groq_error_message(resp)
+                        msg_lower = error_msg.lower()
+                        if "tokens per day" in msg_lower or " tpd" in msg_lower:
+                            raise GroqQuotaError(error_msg)
+                        if "requests per day" in msg_lower or " rpd" in msg_lower:
+                            raise GroqQuotaError(error_msg)
+                        retry_after = _retry_after_seconds(resp)
+                        raise GroqRetryableError(
+                            error_msg,
+                            cooldown=retry_after,
+                            is_rate_limit=True,
+                        )
+
+                    if resp.status_code in {408, 500, 502, 503, 504}:
+                        raise GroqRetryableError(
+                            f"Groq API error {resp.status_code}"
+                        )
+
                     error_msg = _extract_groq_error_message(resp)
-                    msg_lower = error_msg.lower()
-                    if "tokens per day" in msg_lower or " tpd" in msg_lower:
-                        raise GroqQuotaError(error_msg)
-                    if "requests per day" in msg_lower or " rpd" in msg_lower:
-                        raise GroqQuotaError(error_msg)
-
-                    retry_after = _retry_after_seconds(resp)
-                    if retry_after is None:
-                        cooldown = _full_jitter_backoff(
-                            LLM_429_COOLDOWN_BASE, attempt, LLM_429_COOLDOWN_MAX
-                        )
-                    else:
-                        cooldown = retry_after + random.uniform(0, RATE_LIMIT_JITTER_MAX)
-                    global _cooldown_until
-                    _cooldown_until = max(_cooldown_until, time.time() + cooldown)
-                    logger.debug(
-                        "Groq rate limit hit (429). Attempt %d/%d. Cooling down for %.0fs.",
-                        attempt + 1,
-                        max_retries,
-                        cooldown,
-                    )
-                    await asyncio.sleep(cooldown)
-                    continue
-
-                if resp.status_code in {408, 500, 502, 503, 504}:
-                    if attempt < max_retries - 1:
-                        delay = _full_jitter_backoff(
-                            RATE_LIMIT_ERROR_BACKOFF_BASE,
-                            attempt,
-                            RATE_LIMIT_ERROR_BACKOFF_MAX,
-                        )
-                        logger.warning(
-                            "Groq API error %d. Retrying in %.1fs.",
-                            resp.status_code,
-                            delay,
-                        )
-                        await asyncio.sleep(delay)
-                        continue
-
-                logger.error(f"Groq API error {resp.status_code}: {resp.text}")
-                return None
-
-            except Exception as e:
-                if isinstance(e, GroqQuotaError):
-                    raise
-                if attempt == max_retries - 1:
                     logger.error(
-                        f"Groq API call failed after {max_retries} retries: {e}"
+                        "Groq API error %d: %s", resp.status_code, error_msg or resp.text
                     )
                     return None
-                delay = _full_jitter_backoff(
-                    RATE_LIMIT_ERROR_BACKOFF_BASE, attempt, RATE_LIMIT_ERROR_BACKOFF_MAX
-                )
-                logger.warning(
-                    f"Groq API attempt {attempt + 1} failed: {e}, retrying in {delay}s"
-                )
-                await asyncio.sleep(delay)
+        except GroqQuotaError:
+            raise
+        except GroqRetryableError as e:
+            logger.error("Groq API call failed after %d retries: %s", max_retries, e)
+            return None
+
     return None
 
 
@@ -1256,7 +1250,7 @@ async def generate_batch_cluster_names(
 
     debug_records: list[dict[str, object]] = []
 
-    payloads: dict[int, dict[str, object]] = {}
+    payloads: dict[int, list[str]] = {}
     for cid, items in to_generate.items():
         # Use top titles only to keep prompts compact and reduce latency.
         sorted_items = sorted(items, key=lambda x: -x[1])[:LLM_CLUSTER_TITLE_SAMPLES]
@@ -1270,7 +1264,7 @@ async def generate_batch_cluster_names(
                 title = title[:LLM_CLUSTER_TITLE_MAX_CHARS].rstrip()
             cluster_titles.append(title)
 
-        payloads[cid] = {"titles": cluster_titles}
+        payloads[cid] = cluster_titles
 
     def _flush_debug() -> None:
         if debug_path is None:
@@ -1349,13 +1343,12 @@ async def generate_batch_cluster_names(
 
             batch_prompts: list[str] = []
             for cid in sorted(pending):
-                payload = payloads.get(cid, {"items": [], "keywords": ""})
-
-                # Serialize to JSON for cleaner prompt structure
-                batch_prompts.append(f"Cluster {cid}: {json.dumps(payload)}")
+                titles = payloads.get(cid, [])
+                title_lines = "\n".join(f"- {t}" for t in titles) if titles else "- (no titles)"
+                batch_prompts.append(f"Titles:\n{title_lines}")
 
             full_prompt = f"""
-Name each cluster with a SPECIFIC, TECHNICAL 2-6 word label.
+Provide a concise label between two and six words that describes the cluster stories.
 
 Rules:
 - Prefer the most specific recurring technical topic in the titles.
@@ -1363,13 +1356,11 @@ Rules:
 - Avoid umbrella terms unless the titles are genuinely diverse.
 - Use key terms from the titles where possible.
 - Use normal spacing and Title Case (e.g., "Large Language Models", not "LargeLanguageModels" or "Large_Language_Models").
+- Return ONLY the label text. Do not return JSON, bullets, or extra commentary.
 
-Return JSON where keys are cluster IDs: {{ "0": "Label", "1": "Label" }}
-
-Groups:
+Group:
 {chr(10).join(batch_prompts)}
-
-JSON:"""
+"""
 
             try:
                 pending_before = sorted(pending)
@@ -1418,41 +1409,12 @@ JSON:"""
                         _flush_debug()
                 if text:
                     logger.debug("Groq cluster naming raw response: %s", text)
-                    batch_results = _safe_json_loads(text)
-                    if not batch_results and len(pending) == 1:
-                        # Some models return a bare label when only one cluster is present.
+                    if len(pending) == 1:
                         only_cid = next(iter(pending))
-                        batch_results = {str(only_cid): text.strip()}
-                    if batch_results:
-                        batch_results = _remap_batch_results(
-                            batch_results=batch_results,
-                            pending_ids=sorted(pending),
-                            context="batch",
-                            batch_index=batch_index,
-                            attempt=attempt,
-                            model=attempt_model,
-                        )
-                    for cid_str, name in batch_results.items():
-                        try:
-                            cid = int(cid_str)
-                            if cid not in pending:
-                                continue
-                            raw_name = str(name).strip()
-                            if not raw_name:
-                                continue
-                            # Truncate to max words (allows multi-topic names)
-                            final_name = " ".join(
-                                raw_name.split()[:LLM_CLUSTER_NAME_MAX_WORDS]
-                            )
-                            # Strip trailing conjunctions/punctuation left by truncation
-                            final_name = final_name.rstrip(" ,&/").rstrip()
-                            if final_name.endswith(" and") or final_name.endswith(" or"):
-                                final_name = final_name.rsplit(" ", 1)[0]
-                            if not final_name:
-                                continue
-
-                            results[cid] = final_name
-                            items = to_generate[cid]
+                        final_name = _finalize_cluster_name(text)
+                        if final_name:
+                            results[only_cid] = final_name
+                            items = to_generate[only_cid]
                             story_ids = sorted(
                                 [
                                     str(s.get("id", s.get("objectID", "")))
@@ -1464,11 +1426,6 @@ JSON:"""
                             )
                             cache[cache_key] = final_name
                             returned += 1
-                        except (ValueError, TypeError) as e:
-                            logger.debug(
-                                f"Failed to parse cluster name for {cid_str}: {e}"
-                            )
-                            continue
                 pending = {cid for cid in pending if cid not in results}
                 if debug_path is not None:
                     debug_records.append(
@@ -1592,23 +1549,22 @@ JSON:"""
 
             rescue_prompts = []
             for cid in batch_missing:
-                payload = payloads.get(cid, {"titles": []})
-                rescue_prompts.append(f"Cluster {cid}: {json.dumps(payload)}")
+                titles = payloads.get(cid, [])
+                title_lines = "\n".join(f"- {t}" for t in titles) if titles else "- (no titles)"
+                rescue_prompts.append(f"Titles:\n{title_lines}")
 
             rescue_prompt = f"""
-Name each cluster with a short 2-6 word label.
+Provide a concise label between two and six words that describes the cluster stories.
 
 Rules:
 - Prefer specific technical topics from the titles.
 - Generic labels are allowed only if the titles are genuinely diverse.
 - Use normal spacing and Title Case (e.g., "Large Language Models", not "LargeLanguageModels" or "Large_Language_Models").
+- Return ONLY the label text. Do not return JSON, bullets, or extra commentary.
 
-Return JSON where keys are cluster IDs: {{ "0": "Label", "1": "Label" }}
-
-Groups:
+Group:
 {chr(10).join(rescue_prompts)}
-
-JSON:"""
+"""
 
             try:
                 rescue_model = active_model
@@ -1696,35 +1652,10 @@ JSON:"""
 
                 returned = 0
                 batch_results: dict[str, object] | None = None
-                if text:
-                    batch_results = _safe_json_loads(text)
-                    if batch_results:
-                        batch_results = _remap_batch_results(
-                            batch_results=batch_results,
-                            pending_ids=batch_missing,
-                            context="rescue_batch",
-                            batch_index=rescue_index,
-                            attempt=1,
-                            model=rescue_model,
-                        )
-                    for cid_str, name in batch_results.items():
-                        try:
-                            cid = int(cid_str)
-                        except (ValueError, TypeError):
-                            continue
-                        if cid not in batch_missing:
-                            continue
-                        raw_name = str(name).strip()
-                        if not raw_name:
-                            continue
-                        final_name = " ".join(
-                            raw_name.split()[:LLM_CLUSTER_NAME_MAX_WORDS]
-                        )
-                        final_name = final_name.rstrip(" ,&/").rstrip()
-                        if final_name.endswith(" and") or final_name.endswith(" or"):
-                            final_name = final_name.rsplit(" ", 1)[0]
-                        if not final_name:
-                            continue
+                if text and len(batch_missing) == 1:
+                    cid = batch_missing[0]
+                    final_name = _finalize_cluster_name(text)
+                    if final_name:
                         results[cid] = final_name
                         items = to_generate[cid]
                         story_ids = sorted(
@@ -2048,12 +1979,8 @@ def rank_stories(
             best_fav_indices = np.full(len(stories), -1, dtype=np.int64)
             raw_knn_scores = np.zeros(len(stories), dtype=np.float32)
         else:
-            # 1. k-Nearest Neighbors Scoring
-            # Instead of centroids, compare candidates to actual history items.
-            # This handles irregular interest shapes better than spherical centroids.
-            
+            # 1. Candidate similarity to positive history (for display + reasons)
             # Calculate full similarity matrix: (n_history, n_candidates)
-            # NOTE: Don't apply recency weights yet - we want pure semantic match first
             sim_matrix: NDArray[np.float32] = cosine_similarity(
                 positive_embeddings, cand_emb
             )
@@ -2071,12 +1998,19 @@ def rank_stories(
 
             # Store raw k-NN scores for display before sigmoid
             raw_knn_scores = knn_scores.astype(np.float32)
-            semantic_scores = knn_scores
 
             # For display score and best_fav_index, use the single best match
             # This preserves interpretable "match to specific story" display
             max_sim_scores = np.max(sim_matrix, axis=0)
             best_fav_indices = np.argmax(sim_matrix, axis=0)
+
+            # 2. Cluster-max semantic scoring
+            cluster_centroids = cluster_interests(positive_embeddings, positive_weights)
+            if len(cluster_centroids) > 0:
+                cluster_sim = cosine_similarity(cluster_centroids, cand_emb)
+                semantic_scores = np.max(cluster_sim, axis=0).astype(np.float32)
+            else:
+                semantic_scores = np.zeros(len(stories), dtype=np.float32)
 
             # Apply soft sigmoid activation instead of hard threshold
             # This suppresses noise while preserving strong signals

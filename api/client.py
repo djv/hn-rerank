@@ -8,6 +8,7 @@ import httpx
 from bs4 import BeautifulSoup
 from bs4.element import Tag
 from api.constants import USER_CACHE_DIR, USER_CACHE_TTL
+from api.url_utils import normalize_url
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,8 @@ class UserCacheIds(TypedDict):
     hidden: list[int]
     hidden_urls: list[str]
     favorites: list[int]
+    favorites_urls: list[str]
+    upvoted_urls: list[str]
 
 
 class UserCacheFile(TypedDict):
@@ -35,6 +38,8 @@ class UserSignals(TypedDict):
     hidden: set[int]
     hidden_urls: set[str]
     favorites: set[int]
+    favorites_urls: set[str]
+    upvoted_urls: set[str]
 
 
 class HNClient:
@@ -83,7 +88,9 @@ class HNClient:
         ids, _ = await self._scrape_items(path, max_pages)
         return ids
 
-    async def _scrape_items(self, path: str, max_pages: int = 10) -> tuple[set[int], set[str]]:
+    async def _scrape_items(
+        self, path: str, max_pages: int = 10
+    ) -> tuple[set[int], set[str]]:
         ids: set[int] = set()
         urls: set[str] = set()
         for p in range(1, max_pages + 1):
@@ -110,8 +117,9 @@ class HNClient:
                             "item?id="
                         ):
                             # Normalize: strip query params and trailing slash
-                            norm_url = href_val.split("?")[0].rstrip("/")
-                            urls.add(norm_url)
+                            norm_url = normalize_url(href_val)
+                            if norm_url:
+                                urls.add(norm_url)
             if not soup.find("a", class_="morelink"):
                 break
         return ids, urls
@@ -155,7 +163,9 @@ class HNClient:
 
         # Try cache for other signals (favorites, upvotes)
         favorites: set[int] = set()
+        favorites_urls: set[str] = set()
         upvoted: set[int] = set()
+        upvoted_urls: set[str] = set()
         cache_valid = False
 
         if cache_path.exists():
@@ -164,17 +174,26 @@ class HNClient:
                 if time.time() - float(data["ts"]) < USER_CACHE_TTL:
                     cache_valid = True
                     favorites = set(data["ids"].get("favorites", []))
+                    favorites_urls = set(data["ids"].get("favorites_urls", []))
                     upvoted = set(data["ids"].get("upvoted", []))
+                    upvoted_urls = set(data["ids"].get("upvoted_urls", []))
             except Exception:
                 pass
 
         if not cache_valid:
             # Fetch fresh favorites and upvotes
-            fav_ids, _ = await self._scrape_items(f"/favorites?id={user}", max_pages=15)
+            fav_ids, fav_urls = await self._scrape_items(
+                f"/favorites?id={user}", max_pages=15
+            )
             favorites = fav_ids
+            favorites_urls = fav_urls
 
             if is_logged_in and logged_in_as == user:
-                upvoted = await self._scrape_ids(f"/upvoted?id={user}", max_pages=15)
+                up_ids, up_urls = await self._scrape_items(
+                    f"/upvoted?id={user}", max_pages=15
+                )
+                upvoted = up_ids
+                upvoted_urls = up_urls
             elif is_logged_in:
                 logger.warning(f"Logged in as @{logged_in_as}, but requested data for @{user}. Private signals (upvoted/hidden) skipped.")
             else:
@@ -190,6 +209,8 @@ class HNClient:
             "hidden": list(hidden),
             "hidden_urls": list(hidden_urls),
             "favorites": list(favorites),
+            "favorites_urls": list(favorites_urls),
+            "upvoted_urls": list(upvoted_urls),
         }
 
         cache_path.write_text(
@@ -202,6 +223,8 @@ class HNClient:
             "hidden": hidden,
             "hidden_urls": hidden_urls,
             "favorites": favorites,
+            "favorites_urls": favorites_urls,
+            "upvoted_urls": upvoted_urls,
         }
 
     async def close(self) -> None:

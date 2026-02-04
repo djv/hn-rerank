@@ -3,8 +3,10 @@
 
 import argparse
 import asyncio
+import json
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 import httpx
@@ -20,6 +22,18 @@ from api.constants import (
     RANKING_DIVERSITY_LAMBDA,
     RANKING_NEGATIVE_WEIGHT,
 )
+
+
+BASELINE_DEFAULT_PATH = ".cache/metrics_baseline.json"
+DEFAULT_GUARD_METRICS = [
+    "mrr",
+    "ndcg@10",
+    "ndcg@30",
+    "map@10",
+    "map@30",
+    "recall@10",
+    "recall@30",
+]
 
 
 def ndcg_at_k(ranked_ids: list[int], relevant_ids: set[int], k: int) -> float:
@@ -67,6 +81,72 @@ def map_at_k(ranked_ids: list[int], relevant_ids: set[int], k: int) -> float:
             precisions.append(hits / (i + 1))
 
     return sum(precisions) / min(k, len(relevant_ids)) if precisions else 0.0
+
+
+def hit_rate_at_k(ranked_ids: list[int], relevant_ids: set[int], k: int) -> float:
+    """Compute Hit@k - whether any relevant item appears in top-k."""
+    return 1.0 if any(sid in relevant_ids for sid in ranked_ids[:k]) else 0.0
+
+
+def mean_rank(ranked_ids: list[int], relevant_ids: set[int]) -> float:
+    """Mean rank of relevant items (lower is better)."""
+    positions = [i + 1 for i, sid in enumerate(ranked_ids) if sid in relevant_ids]
+    if not positions:
+        return float(len(ranked_ids) + 1)
+    return float(np.mean(positions))
+
+
+def median_rank(ranked_ids: list[int], relevant_ids: set[int]) -> float:
+    """Median rank of relevant items (lower is better)."""
+    positions = [i + 1 for i, sid in enumerate(ranked_ids) if sid in relevant_ids]
+    if not positions:
+        return float(len(ranked_ids) + 1)
+    return float(np.median(positions))
+
+
+def _format_metrics_line(metrics: dict[str, float], k: int) -> str:
+    ndcg = metrics.get(f"ndcg@{k}", 0.0)
+    map_k = metrics.get(f"map@{k}", 0.0)
+    prec = metrics.get(f"precision@{k}", 0.0)
+    rec = metrics.get(f"recall@{k}", 0.0)
+    hit = metrics.get(f"hit@{k}", 0.0)
+    return f"{k:<6} {ndcg:<8.3f} {map_k:<8.3f} {prec:<8.1%} {rec:<8.1%} {hit:<8.1%}"
+
+
+def _load_baseline(path: str) -> Optional[dict[str, float]]:
+    p = Path(path)
+    if not p.exists():
+        return None
+    try:
+        data = json.loads(p.read_text())
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    return {str(k): float(v) for k, v in data.items()}
+
+
+def _save_baseline(path: str, metrics: dict[str, float]) -> None:
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(metrics, indent=2, sort_keys=True))
+
+
+def _guard_metrics(
+    current: dict[str, float],
+    baseline: dict[str, float],
+    guard_metrics: list[str],
+    tolerance: float,
+) -> list[str]:
+    failures: list[str] = []
+    for key in guard_metrics:
+        if key not in current or key not in baseline:
+            continue
+        if current[key] + tolerance < baseline[key]:
+            failures.append(
+                f"{key}: {current[key]:.4f} < {baseline[key]:.4f} (tol {tolerance:.4f})"
+            )
+    return failures
 
 
 @dataclass
@@ -229,14 +309,17 @@ class RankingEvaluator:
         ranked_ids = [self.dataset.candidates[r.index].id for r in results]
         metrics: dict[str, float] = {}
 
-        # Global metric (not k-dependent)
+        # Global metrics (not k-dependent)
         metrics["mrr"] = mrr(ranked_ids, self.dataset.test_ids)
+        metrics["mean_rank"] = mean_rank(ranked_ids, self.dataset.test_ids)
+        metrics["median_rank"] = median_rank(ranked_ids, self.dataset.test_ids)
 
         for k in k_metrics:
             metrics[f"ndcg@{k}"] = ndcg_at_k(ranked_ids, self.dataset.test_ids, k)
             metrics[f"recall@{k}"] = recall_at_k(ranked_ids, self.dataset.test_ids, k)
             metrics[f"precision@{k}"] = precision_at_k(ranked_ids, self.dataset.test_ids, k)
             metrics[f"map@{k}"] = map_at_k(ranked_ids, self.dataset.test_ids, k)
+            metrics[f"hit@{k}"] = hit_rate_at_k(ranked_ids, self.dataset.test_ids, k)
 
         return metrics
 
@@ -248,6 +331,7 @@ class RankingEvaluator:
         neg_weight: float = RANKING_NEGATIVE_WEIGHT,
         use_classifier: bool = True,
         k_metrics: Optional[list[int]] = None,
+        report_each: bool = True,
     ) -> dict[str, float]:
         """Run k-fold cross-validation and return averaged metrics."""
         if not self.dataset:
@@ -298,14 +382,26 @@ class RankingEvaluator:
 
             ranked_ids = [fold_candidates[r.index].id for r in results]
             fold_metrics: dict[str, float] = {"mrr": mrr(ranked_ids, test_ids)}
+            fold_metrics["mean_rank"] = mean_rank(ranked_ids, test_ids)
+            fold_metrics["median_rank"] = median_rank(ranked_ids, test_ids)
 
             for k in k_metrics:
                 fold_metrics[f"ndcg@{k}"] = ndcg_at_k(ranked_ids, test_ids, k)
                 fold_metrics[f"recall@{k}"] = recall_at_k(ranked_ids, test_ids, k)
                 fold_metrics[f"precision@{k}"] = precision_at_k(ranked_ids, test_ids, k)
                 fold_metrics[f"map@{k}"] = map_at_k(ranked_ids, test_ids, k)
+                fold_metrics[f"hit@{k}"] = hit_rate_at_k(ranked_ids, test_ids, k)
 
             all_metrics.append(fold_metrics)
+            if report_each:
+                print(f"\nFold {fold + 1}/{n_folds}:")
+                print(f"  MRR: {fold_metrics['mrr']:.3f}")
+                print(f"  Mean Rank: {fold_metrics['mean_rank']:.1f}")
+                print(f"  Median Rank: {fold_metrics['median_rank']:.1f}")
+                print(f"\n  {'k':<6} {'NDCG':<8} {'MAP':<8} {'Prec':<8} {'Recall':<8} {'Hit':<8}")
+                print("  " + "-" * 50)
+                for k in k_metrics:
+                    print("  " + _format_metrics_line(fold_metrics, k))
 
         # Average across folds
         avg_metrics: dict[str, float] = {}
@@ -329,6 +425,11 @@ async def main():
     parser.add_argument("--knn", type=int, default=KNN_NEIGHBORS, help="k-NN neighbors for scoring")
     parser.add_argument("--neg-weight", type=float, default=RANKING_NEGATIVE_WEIGHT, help="Weight for negative similarity penalty")
     parser.add_argument("--cv", type=int, default=0, help="Number of CV folds (0=single holdout)")
+    parser.add_argument("--baseline", default=BASELINE_DEFAULT_PATH, help="Path to metrics baseline JSON")
+    parser.add_argument("--save-baseline", action="store_true", help="Save current metrics as baseline")
+    parser.add_argument("--no-guard", action="store_true", help="Disable baseline regression guard")
+    parser.add_argument("--guard-metrics", nargs="*", default=DEFAULT_GUARD_METRICS, help="Metrics to guard")
+    parser.add_argument("--guard-tolerance", type=float, default=0.0, help="Allowed drop vs baseline")
     args = parser.parse_args()
 
     evaluator = RankingEvaluator(args.username)
@@ -353,8 +454,11 @@ async def main():
             knn=args.knn,
             neg_weight=args.neg_weight,
             use_classifier=args.classifier,
+            report_each=True,
         )
         print(f"\nMRR: {metrics.get('mrr', 0.0):.3f} (±{metrics.get('mrr_std', 0.0):.3f})")
+        print(f"Mean Rank: {metrics.get('mean_rank', 0.0):.1f} (±{metrics.get('mean_rank_std', 0.0):.1f})")
+        print(f"Median Rank: {metrics.get('median_rank', 0.0):.1f} (±{metrics.get('median_rank_std', 0.0):.1f})")
         print(f"\n{'k':<6} {'NDCG':<12} {'MAP':<12} {'Prec':<12} {'Recall':<12}")
         print("-" * 54)
         for k in [10, 20, 30, 50]:
@@ -373,14 +477,32 @@ async def main():
             use_classifier=args.classifier,
         )
         print(f"\nMRR: {metrics.get('mrr', 0.0):.3f}")
-        print(f"\n{'k':<6} {'NDCG':<8} {'MAP':<8} {'Prec':<8} {'Recall':<8}")
-        print("-" * 42)
+        print(f"Mean Rank: {metrics.get('mean_rank', 0.0):.1f}")
+        print(f"Median Rank: {metrics.get('median_rank', 0.0):.1f}")
+        print(f"\n{'k':<6} {'NDCG':<8} {'MAP':<8} {'Prec':<8} {'Recall':<8} {'Hit':<8}")
+        print("-" * 50)
         for k in [10, 20, 30, 50]:
-            ndcg = metrics.get(f"ndcg@{k}", 0.0)
-            map_k = metrics.get(f"map@{k}", 0.0)
-            prec = metrics.get(f"precision@{k}", 0.0)
-            rec = metrics.get(f"recall@{k}", 0.0)
-            print(f"{k:<6} {ndcg:<8.3f} {map_k:<8.3f} {prec:<8.1%} {rec:<8.1%}")
+            print(_format_metrics_line(metrics, k))
+
+    if args.save_baseline:
+        _save_baseline(args.baseline, metrics)
+        print(f"\nSaved baseline to {args.baseline}")
+    else:
+        baseline = _load_baseline(args.baseline)
+        if baseline and not args.no_guard:
+            failures = _guard_metrics(
+                metrics,
+                baseline,
+                guard_metrics=args.guard_metrics,
+                tolerance=args.guard_tolerance,
+            )
+            if failures:
+                print("\n[!] Metric regression detected:")
+                for msg in failures:
+                    print(f"  - {msg}")
+                raise SystemExit(2)
+        elif not baseline:
+            print(f"\n[!] No baseline found at {args.baseline}; skipping guard.")
 
     # Just re-run ranking to get the results object for the verbose output
     # (The evaluate method only returns metrics)

@@ -2,7 +2,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import getpass
-import html
 import json
 import logging
 import os
@@ -18,6 +17,8 @@ from importlib.util import find_spec
 
 import numpy as np
 from numpy.typing import NDArray
+from jinja2 import Environment
+from markupsafe import Markup
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskID
 from rich.console import Console
 
@@ -27,6 +28,7 @@ from api import rerank
 from api.client import HNClient, UserSignals
 from api.fetching import get_best_stories, fetch_story
 from api.models import RankResult, Story, StoryDict, StoryDisplay
+from api.url_utils import normalize_url
 from api.constants import (
     ALGOLIA_DEFAULT_DAYS,
     CANDIDATE_FETCH_COUNT,
@@ -116,27 +118,29 @@ HTML_TEMPLATE: str = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>HN Rerank | {username}</title>
+    <title>HN Rerank | {{ username }}</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
-        tailwind.config = {{
-            theme: {{
-                extend: {{
-                    colors: {{
+        {% raw %}
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
                         hn: '#ff6600',
-                    }}
-                }}
-            }}
-        }}
+                    }
+                }
+            }
+        }
+        {% endraw %}
     </script>
     <style type="text/tailwindcss">
-        @layer base {{
-            body {{ @apply bg-stone-50 text-stone-800 antialiased; }}
-        }}
-        .story-card {{ @apply bg-white border border-stone-200 rounded-lg p-2.5 shadow-sm transition-all hover:border-hn hover:shadow-md h-full flex flex-col; }}
-        .story-card.rss-story {{ @apply border-amber-200 bg-amber-50/50; }}
-        .rss-badge {{ @apply px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 text-[10px] font-bold; }}
-        .cluster-chip {{ @apply px-1.5 py-0.5 bg-stone-50 border border-stone-200 rounded text-[10px] font-medium text-stone-600 hover:border-hn hover:text-hn transition-colors cursor-default whitespace-nowrap; }}
+        @layer base {
+            body { @apply bg-stone-50 text-stone-800 antialiased; }
+        }
+        .story-card { @apply bg-white border border-stone-200 rounded-lg p-2.5 shadow-sm transition-all hover:border-hn hover:shadow-md h-full flex flex-col; }
+        .story-card.rss-story { @apply border-amber-200 bg-amber-50/50; }
+        .rss-badge { @apply px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 text-[10px] font-bold; }
+        .cluster-chip { @apply px-1.5 py-0.5 bg-stone-50 border border-stone-200 rounded text-[10px] font-medium text-stone-600 hover:border-hn hover:text-hn transition-colors cursor-default whitespace-nowrap; }
     </style>
 </head>
 <body class="p-2 md:p-4 bg-stone-100">
@@ -146,13 +150,13 @@ HTML_TEMPLATE: str = """
                 <h1 class="text-2xl font-black text-stone-900 tracking-tight">
                     HN <span class="text-hn">Rerank</span>
                 </h1>
-                <p class="text-stone-500 text-xs">@{username} &bull; <a href="clusters.html" class="text-hn hover:underline">{n_clusters} interest clusters</a></p>
+                <p class="text-stone-500 text-xs">@{{ username }} &bull; <a href="clusters.html" class="text-hn hover:underline">{{ n_clusters }} interest clusters</a></p>
             </div>
-            <p class="text-[10px] text-stone-400 font-mono">{timestamp}</p>
+            <p class="text-[10px] text-stone-400 font-mono">{{ timestamp }}</p>
         </header>
 
         <div class="grid gap-3 items-start grid-cols-[repeat(auto-fit,minmax(280px,1fr))]">
-            {stories_html}
+            {{ stories_html | safe }}
         </div>
 
         <footer class="mt-8 py-4 border-t border-stone-200 text-center text-stone-400 text-xs">
@@ -169,24 +173,26 @@ CLUSTERS_PAGE_TEMPLATE: str = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Interest Clusters | {username}</title>
+    <title>Interest Clusters | {{ username }}</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
-        tailwind.config = {{
-            theme: {{
-                extend: {{
-                    colors: {{
+        {% raw %}
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
                         hn: '#ff6600',
-                    }}
-                }}
-            }}
-        }}
+                    }
+                }
+            }
+        }
+        {% endraw %}
     </script>
     <style type="text/tailwindcss">
-        @layer base {{
-            body {{ @apply bg-stone-50 text-stone-800 antialiased; }}
-        }}
-        .cluster-card {{ @apply bg-white border border-stone-200 rounded-lg shadow-sm; }}
+        @layer base {
+            body { @apply bg-stone-50 text-stone-800 antialiased; }
+        }
+        .cluster-card { @apply bg-white border border-stone-200 rounded-lg shadow-sm; }
     </style>
 </head>
 <body class="p-2 md:p-4">
@@ -196,13 +202,13 @@ CLUSTERS_PAGE_TEMPLATE: str = """
                 <h1 class="text-2xl font-black text-stone-900 tracking-tight">
                     Interest <span class="text-hn">Clusters</span>
                 </h1>
-                <p class="text-stone-500 text-xs">@{username} &bull; {n_signals} signals &rarr; {n_clusters} clusters</p>
+                <p class="text-stone-500 text-xs">@{{ username }} &bull; {{ n_signals }} signals &rarr; {{ n_clusters }} clusters</p>
             </div>
-            <p class="text-[10px] text-stone-400 font-mono">{timestamp}</p>
+            <p class="text-[10px] text-stone-400 font-mono">{{ timestamp }}</p>
         </header>
 
         <div class="grid gap-4 md:grid-cols-2">
-            {clusters_html}
+            {{ clusters_html | safe }}
         </div>
 
         <footer class="mt-8 py-4 border-t border-stone-200 text-center text-stone-400 text-xs">
@@ -216,23 +222,23 @@ CLUSTERS_PAGE_TEMPLATE: str = """
 CLUSTER_CARD_TEMPLATE: str = """
 <div class="cluster-card">
     <div class="px-3 py-2 border-b border-stone-100 flex items-center justify-between">
-        <h2 class="font-bold text-stone-700">{cluster_name}</h2>
-        <span class="text-xs text-stone-400">{count} stories</span>
+        <h2 class="font-bold text-stone-700">{{ cluster_name }}</h2>
+        <span class="text-xs text-stone-400">{{ count }} stories</span>
     </div>
     <ul class="divide-y divide-stone-100">
-        {stories_html}
+        {{ stories_html | safe }}
     </ul>
 </div>
 """
 
 CLUSTER_STORY_TEMPLATE: str = """
 <li class="px-3 py-2 hover:bg-stone-50">
-    <a href="{hn_url}" target="_blank" class="text-sm text-stone-700 hover:text-hn transition-colors line-clamp-2">
-        {title}
+    <a href="{{ hn_url }}" target="_blank" class="text-sm text-stone-700 hover:text-hn transition-colors line-clamp-2">
+        {{ title }}
     </a>
     <div class="flex items-center gap-2 mt-0.5">
-        <span class="text-[10px] text-stone-400">{points} pts</span>
-        <span class="text-[10px] text-stone-400">{time_ago}</span>
+        <span class="text-[10px] text-stone-400">{{ points }} pts</span>
+        <span class="text-[10px] text-stone-400">{{ time_ago }}</span>
     </div>
 </li>
 """
@@ -252,59 +258,161 @@ def get_relative_time(timestamp: int) -> str:
         return f"{diff // 86400}d"
 
 
+def format_match_percent(knn_score: float) -> int:
+    """Clamp match percent for display."""
+    return max(0, min(100, int(round(knn_score * 100))))
+
+
+def build_candidate_cluster_map(
+    cands: list[Story],
+    cluster_centroids: Optional[NDArray[np.float32]],
+    threshold: float,
+) -> dict[int, int]:
+    """Assign candidates to clusters based on centroid similarity."""
+    if cluster_centroids is None or not cands:
+        return {}
+
+    cand_texts = [c.text_content for c in cands]
+    cand_emb = rerank.get_cluster_embeddings(cand_texts)
+    if len(cand_emb) == 0:
+        return {}
+
+    sim_to_clusters = cosine_similarity(cand_emb, cluster_centroids)
+    cluster_map: dict[int, int] = {}
+    for i in range(len(cands)):
+        max_sim = float(np.max(sim_to_clusters[i]))
+        if max_sim >= threshold:
+            cluster_map[i] = int(np.argmax(sim_to_clusters[i]))
+        else:
+            cluster_map[i] = -1
+    return cluster_map
+
+
+def get_cluster_id_for_result(
+    result: RankResult,
+    cluster_labels: Optional[NDArray[np.int32]],
+    cand_cluster_map: dict[int, int],
+) -> int:
+    """Get cluster ID for a result (-1 if none)."""
+    if (
+        result.best_fav_index != -1
+        and cluster_labels is not None
+        and result.best_fav_index < len(cluster_labels)
+    ):
+        return int(cluster_labels[result.best_fav_index])
+    return cand_cluster_map.get(result.index, -1)
+
+
+def select_ranked_results(
+    ranked: list[RankResult],
+    cands: list[Story],
+    cluster_labels: Optional[NDArray[np.int32]],
+    cluster_names: dict[int, str],
+    cand_cluster_map: dict[int, int],
+    count: int,
+) -> list[RankResult]:
+    """Select a diversified, ranked subset of results with RSS quota."""
+    if not ranked:
+        return []
+
+    selected_results: list[RankResult] = []
+    used_indices: set[int] = set()
+    seen_clusters: set[int] = set()
+
+    if cluster_names:
+        for result in ranked:
+            cid = get_cluster_id_for_result(result, cluster_labels, cand_cluster_map)
+            if cid != -1 and cid not in seen_clusters:
+                selected_results.append(result)
+                seen_clusters.add(cid)
+                used_indices.add(result.index)
+                if len(selected_results) >= count:
+                    break
+            if len(seen_clusters) >= len(cluster_names):
+                break
+
+    for result in ranked:
+        if len(selected_results) >= count:
+            break
+        if result.index in used_indices:
+            continue
+        selected_results.append(result)
+        used_indices.add(result.index)
+
+    rss_target: int = max(1, (count + 2) // 3)
+
+    def is_rss_result(res: RankResult) -> bool:
+        return cands[res.index].id < 0
+
+    rss_selected = sum(1 for r in selected_results if is_rss_result(r))
+    if rss_selected < rss_target:
+        rss_needed = rss_target - rss_selected
+        rss_candidates = [
+            r for r in ranked if is_rss_result(r) and r.index not in used_indices
+        ]
+        non_rss_selected = [r for r in selected_results if not is_rss_result(r)]
+        non_rss_selected.sort(key=lambda r: r.hybrid_score)
+
+        for new_rss in rss_candidates[:rss_needed]:
+            if not non_rss_selected:
+                break
+            to_remove = non_rss_selected.pop(0)
+            selected_results.remove(to_remove)
+            used_indices.discard(to_remove.index)
+            selected_results.append(new_rss)
+            used_indices.add(new_rss.index)
+
+    selected_results.sort(key=lambda x: x.hybrid_score, reverse=True)
+    return selected_results
+
+
 STORY_CARD_TEMPLATE: str = """
-<div class="story-card group{rss_class}">
+<div class="story-card group{% if is_rss %} rss-story{% endif %}">
     <div class="flex items-center gap-2 mb-0.5 flex-wrap">
         <span class="px-1.5 py-0.5 rounded bg-hn/10 text-hn text-[10px] font-bold">
-            {score}%
+            {{ score }}%
         </span>
-        {rss_badge}
-        {cluster_chip}
-        <span class="text-[10px] text-stone-400 font-mono">{points} pts</span>
-        <span class="text-[10px] text-stone-400 font-mono">{time_ago}</span>
+        {% if is_rss %}
+        <span class="rss-badge">RSS</span>
+        {% endif %}
+        {% if cluster_name %}
+        <span class="cluster-chip">{{ cluster_name }}</span>
+        {% endif %}
+        <span class="text-[10px] text-stone-400 font-mono">{{ points }} pts</span>
+        <span class="text-[10px] text-stone-400 font-mono">{{ time_ago }}</span>
     </div>
     <h2 class="text-sm font-semibold text-stone-900 leading-snug mb-1">
-        <a href="{url}" target="_blank" class="hover:text-hn transition-colors">{title}</a>
-        {comment_link}
+        <a href="{{ url }}" target="_blank" class="hover:text-hn transition-colors">{{ title }}</a>
+        {% if hn_url %}
+        <a href="{{ hn_url }}" target="_blank" class="ml-2 text-xs font-medium text-hn/70 hover:text-hn transition-colors" title="Comments">💬</a>
+        {% endif %}
     </h2>
-    {tldr_html}
+    {% if tldr %}
+    <div class="text-xs text-stone-600 bg-stone-50 p-2 rounded border border-stone-100 leading-relaxed whitespace-pre-line">{{ tldr }}</div>
+    {% endif %}
 </div>
 """
 
+_JINJA_ENV: Environment = Environment(autoescape=True)
+_STORY_TEMPLATE = _JINJA_ENV.from_string(STORY_CARD_TEMPLATE)
+_INDEX_TEMPLATE = _JINJA_ENV.from_string(HTML_TEMPLATE)
+_CLUSTER_STORY_TEMPLATE = _JINJA_ENV.from_string(CLUSTER_STORY_TEMPLATE)
+_CLUSTER_CARD_TEMPLATE = _JINJA_ENV.from_string(CLUSTER_CARD_TEMPLATE)
+_CLUSTERS_TEMPLATE = _JINJA_ENV.from_string(CLUSTERS_PAGE_TEMPLATE)
+
 
 def generate_story_html(story: StoryDisplay) -> str:
-    cluster_chip: str = ""
-    if story.cluster_name:
-        cluster_chip = (
-            f'<span class="cluster-chip">{html.escape(story.cluster_name)}</span>'
-        )
-
-    is_rss: bool = story.id < 0
-    rss_badge: str = '<span class="rss-badge">RSS</span>' if is_rss else ""
-    rss_class: str = " rss-story" if is_rss else ""
-
-    tldr_html: str = ""
-    if story.tldr:
-        tldr_html = f'<div class="text-xs text-stone-600 bg-stone-50 p-2 rounded border border-stone-100 leading-relaxed whitespace-pre-line">{html.escape(story.tldr)}</div>'
-
-    comment_link: str = ""
-    if story.hn_url:
-        comment_link = (
-            f'<a href="{story.hn_url}" target="_blank" class="ml-2 text-xs font-medium text-hn/70 hover:text-hn transition-colors" title="Comments">💬</a>'
-        )
-
     link_url = story.url or story.hn_url or "#"
-    return STORY_CARD_TEMPLATE.format(
+    return _STORY_TEMPLATE.render(
         score=story.match_percent,
-        rss_class=rss_class,
-        rss_badge=rss_badge,
-        cluster_chip=cluster_chip,
+        is_rss=story.id < 0,
+        cluster_name=story.cluster_name,
         points=story.points,
         time_ago=story.time_ago,
         url=link_url,
-        title=html.escape(story.title, quote=False),
-        comment_link=comment_link,
-        tldr_html=tldr_html,
+        title=story.title,
+        hn_url=story.hn_url,
+        tldr=story.tldr,
     )
 
 
@@ -313,6 +421,63 @@ def resolve_cluster_name(cluster_names: dict[int, str], cluster_id: int) -> str:
     if cluster_id == -1:
         return ""
     return cluster_names.get(cluster_id, f"Group {cluster_id + 1}")
+
+
+def _similarity_stats(values: NDArray[np.float32]) -> dict[str, float]:
+    if values.size == 0:
+        return {
+            "count": 0,
+            "mean": 0.0,
+            "median": 0.0,
+            "min": 0.0,
+            "max": 0.0,
+            "p10": 0.0,
+            "p90": 0.0,
+        }
+    return {
+        "count": int(values.size),
+        "mean": float(np.mean(values)),
+        "median": float(np.median(values)),
+        "min": float(np.min(values)),
+        "max": float(np.max(values)),
+        "p10": float(np.percentile(values, 10)),
+        "p90": float(np.percentile(values, 90)),
+    }
+
+
+def build_cluster_stats(
+    embeddings: NDArray[np.float32],
+    labels: NDArray[np.int32],
+    centroids: NDArray[np.float32],
+    cluster_names: dict[int, str],
+) -> dict[str, object]:
+    if embeddings.size == 0 or labels.size == 0 or centroids.size == 0:
+        return {}
+    emb_norm = embeddings / np.maximum(
+        np.linalg.norm(embeddings, axis=1, keepdims=True), 1e-9
+    )
+    cent_norm = centroids / np.maximum(
+        np.linalg.norm(centroids, axis=1, keepdims=True), 1e-9
+    )
+    sims = np.sum(emb_norm * cent_norm[labels], axis=1)
+    cluster_ids = sorted(set(int(lbl) for lbl in labels))
+    clusters_payload: list[dict[str, object]] = []
+    for cid in cluster_ids:
+        mask = labels == cid
+        cluster_sims = sims[mask]
+        clusters_payload.append(
+            {
+                "cluster_id": cid,
+                "name": cluster_names.get(cid, ""),
+                "stats": _similarity_stats(cluster_sims),
+            }
+        )
+    return {
+        "total_signals": int(labels.size),
+        "n_clusters": int(len(cluster_ids)),
+        "overall": _similarity_stats(sims),
+        "clusters": clusters_payload,
+    }
 
 
 async def main() -> None:
@@ -439,6 +604,16 @@ async def main() -> None:
         default=None,
         help="Optional path for cluster naming debug JSON (defaults next to output)",
     )
+    parser.add_argument(
+        "--cluster-stats",
+        action="store_true",
+        help="Write cluster similarity stats to JSON",
+    )
+    parser.add_argument(
+        "--cluster-stats-path",
+        default=None,
+        help="Optional path for cluster stats JSON (defaults next to output)",
+    )
     if config_defaults:
         parser.set_defaults(**config_defaults)
     args: argparse.Namespace = parser.parse_args()
@@ -460,13 +635,18 @@ async def main() -> None:
     # Initialize model early
     rerank.init_model()
 
-    if not args.no_naming and not os.environ.get("GROQ_API_KEY"):
+    needs_llm = (not args.no_naming) or (not args.no_tldr)
+    if needs_llm and not os.environ.get("GROQ_API_KEY"):
         console.print(
             "[red][bold][-] Error:[/bold] GROQ_API_KEY not found in environment.[/red]"
         )
-        console.print(
-            "[yellow][!] This key is required for cluster naming and story TL;DRs.[/yellow]"
-        )
+        if not args.no_naming and not args.no_tldr:
+            reason = "cluster naming and story TL;DRs"
+        elif not args.no_naming:
+            reason = "cluster naming"
+        else:
+            reason = "story TL;DRs"
+        console.print(f"[yellow][!] This key is required for {reason}.[/yellow]")
         console.print("    Please run: [cyan]export GROQ_API_KEY='your-key'[/cyan]")
         raise SystemExit(1)
 
@@ -611,6 +791,17 @@ async def main() -> None:
                     (story.to_dict(), float(story.score))
                 )
 
+            # Do not name singleton clusters (size == 1)
+            singleton_clusters = {
+                cid for cid, items in clusters_for_naming.items() if len(items) == 1
+            }
+            cluster_names = {cid: "" for cid in singleton_clusters}
+            clusters_for_naming = {
+                cid: items
+                for cid, items in clusters_for_naming.items()
+                if cid not in singleton_clusters
+            }
+
             n_clusters = len(clusters_for_naming)
             name_task: TaskID = progress.add_task(
                 "[cyan]Naming clusters...", total=n_clusters
@@ -620,8 +811,14 @@ async def main() -> None:
                 progress.update(name_task, completed=curr)
 
             if args.no_naming:
-                cluster_names = {cid: f"Interest Group {cid + 1}" for cid in clusters_for_naming}
-                progress.update(name_task, completed=n_clusters, description="[yellow][!] Using generic cluster names.")
+                cluster_names.update(
+                    {cid: f"Interest Group {cid + 1}" for cid in clusters_for_naming}
+                )
+                progress.update(
+                    name_task,
+                    completed=n_clusters,
+                    description="[yellow][!] Using generic cluster names.",
+                )
             else:
                 try:
                     debug_path = None
@@ -631,10 +828,12 @@ async def main() -> None:
                             if args.debug_clusters_path
                             else Path(args.output).with_name("cluster_name_debug.json")
                         )
-                    cluster_names = await rerank.generate_batch_cluster_names(
-                        clusters_for_naming,
-                        progress_callback=name_cb,
-                        debug_path=debug_path,
+                    cluster_names.update(
+                        await rerank.generate_batch_cluster_names(
+                            clusters_for_naming,
+                            progress_callback=name_cb,
+                            debug_path=debug_path,
+                        )
                     )
                     progress.update(name_task, description="[green][+] Clusters named.")
                 except RuntimeError as exc:
@@ -644,13 +843,36 @@ async def main() -> None:
                     )
                     raise
 
+            if (
+                args.cluster_stats
+                and cluster_labels is not None
+                and cluster_centroids is not None
+                and cluster_source is not None
+            ):
+                stats_path = (
+                    Path(args.cluster_stats_path)
+                    if args.cluster_stats_path
+                    else Path(args.output).with_name("cluster_stats.json")
+                )
+                stats_payload = build_cluster_stats(
+                    cluster_source,
+                    cluster_labels,
+                    cluster_centroids,
+                    cluster_names,
+                )
+                stats_path.write_text(json.dumps(stats_payload, indent=2))
+                console.print(f"[green][+] Cluster stats saved to: {stats_path}[/green]")
+
         # 3. Candidates
         c_task: TaskID = progress.add_task(
             f"[*] Fetching {args.candidates} candidates...", total=args.candidates
         )
         # Exclude everything we've already interacted with
         exclude_ids: set[int] = data["favorites"] | data["upvoted"] | data["hidden"]
-        exclude_urls: set[str] = data.get("hidden_urls", set())
+        exclude_urls: set[str] = set()
+        exclude_urls |= data.get("hidden_urls", set())
+        exclude_urls |= data.get("favorites_urls", set())
+        exclude_urls |= data.get("upvoted_urls", set())
 
         cands: list[Story] = await get_best_stories(
             args.candidates,
@@ -686,35 +908,12 @@ async def main() -> None:
         )
 
     # Compute cluster assignments for candidates (only if above similarity threshold)
-    cand_cluster_map: dict[int, int] = {}  # cand_idx -> cluster_id (-1 = no cluster)
-    if cluster_centroids is not None and len(cands) > 0:
-        cand_texts = [c.text_content for c in cands]
-        cand_emb = rerank.get_cluster_embeddings(cand_texts)
-        if len(cand_emb) > 0:
-            sim_to_clusters = cosine_similarity(cand_emb, cluster_centroids)
-            for i in range(len(cands)):
-                max_sim = float(np.max(sim_to_clusters[i]))
-                if max_sim >= CLUSTER_SIMILARITY_THRESHOLD:
-                    cand_cluster_map[i] = int(np.argmax(sim_to_clusters[i]))
-                else:
-                    cand_cluster_map[i] = -1  # Below threshold - no cluster
+    cand_cluster_map = build_candidate_cluster_map(
+        cands, cluster_centroids, CLUSTER_SIMILARITY_THRESHOLD
+    )
 
-    stories_data: list[StoryDisplay] = []
     seen_urls: set[str] = set()
     seen_titles: set[str] = set()
-    seen_clusters: set[int] = set()
-
-    def get_cluster_id(result: RankResult) -> int:
-        """Get cluster ID for a result (-1 if none)."""
-        if (
-            result.best_fav_index != -1
-            and result.best_fav_index < len(pos_stories)
-            and cluster_labels is not None
-        ):
-            return int(cluster_labels[result.best_fav_index])
-        elif result.index in cand_cluster_map:
-            return cand_cluster_map[result.index]
-        return -1
 
     def make_story_display(result: RankResult) -> Optional[StoryDisplay]:
         """Create StoryDisplay from RankResult, handling dedup."""
@@ -723,7 +922,7 @@ async def main() -> None:
         url: Optional[str] = s.url
         title: str = s.title
 
-        norm_url: str = str(url).split("?")[0] if url else f"hn:{s.id}"
+        norm_url: str = normalize_url(url) if url else f"hn:{s.id}"
         norm_title: str = title.lower().strip() if title else ""
 
         if norm_url in seen_urls or norm_title in seen_titles:
@@ -741,14 +940,16 @@ async def main() -> None:
             reason = fav_story.title
             reason_url = f"https://news.ycombinator.com/item?id={fav_story.id}"
 
-        cid = get_cluster_id(result)
+        cid = get_cluster_id_for_result(
+            result, cluster_labels, cand_cluster_map
+        )
         cluster_name: str = resolve_cluster_name(cluster_names, cid)
 
         hn_url = f"https://news.ycombinator.com/item?id={s.id}" if s.id > 0 else None
 
         return StoryDisplay(
             id=s.id,
-            match_percent=int(result.knn_score * 100),
+            match_percent=format_match_percent(result.knn_score),
             cluster_name=cluster_name,
             points=s.score,
             time_ago=get_relative_time(s.time),
@@ -760,56 +961,15 @@ async def main() -> None:
             comments=list(s.comments),
         )
 
-    # Phase 1: Ensure top story from each cluster is included
-    selected_results: list[RankResult] = []
-    used_indices: set[int] = set()
-    
-    for result in ranked:
-        cid = get_cluster_id(result)
-        if cid != -1 and cid not in seen_clusters:
-            selected_results.append(result)
-            seen_clusters.add(cid)
-            used_indices.add(result.index)
-        if len(seen_clusters) >= len(cluster_names):
-            break  # All clusters represented
-
-    # Phase 2: Fill remaining slots with best remaining stories from MMR ranking
-    for result in ranked:
-        if len(selected_results) >= args.count:
-            break
-        if result.index in used_indices:
-            continue
-        selected_results.append(result)
-        used_indices.add(result.index)
-
-    # Ensure at least 1/3 of results are RSS stories (best-effort)
-    rss_target: int = max(1, (args.count + 2) // 3)
-
-    def is_rss_result(result: RankResult) -> bool:
-        return cands[result.index].id < 0
-
-    rss_selected = sum(1 for r in selected_results if is_rss_result(r))
-    if rss_selected < rss_target:
-        rss_needed = rss_target - rss_selected
-        rss_candidates = [
-            r for r in ranked if is_rss_result(r) and r.index not in used_indices
-        ]
-        non_rss_selected = [r for r in selected_results if not is_rss_result(r)]
-        non_rss_selected.sort(key=lambda r: r.hybrid_score)
-
-        for new_rss in rss_candidates[:rss_needed]:
-            if not non_rss_selected:
-                break
-            to_remove = non_rss_selected.pop(0)
-            selected_results.remove(to_remove)
-            used_indices.discard(to_remove.index)
-            selected_results.append(new_rss)
-            used_indices.add(new_rss.index)
-
-    # FINAL STEP: Re-sort selected stories by hybrid_score to ensure best ranking
-    # The cluster logic ensures diversity, but we want the best of those stories at the top.
-    selected_results.sort(key=lambda x: x.hybrid_score, reverse=True)
-    rss_count = sum(1 for r in selected_results if is_rss_result(r))
+    selected_results = select_ranked_results(
+        ranked,
+        cands,
+        cluster_labels,
+        cluster_names,
+        cand_cluster_map,
+        args.count,
+    )
+    rss_count = sum(1 for r in selected_results if cands[r.index].id < 0)
     print(f"[+] Selected {rss_count}/{len(selected_results)} RSS stories.")
 
     if args.debug_scores:
@@ -838,8 +998,6 @@ async def main() -> None:
         print(f"[+] Score breakdown saved to: {os.path.abspath(debug_path)}")
 
     stories_data: list[StoryDisplay] = []
-    seen_urls: set[str] = set()
-    seen_titles: set[str] = set()
 
     for result in selected_results:
         sd = make_story_display(result)
@@ -900,35 +1058,35 @@ async def main() -> None:
                     else None
                 )
                 link_url = story.url or hn_url or ""
-                stories_in_cluster += CLUSTER_STORY_TEMPLATE.format(
+                stories_in_cluster += _CLUSTER_STORY_TEMPLATE.render(
                     hn_url=link_url,
-                    title=html.escape(story.title or "Untitled", quote=False),
+                    title=story.title or "Untitled",
                     points=story.score,
                     time_ago=get_relative_time(story.time),
                 )
             cluster_cards.append(
-                CLUSTER_CARD_TEMPLATE.format(
-                    cluster_name=html.escape(resolve_cluster_name(cluster_names, cid)),
+                _CLUSTER_CARD_TEMPLATE.render(
+                    cluster_name=resolve_cluster_name(cluster_names, cid),
                     count=len(items),
-                    stories_html=stories_in_cluster,
+                    stories_html=Markup(stories_in_cluster),
                 )
             )
 
-        clusters_page_html = CLUSTERS_PAGE_TEMPLATE.format(
+        clusters_page_html = _CLUSTERS_TEMPLATE.render(
             username=args.username,
             n_signals=len(pos_stories),
             n_clusters=n_clusters,
             timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            clusters_html="\n".join(cluster_cards),
+            clusters_html=Markup("\n".join(cluster_cards)),
         )
 
     stories_html: str = "\n".join([generate_story_html(sd) for sd in stories_data])
 
-    final_html: str = HTML_TEMPLATE.format(
+    final_html: str = _INDEX_TEMPLATE.render(
         username=args.username,
         n_clusters=n_clusters,
         timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        stories_html=stories_html,
+        stories_html=Markup(stories_html),
     )
 
     try:

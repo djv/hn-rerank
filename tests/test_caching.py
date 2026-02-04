@@ -56,17 +56,16 @@ async def test_cluster_name_cache_miss_and_save(temp_cache_file):
     clusters: dict[int, list[tuple[StoryDict, float]]] = {0: items}
 
     # Mock API via internal helper to avoid real HTTP
+    mock_gen = AsyncMock(return_value="New Cluster Name")
     with (
         patch.dict("os.environ", {"GROQ_API_KEY": "fake_key"}),
-        patch(
-            "api.rerank._generate_with_retry",
-            new=AsyncMock(return_value='{"0": "New Cluster Name"}'),
-        ),
+        patch("api.rerank._generate_with_retry", new=mock_gen),
     ):
         # Call function
         names = await rerank.generate_batch_cluster_names(clusters)
 
         assert names[0] == "New Cluster Name"
+        assert mock_gen.await_count >= 1
 
         # Verify cache was updated
         cache_content = json.loads(temp_cache_file.read_text())

@@ -13,7 +13,7 @@ from unittest.mock import patch
 import optuna
 from optuna.trial import Trial
 
-from evaluate_quality import RankingEvaluator
+from evaluate_quality import RankingEvaluator, DEFAULT_GUARD_METRICS, _guard_metrics, _load_baseline
 import api.rerank
 
 # Configure logging to suppress verbose output during optimization
@@ -25,6 +25,8 @@ async def main():
     parser.add_argument("username", help="HN username")
     parser.add_argument("--trials", type=int, default=50, help="Number of trials")
     parser.add_argument("--candidates", type=int, default=200, help="Candidate pool size")
+    parser.add_argument("--baseline", default=".cache/metrics_baseline.json", help="Path to metrics baseline JSON")
+    parser.add_argument("--guard-tolerance", type=float, default=0.0, help="Allowed drop vs baseline")
     args = parser.parse_args()
 
     # 1. Load Data (Once)
@@ -41,6 +43,8 @@ async def main():
         sys.exit(1)
 
     print("Data loaded. Starting optimization...")
+
+    baseline = _load_baseline(args.baseline)
 
     # 2. Define Objective Function
     def objective(trial: Trial) -> float:
@@ -82,8 +86,25 @@ async def main():
                 knn=knn_k,
                 neg_weight=neg_weight,
                 use_classifier=True,
-                k_metrics=[10, 30]
+                k_metrics=[10, 30],
+                report_each=False,
             )
+
+        print(
+            f"Trial {trial.number}: mrr={metrics['mrr']:.3f} "
+            f"ndcg@30={metrics['ndcg@30']:.3f} map@30={metrics['map@30']:.3f}"
+        )
+        if baseline:
+            failures = _guard_metrics(
+                metrics,
+                baseline,
+                guard_metrics=DEFAULT_GUARD_METRICS,
+                tolerance=args.guard_tolerance,
+            )
+            if failures:
+                print("  [guard] regressions vs baseline:")
+                for msg in failures:
+                    print(f"  - {msg}")
 
         # Combined objective: MRR (Robustness) + NDCG (Quality)
         # MRR is heavily weighted to ensure relevant items appear at all

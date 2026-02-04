@@ -192,3 +192,21 @@ def test_generate_story_html_without_hn_url_hides_comment_link():
     html = generate_story_html(story)
     assert "RSS Story" in html
     assert "title=\"Comments\"" not in html
+
+
+def test_generate_story_html_rss_badge():
+    story = StoryDisplay(
+        id=-42,
+        match_percent=80,
+        cluster_name="",
+        points=0,
+        time_ago="1h",
+        url="https://example.com/rss",
+        title="RSS Story",
+        hn_url=None,
+        reason="",
+        reason_url="",
+        comments=[],
+    )
+    html = generate_story_html(story)
+    assert "RSS" in html

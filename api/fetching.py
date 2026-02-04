@@ -4,7 +4,6 @@ import hashlib
 import html
 import json
 import math
-import os
 import re
 import time
 import logging
@@ -13,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Awaitable, Callable, Optional, TypedDict, cast
 import httpx
 
+from api.cache_utils import atomic_write_json, evict_old_cache_files
 from api.constants import (
     ALGOLIA_DEFAULT_DAYS,
     ALGOLIA_MIN_POINTS,
@@ -34,6 +34,7 @@ from api.constants import (
 )
 from api.models import Story, StoryDict
 from api.rss import fetch_rss_stories
+from api.url_utils import normalize_url
 
 logger = logging.getLogger(__name__)
 
@@ -59,39 +60,7 @@ def get_cached_candidates(key: str, ttl: int) -> Optional[list[int]]:
 
 def save_cached_candidates(key: str, ids: list[int]) -> None:
     path = CANDIDATE_CACHE_PATH / f"{key}.json"
-    _atomic_write_json(path, ids)
-
-
-def _atomic_write_json(
-    path: Path, data: dict[str, object] | list[int] | CachedStory
-) -> None:
-    """Write JSON atomically using temp file + rename."""
-    import tempfile
-
-    tmp_fd, tmp_path = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-    try:
-        with os.fdopen(tmp_fd, "w") as f:
-            json.dump(data, f)
-        os.replace(tmp_path, path)
-    except Exception:
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
-        raise
-
-
-def _evict_old_cache_files() -> None:
-    """Remove oldest cache files if over STORY_CACHE_MAX_FILES limit (LRU)."""
-    cache_files = list(CACHE_PATH.glob("*.json"))
-    if len(cache_files) <= STORY_CACHE_MAX_FILES:
-        return
-    # Sort by modification time (oldest first)
-    cache_files.sort(key=lambda p: p.stat().st_mtime)
-    # Remove oldest files to get under limit
-    for f in cache_files[: len(cache_files) - STORY_CACHE_MAX_FILES]:
-        try:
-            f.unlink()
-        except OSError:
-            pass
+    atomic_write_json(path, ids)
 
 
 def _clean_text(txt: str) -> Optional[str]:
@@ -220,14 +189,14 @@ async def fetch_story(client: httpx.AsyncClient, sid: int) -> Optional[Story]:
             # Use Algolia API instead of scraping HN (avoids rate limits)
             resp: httpx.Response = await client.get(f"{ALGOLIA_BASE}/items/{sid}")
             if resp.status_code != 200:
-                _atomic_write_json(cache_file, {"ts": time.time(), "story": None})
+                atomic_write_json(cache_file, {"ts": time.time(), "story": None})
                 return None
 
             item = cast(AlgoliaItem, resp.json())
 
             # Validate it's a story
             if item.get("type") != "story":
-                _atomic_write_json(cache_file, {"ts": time.time(), "story": None})
+                atomic_write_json(cache_file, {"ts": time.time(), "story": None})
                 return None
 
             title = html.unescape(item.get("title", ""))
@@ -241,7 +210,7 @@ async def fetch_story(client: httpx.AsyncClient, sid: int) -> Optional[Story]:
 
             # Require minimum comments for meaningful signal
             if len(all_comments) < MIN_STORY_COMMENTS:
-                _atomic_write_json(cache_file, {"ts": time.time(), "story": None})
+                atomic_write_json(cache_file, {"ts": time.time(), "story": None})
                 return None
 
             # Sort by score (position + depth penalty), lower = better
@@ -262,8 +231,8 @@ async def fetch_story(client: httpx.AsyncClient, sid: int) -> Optional[Story]:
                 text_content=f"{title_context} {top_for_rank}",
             )
             cache_payload: CachedStory = {"ts": time.time(), "story": story.to_dict()}
-            _atomic_write_json(cache_file, cache_payload)
-            _evict_old_cache_files()
+            atomic_write_json(cache_file, cache_payload)
+            evict_old_cache_files(CACHE_PATH, "*.json", STORY_CACHE_MAX_FILES)
             return story
         except Exception as e:
             # Don't cache transient errors (network, etc)
@@ -301,27 +270,28 @@ async def get_best_stories(
         )
         anchor_ts = int(anchor.timestamp())
         ts_now = int(now.timestamp() // 900 * 900)  # Round to 15m
+        cutoff_ts = int((now - timedelta(days=days)).timestamp())
+        recent_start = max(anchor_ts, cutoff_ts)
 
         # Construct windows
         # Tuple: (ts_start, ts_end, is_live_window)
         windows: list[tuple[int, int, bool]] = []
 
-        # 1. Recent Windows: From Anchor (Last Monday) to Now
+        # 1. Recent Windows: From recent_start to Now
         # Split into daily chunks to reduce refetch volume when Live window expires
-        if ts_now > anchor_ts:
+        if ts_now > recent_start:
             current_end = ts_now
-            while current_end > anchor_ts:
+            while current_end > recent_start:
                 prev_midnight = (current_end // 86400) * 86400
                 if prev_midnight == current_end:
                     prev_midnight -= 86400
 
-                ts_start = max(prev_midnight, anchor_ts)
+                ts_start = max(prev_midnight, recent_start)
                 is_live = current_end == ts_now
                 windows.append((ts_start, current_end, is_live))
                 current_end = ts_start
 
         # 2. Archive Windows: 7-day chunks back from Anchor
-        cutoff_ts = int((now - timedelta(days=days)).timestamp())
         if cutoff_ts < anchor_ts:
             current_end = anchor_ts
             # Safety limit to prevent infinite loops if days is huge
@@ -330,7 +300,7 @@ async def get_best_stories(
             for _ in range(max_archive_weeks):
                 if current_end <= cutoff_ts:
                     break
-                current_start = current_end - (7 * 86400)
+                current_start = max(current_end - (7 * 86400), cutoff_ts)
                 windows.append((current_start, current_end, False))
                 current_end = current_start
 
@@ -429,8 +399,8 @@ async def get_best_stories(
             if res:
                 # URL-based exclusion for duplicates/hidden items
                 if exclude_urls and res.url:
-                    norm_url = res.url.split("?")[0].rstrip("/")
-                    if norm_url in exclude_urls:
+                    norm_url = normalize_url(res.url)
+                    if norm_url and norm_url in exclude_urls:
                         continue
                 results.append(res)
             if progress_callback:

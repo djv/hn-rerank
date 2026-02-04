@@ -69,6 +69,104 @@ def test_ranking_invariants(num_candidates, num_favorites):
             last_score = result.hybrid_score
 
 
+@settings(deadline=None)
+@given(st.lists(st.integers(min_value=1, max_value=50), min_size=3, max_size=10, unique=True))
+def test_ranking_permutation_invariance(story_ids):
+    """
+    Invariant: Permuting candidate order does not change rank ordering by story ID.
+    """
+    stories = [
+        Story(
+            id=i,
+            title=f"Story {i}",
+            url=None,
+            score=0,
+            time=1000,
+            text_content=str(i),
+        )
+        for i in story_ids
+    ]
+
+    max_id = max(story_ids) + 1
+
+    def emb_for_id(story_id: int) -> np.ndarray:
+        x = story_id / max_id
+        y = float(np.sqrt(max(0.0, 1.0 - x * x)))
+        return np.array([x, y, 0.0], dtype=np.float32)
+
+    emb_map = {str(i): emb_for_id(i) for i in story_ids}
+    pos_emb = np.array([[1.0, 0.0, 0.0]], dtype=np.float32)
+
+    import api.rerank
+
+    with pytest.MonkeyPatch().context() as mp:
+        mp.setattr(
+            api.rerank,
+            "get_embeddings",
+            lambda texts, **kwargs: np.stack([emb_map[t] for t in texts]).astype(
+                np.float32
+            ),
+        )
+
+        res_a = rank_stories(
+            stories,
+            positive_embeddings=pos_emb,
+            hn_weight=0.0,
+            diversity_lambda=0.0,
+            use_classifier=False,
+        )
+        rev_stories = list(reversed(stories))
+        res_b = rank_stories(
+            rev_stories,
+            positive_embeddings=pos_emb,
+            hn_weight=0.0,
+            diversity_lambda=0.0,
+            use_classifier=False,
+        )
+
+        order_a = [stories[r.index].id for r in res_a]
+        order_b = [rev_stories[r.index].id for r in res_b]
+        assert order_a == order_b
+
+
+@settings(deadline=None)
+@given(
+    seed=st.integers(min_value=0, max_value=2**32 - 1),
+    num_candidates=st.integers(min_value=1, max_value=15),
+    num_favorites=st.integers(min_value=1, max_value=8),
+)
+def test_semantic_score_bounds_without_negatives(
+    seed: int, num_candidates: int, num_favorites: int
+):
+    """
+    Invariant: Without negative signals, semantic_score stays in [0, 1].
+    """
+    rng = np.random.default_rng(seed)
+    cand_emb = rng.normal(size=(num_candidates, 4)).astype(np.float32)
+    cand_emb /= np.linalg.norm(cand_emb, axis=1, keepdims=True) + 1e-9
+    pos_emb = rng.normal(size=(num_favorites, 4)).astype(np.float32)
+    pos_emb /= np.linalg.norm(pos_emb, axis=1, keepdims=True) + 1e-9
+
+    stories = make_stories(num_candidates)
+
+    import api.rerank
+
+    with pytest.MonkeyPatch().context() as mp:
+        mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: cand_emb)
+
+        results = rank_stories(
+            stories,
+            positive_embeddings=pos_emb,
+            negative_embeddings=None,
+            hn_weight=0.0,
+            diversity_lambda=0.0,
+            use_classifier=False,
+        )
+
+        for result in results:
+            assert 0.0 <= result.semantic_score <= 1.0
+
+
 @given(
     num_candidates=st.integers(min_value=1, max_value=5),
     neg_multiplier=st.floats(min_value=0.1, max_value=1.0),
@@ -463,7 +561,7 @@ def test_mmr_with_identical_candidates():
 
 def test_knn_scoring_logic():
     """
-    Invariant: k-NN (k=3) should prefer a candidate with multiple good matches
+    Invariant: k-NN display score prefers multiple good matches
     over a candidate with one perfect match and nothing else.
     """
     # 3 History items
@@ -504,17 +602,15 @@ def test_knn_scoring_logic():
             diversity_lambda=0.0
         )
 
-        # C1 should win because it has 3 good neighbors
-        # C2 has only 1 good neighbor, so its average top-3 score is dragged down
+        # C1 should win because it has 3 good neighbors (display score)
+        # C2 has only 1 good neighbor, so its median top-3 score is dragged down
         assert results[0].index == 0  # C1
-        assert results[0].hybrid_score > results[1].hybrid_score
+        assert results[0].knn_score > results[1].knn_score
         
-        # Verify scores roughly
-        # C1 raw = 1.0
-        # C2 raw = 0.33
-        # Both go through sigmoid, but ordering should maintain
-        assert results[0].hybrid_score > 0.9  # 1.0 sigmoid is high
-        assert results[1].hybrid_score < results[0].hybrid_score
+        # Cluster-max scoring can give both candidates a strong semantic score
+        # (each matches a cluster very well).
+        assert results[0].hybrid_score > 0.9
+        assert results[1].hybrid_score > 0.9
 
 
 def test_freshness_boost_ordering():
@@ -633,6 +729,7 @@ def test_adaptive_hn_weight():
 def test_median_knn_outlier_robustness():
     """
     Invariant: Median k-NN is robust to single outlier matches.
+    Cluster-max scoring can still surface the outlier as a strong match.
     """
     # 4 History items:
     # H1, H2, H3: [0, 1] (dissimilar to candidate)
@@ -669,7 +766,7 @@ def test_median_knn_outlier_robustness():
         )
 
         # The median of [0.0, 0.0, 1.0] is 0.0
-        # After sigmoid with threshold 0.35, this should be very low
-        assert results[0].hybrid_score < 0.1  # Low due to median filtering outlier
         # Raw k-NN score should be 0.0 (median)
         assert results[0].knn_score == pytest.approx(0.0, abs=0.01)
+        # Cluster-max scoring can still yield a strong semantic match
+        assert results[0].hybrid_score > 0.9

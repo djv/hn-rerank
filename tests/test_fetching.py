@@ -117,8 +117,8 @@ async def test_get_best_stories_accepts_min_comment_length():
         mp.setattr("api.fetching.CACHE_PATH", mock_cache)
         mp.setattr("api.fetching.CANDIDATE_CACHE_PATH", mock_cache)
         mock_cache.__truediv__.return_value.exists.return_value = False
-        mp.setattr("api.fetching._atomic_write_json", lambda p, d: None)
-        mp.setattr("api.fetching._evict_old_cache_files", lambda: None)
+        mp.setattr("api.fetching.atomic_write_json", lambda p, d: None)
+        mp.setattr("api.fetching.evict_old_cache_files", lambda *args, **kwargs: None)
 
         stories = await get_best_stories(limit=1, include_rss=False)
         assert len(stories) == 1
@@ -185,8 +185,8 @@ async def test_get_best_stories_filtering():
         mp.setattr("api.fetching.CANDIDATE_CACHE_PATH", mock_cache)
         mock_cache.__truediv__.return_value.exists.return_value = False
         # Mock atomic write and eviction to avoid temp file issues
-        mp.setattr("api.fetching._atomic_write_json", lambda p, d: None)
-        mp.setattr("api.fetching._evict_old_cache_files", lambda: None)
+        mp.setattr("api.fetching.atomic_write_json", lambda p, d: None)
+        mp.setattr("api.fetching.evict_old_cache_files", lambda *args, **kwargs: None)
 
         stories = await get_best_stories(limit=limit, exclude_ids=exclude, days=1, include_rss=False)
 
@@ -257,8 +257,8 @@ async def test_get_best_stories_pagination():
         mp.setattr("api.fetching.CACHE_PATH", mock_cache)
         mp.setattr("api.fetching.CANDIDATE_CACHE_PATH", mock_cache)
         mock_cache.__truediv__.return_value.exists.return_value = False
-        mp.setattr("api.fetching._atomic_write_json", lambda p, d: None)
-        mp.setattr("api.fetching._evict_old_cache_files", lambda: None)
+        mp.setattr("api.fetching.atomic_write_json", lambda p, d: None)
+        mp.setattr("api.fetching.evict_old_cache_files", lambda *args, **kwargs: None)
 
         stories = await get_best_stories(limit=1100, include_rss=False)
         # We expect 1100 unique stories
@@ -279,8 +279,8 @@ async def test_get_best_stories_empty_response():
         mp.setattr("api.fetching.CACHE_PATH", mock_cache)
         mp.setattr("api.fetching.CANDIDATE_CACHE_PATH", mock_cache)
         mock_cache.__truediv__.return_value.exists.return_value = False
-        mp.setattr("api.fetching._atomic_write_json", lambda p, d: None)
-        mp.setattr("api.fetching._evict_old_cache_files", lambda: None)
+        mp.setattr("api.fetching.atomic_write_json", lambda p, d: None)
+        mp.setattr("api.fetching.evict_old_cache_files", lambda *args, **kwargs: None)
 
         stories = await get_best_stories(limit=10, days=7, include_rss=False)
         assert stories == []
@@ -336,8 +336,8 @@ async def test_get_best_stories_partial_failure():
         mp.setattr("api.fetching.CACHE_PATH", mock_cache)
         mp.setattr("api.fetching.CANDIDATE_CACHE_PATH", mock_cache)
         mock_cache.__truediv__.return_value.exists.return_value = False
-        mp.setattr("api.fetching._atomic_write_json", lambda p, d: None)
-        mp.setattr("api.fetching._evict_old_cache_files", lambda: None)
+        mp.setattr("api.fetching.atomic_write_json", lambda p, d: None)
+        mp.setattr("api.fetching.evict_old_cache_files", lambda *args, **kwargs: None)
 
         stories = await get_best_stories(limit=10, days=14, include_rss=False)
         # Should still return the stories from successful window
