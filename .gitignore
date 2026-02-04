@@ -41,3 +41,5 @@ optimized_params.txt
 tuned_model/
 train*.jsonl
 val*.jsonl
+LLM.md
+check_hidden_in_results.py
