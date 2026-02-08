@@ -54,8 +54,8 @@ RSS_PER_FEED_LIMIT = 5
 DEFAULT_EMBEDDING_BATCH_SIZE = 8
 EMBEDDING_MIN_CLIP = 1e-9
 EMBEDDING_MODEL_VERSION = "v10-tuned"  # Fine-tuned on 218 triplets (96% accuracy)
-CLUSTER_EMBEDDING_MODEL_VERSION = "v1-base"
-CLUSTER_EMBEDDING_MODEL_DIR = "onnx_model_backup_base"
+CLUSTER_EMBEDDING_MODEL_VERSION = "v10-tuned"
+CLUSTER_EMBEDDING_MODEL_DIR = "onnx_model"
 
 # Similarity Bounds
 SIMILARITY_MIN = -1.0
@@ -71,8 +71,8 @@ MIN_SAMPLES_PER_CLUSTER = 2  # Minimum cluster size (samples per cluster)
 MAX_CLUSTER_FRACTION = 0.25  # Max cluster size vs total signals
 MAX_CLUSTER_SIZE = 40  # Absolute max cluster size
 CLUSTER_REFINE_ITERS = 2  # Reassign to nearest centroid for tighter clusters
-CLUSTER_SIMILARITY_THRESHOLD = 0.85  # Min similarity to belong to a cluster (raised for fine-tuned model)
-CLUSTER_OUTLIER_SIMILARITY_THRESHOLD = 0.78  # Split low-similarity items into singleton clusters
+CLUSTER_SIMILARITY_THRESHOLD = 0.92  # Raised for fine-tuned model
+CLUSTER_OUTLIER_SIMILARITY_THRESHOLD = 0.88  # Split low-similarity items into singleton clusters (raised for fine-tuned model)
 
 # Ranking Weights
 RANKING_HN_WEIGHT = 0.05  # Weight for HN score vs semantic (legacy, unused with adaptive)
