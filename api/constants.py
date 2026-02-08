@@ -61,7 +61,7 @@ CLUSTER_EMBEDDING_MODEL_DIR = "onnx_model_backup_base"
 SIMILARITY_MIN = -1.0
 SIMILARITY_MAX = 1.0
 SEMANTIC_MATCH_THRESHOLD = 0.50
-KNN_NEIGHBORS = 5  # Optuna (10-fold CV, 500 candidates)
+KNN_NEIGHBORS = 1  # Optuna core sweep (seed 48, CV=5, 500 candidates)
 
 # Multi-Interest Clustering
 DEFAULT_CLUSTER_COUNT = 30
@@ -76,28 +76,34 @@ CLUSTER_OUTLIER_SIMILARITY_THRESHOLD = 0.78  # Split low-similarity items into s
 
 # Ranking Weights
 RANKING_HN_WEIGHT = 0.05  # Weight for HN score vs semantic (legacy, unused with adaptive)
-RANKING_NEGATIVE_WEIGHT = 0.3829876086  # Optuna (10-fold CV, 500 candidates)
-RANKING_DIVERSITY_LAMBDA = 0.1730644067  # Optuna (10-fold CV, 500 candidates)
-RANKING_DIVERSITY_LAMBDA_CLASSIFIER = 0.1730644067  # Match default for classifier
+RANKING_NEGATIVE_WEIGHT = 0.5529047831
+RANKING_DIVERSITY_LAMBDA = 0.2396634418
+RANKING_DIVERSITY_LAMBDA_CLASSIFIER = 0.30  # Classifier probs are sharper; needs stronger MMR
 RANKING_MAX_RESULTS = 500  # Max stories to rank via MMR (Increased)
 
 # Adaptive HN Weight (age-based)
 # Optimization showed preference for strong semantic signal (low HN weight)
-ADAPTIVE_HN_WEIGHT_MIN = 0.0808211678  # For stories < 6h old (Optuna 10-fold CV)
-ADAPTIVE_HN_WEIGHT_MAX = 0.1142705634  # For stories > 48h old (Optuna 10-fold CV)
-ADAPTIVE_HN_THRESHOLD_YOUNG = 6  # Hours - below this, use min weight
-ADAPTIVE_HN_THRESHOLD_OLD = 48  # Hours - above this, use max weight
+ADAPTIVE_HN_WEIGHT_MIN = 0.0585400016
+ADAPTIVE_HN_WEIGHT_MAX = 0.0449033752  # min + 0.035 derived delta (Optuna core sweep)
+ADAPTIVE_HN_THRESHOLD_YOUNG = 5.8379569842
+ADAPTIVE_HN_THRESHOLD_OLD = 50.1201376639  # Hours - above this, use max weight (young + 42)
 
 # Freshness Decay
-FRESHNESS_HALF_LIFE_HOURS = 71.4907953229  # Optuna (10-fold CV, 500 candidates)
-FRESHNESS_MAX_BOOST = 0.00220351924156  # Optuna (10-fold CV, 500 candidates)
+FRESHNESS_HALF_LIFE_HOURS = 66.0122091339
+FRESHNESS_MAX_BOOST = 0.0411369570
 
 # Semantic Scoring
 SEMANTIC_MAXSIM_WEIGHT = 0.95  # Weight for max cluster similarity
 SEMANTIC_MEANSIM_WEIGHT = 0.05  # Weight for mean cluster similarity
 SEMANTIC_SIGMOID_K = 31.2249293861  # Optuna (10-fold CV, 500 candidates)
 SEMANTIC_SIGMOID_THRESHOLD = 0.4749411784  # Optuna (10-fold CV, 500 candidates)
-HN_SCORE_NORMALIZATION_CAP = 500  # Cap for log normalization of HN points
+KNN_SIGMOID_K = 6.3521201201
+KNN_MAXSIM_WEIGHT = 0.2635706275
+HN_SCORE_NORMALIZATION_CAP = 1392.4125765115
+
+# Classifier Tuning
+CLASSIFIER_K_FEAT = 5
+CLASSIFIER_NEG_SAMPLE_WEIGHT = 1.6984260758
 
 # Clustering
 CLUSTER_ALGORITHM = "spectral"  # "spectral", "agglomerative", or "kmeans"
