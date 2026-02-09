@@ -114,7 +114,7 @@ CLUSTER_SPECTRAL_NEIGHBORS = 15
 # Comment Pool
 MIN_STORY_COMMENTS = 20  # Filter in Algolia query + fetch validation
 MAX_COMMENTS_COLLECTED = 200  # Increased for richer signal
-TOP_COMMENTS_FOR_RANKING = 150  # Use more comments for embedding (Increased)
+TOP_COMMENTS_FOR_RANKING = 12  # Aligned with 512-token limit (Title + ~10-12 comments)
 TOP_COMMENTS_FOR_UI = 10
 RANKING_DEPTH_PENALTY = 10
 MIN_COMMENT_LENGTH = 30  # Filter short low-value comments (relaxed)
