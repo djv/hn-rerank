@@ -625,8 +625,14 @@ async def main() -> None:
         )
 
     if not args.username:
-        console.print("[red][bold][-] Error:[/bold] username is required.[/red]")
-        raise SystemExit(1)
+        # Check config for username
+        config_username = config_defaults.get("username")
+        if config_username:
+            args.username = str(config_username)
+        else:
+            console.print("[red][bold][-] Error:[/bold] username is required.[/red]")
+            console.print("    Provide it as an argument or in hn_rerank.toml")
+            raise SystemExit(1)
 
     # Implication: Classifier requires negative signals
     if args.use_classifier:

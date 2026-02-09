@@ -47,10 +47,14 @@ CANDIDATE_CACHE_PATH: Path = Path(CANDIDATE_CACHE_DIR)
 CANDIDATE_CACHE_PATH.mkdir(parents=True, exist_ok=True)
 
 
-def get_cached_candidates(key: str, ttl: int) -> Optional[list[int]]:
+def get_cached_candidates(
+    key: str,
+    ttl: int,
+    allow_stale: bool = False,
+) -> Optional[list[int]]:
     path = CANDIDATE_CACHE_PATH / f"{key}.json"
     if path.exists():
-        if time.time() - path.stat().st_mtime < ttl:
+        if allow_stale or time.time() - path.stat().st_mtime < ttl:
             try:
                 return json.loads(path.read_text())
             except Exception:
@@ -168,12 +172,17 @@ def _extract_comments_recursive(
     return results
 
 
-async def fetch_story(client: httpx.AsyncClient, sid: int) -> Optional[Story]:
+async def fetch_story(
+    client: httpx.AsyncClient,
+    sid: int,
+    cache_only: bool = False,
+    allow_stale: bool = False,
+) -> Optional[Story]:
     cache_file: Path = CACHE_PATH / f"{sid}.json"
     if cache_file.exists():
         try:
             data = cast(CachedStory, json.loads(cache_file.read_text()))
-            if time.time() - float(data["ts"]) < STORY_CACHE_TTL:
+            if allow_stale or time.time() - float(data["ts"]) < STORY_CACHE_TTL:
                 cached_story = data.get("story")
                 return (
                     Story.from_dict(cast(StoryDict, cached_story))
@@ -182,6 +191,9 @@ async def fetch_story(client: httpx.AsyncClient, sid: int) -> Optional[Story]:
                 )
         except Exception as e:
             logger.debug(f"Failed to load story cache {cache_file}: {e}")
+
+    if cache_only:
+        return None
 
     async with SEM:
         try:
@@ -247,6 +259,8 @@ async def get_best_stories(
     progress_callback: Optional[Callable[[int, int], None]] = None,
     days: int = ALGOLIA_DEFAULT_DAYS,
     include_rss: bool = True,
+    cache_only: bool = False,
+    allow_stale: bool = False,
 ) -> list[Story]:
     if exclude_ids is None:
         exclude_ids = set()
@@ -333,12 +347,17 @@ async def get_best_stories(
             else:
                 ttl = CANDIDATE_CACHE_TTL_LONG
 
-            cached_ids = get_cached_candidates(cache_key, ttl)
+            cached_ids = get_cached_candidates(cache_key, ttl, allow_stale=allow_stale)
             page_ids: list[int] = []
 
             # Use cache if valid, even if fewer IDs than target (avoid wasteful refetches)
             if cached_ids is not None:
                 page_ids = cached_ids
+            elif cache_only:
+                logger.info(
+                    f"Cache-only: no cached candidates for window {ts_start}-{ts_end}"
+                )
+                continue
             else:
                 # Cache miss or expired - fetch from API
                 logger.info(
@@ -392,7 +411,8 @@ async def get_best_stories(
             return []
 
         tasks: list[Awaitable[Optional[Story]]] = [
-            fetch_story(client, sid) for sid in hits
+            fetch_story(client, sid, cache_only=cache_only, allow_stale=allow_stale)
+            for sid in hits
         ]
         for i, task in enumerate(asyncio.as_completed(tasks)):
             res: Optional[Story] = await task
@@ -407,7 +427,7 @@ async def get_best_stories(
                 progress_callback(i + 1, len(hits))
 
         rss_stories: list[Story] = []
-        if include_rss:
+        if include_rss and not cache_only:
             try:
                 rss_stories = await fetch_rss_stories(
                     opml_url=RSS_OPML_URL,

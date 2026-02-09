@@ -397,13 +397,10 @@ def test_rank_stories_upvote_boost():
         # Candidate A (id 1) should be first and have a higher score
         assert results[0].index == 0  # Index 0 is Story 1
         assert results[0].hybrid_score > results[1].hybrid_score
-        # Account for sigmoid activation which reduces perfect scores slightly
-        assert results[0].hybrid_score == pytest.approx(
-            0.994, abs=0.01
-        )  # Near-perfect match after sigmoid
-        assert results[1].hybrid_score == pytest.approx(
-            0.0, abs=0.02
-        )  # Near-zero for orthogonal (sigmoid activation adds small positive offset)
+        # After z-score normalization, perfect match should be high
+        assert results[0].hybrid_score > 0.9
+        # Orthogonal candidate should be near zero
+        assert results[1].hybrid_score < 0.1
 
 
 def test_rank_stories_hidden_penalty():
@@ -599,7 +596,8 @@ def test_knn_scoring_logic():
             stories,
             positive_embeddings=pos_emb,
             hn_weight=0.0,
-            diversity_lambda=0.0
+            diversity_lambda=0.0,
+            knn_k=3,
         )
 
         # C1 should win because it has 3 good neighbors (display score)
@@ -607,10 +605,12 @@ def test_knn_scoring_logic():
         assert results[0].index == 0  # C1
         assert results[0].knn_score > results[1].knn_score
         
-        # Cluster-max scoring can give both candidates a strong semantic score
-        # (each matches a cluster very well).
+        # Cluster-max scoring can still see both as strong semantic matches...
+        assert results[0].max_sim_score == pytest.approx(1.0, abs=1e-6)
+        assert results[1].max_sim_score == pytest.approx(1.0, abs=1e-6)
+        # ...but k-NN normalization should downrank the one-hit wonder.
         assert results[0].hybrid_score > 0.9
-        assert results[1].hybrid_score > 0.9
+        assert results[1].hybrid_score < 0.1
 
 
 def test_freshness_boost_ordering():
@@ -651,6 +651,10 @@ def test_freshness_boost_ordering():
 
     with pytest.MonkeyPatch().context() as mp:
         mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: cand_emb)
+        # Isolate freshness effect from adaptive HN weighting
+        mp.setattr(api.rerank, "ADAPTIVE_HN_WEIGHT_MIN", 0.0)
+        mp.setattr(api.rerank, "ADAPTIVE_HN_WEIGHT_MAX", 0.0)
+        mp.setattr(api.rerank, "FRESHNESS_MAX_BOOST", 0.1)
 
         # Use default hn_weight (triggers adaptive + freshness)
         results = rank_stories(
@@ -768,5 +772,93 @@ def test_median_knn_outlier_robustness():
         # The median of [0.0, 0.0, 1.0] is 0.0
         # Raw k-NN score should be 0.0 (median)
         assert results[0].knn_score == pytest.approx(0.0, abs=0.01)
-        # Cluster-max scoring can still yield a strong semantic match
-        assert results[0].hybrid_score > 0.9
+        # Cluster-max scoring still sees a perfect match
+        assert results[0].max_sim_score == pytest.approx(1.0, abs=1e-6)
+        # With a single candidate, z-score normalization yields 0 -> sigmoid=0.5
+        assert results[0].semantic_score == pytest.approx(0.5, abs=1e-6)
+        assert results[0].hybrid_score == pytest.approx(0.5, abs=1e-6)
+
+
+@settings(deadline=None)
+@given(
+    seed=st.integers(min_value=0, max_value=2**32 - 1),
+    num_candidates=st.integers(min_value=5, max_value=20),
+    num_favorites=st.integers(min_value=3, max_value=10),
+)
+def test_knn_scores_have_nonzero_variance(seed, num_candidates, num_favorites):
+    """
+    Invariant: In k-NN mode, semantic_scores must have nonzero variance
+    when candidate embeddings differ. The old fixed sigmoid mapped all
+    scores ~0.93-0.98 to ~1.0 (zero discrimination).
+    """
+    rng = np.random.default_rng(seed)
+
+    # Create diverse embeddings so candidates differ
+    pos_emb = rng.normal(size=(num_favorites, 4)).astype(np.float32)
+    pos_emb /= np.linalg.norm(pos_emb, axis=1, keepdims=True) + 1e-9
+
+    cand_emb = rng.normal(size=(num_candidates, 4)).astype(np.float32)
+    cand_emb /= np.linalg.norm(cand_emb, axis=1, keepdims=True) + 1e-9
+
+    stories = make_stories(num_candidates)
+
+    import api.rerank
+
+    with pytest.MonkeyPatch().context() as mp:
+        mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: cand_emb)
+
+        results = rank_stories(
+            stories,
+            positive_embeddings=pos_emb,
+            negative_embeddings=None,
+            hn_weight=0.0,
+            diversity_lambda=0.0,
+            use_classifier=False,
+        )
+
+        scores = np.array([r.semantic_score for r in results])
+        # With diverse embeddings, scores MUST vary
+        assert scores.std() > 1e-6, (
+            f"k-NN semantic scores have zero variance: {scores}"
+        )
+
+
+def test_knn_discriminates_close_vs_far():
+    """
+    Unit test: In k-NN mode, a candidate close to positives MUST score
+    higher than a candidate far from positives.
+    """
+    # Positive interest: [1, 0, 0]
+    pos_emb = np.array([
+        [1.0, 0.0, 0.0],
+        [0.95, 0.05, 0.0],
+    ], dtype=np.float32)
+    pos_emb /= np.linalg.norm(pos_emb, axis=1, keepdims=True)
+
+    # Candidate A: close to pos ([0.9, 0.1, 0.0])
+    # Candidate B: far from pos ([0.0, 0.0, 1.0])
+    cand_emb = np.array([
+        [0.9, 0.1, 0.0],
+        [0.0, 0.0, 1.0],
+    ], dtype=np.float32)
+    cand_emb /= np.linalg.norm(cand_emb, axis=1, keepdims=True)
+
+    stories = make_stories(2)
+
+    import api.rerank
+
+    with pytest.MonkeyPatch().context() as mp:
+        mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: cand_emb)
+
+        results = rank_stories(
+            stories,
+            positive_embeddings=pos_emb,
+            negative_embeddings=None,
+            hn_weight=0.0,
+            diversity_lambda=0.0,
+            use_classifier=False,
+        )
+
+        # Close candidate must rank first with strictly higher score
+        assert results[0].index == 0
+        assert results[0].semantic_score > results[1].semantic_score

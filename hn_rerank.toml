@@ -1,0 +1,48 @@
+[hn_rerank]
+username = "pure_coder"
+days = 7
+clusters = 30
+count = 30
+no_rss = false
+no_tldr = false
+debug_scores = false
+
+# Tuned Hyperparameters (Optuna seed 150 - 2026-02-08)
+
+[hn_rerank.ranking]
+negative_weight = 0.5529
+diversity_lambda = 0.2397
+diversity_lambda_classifier = 0.30
+max_results = 500
+
+[hn_rerank.adaptive_hn]
+weight_min = 0.0585
+weight_max = 0.0449
+threshold_young = 5.84
+threshold_old = 50.12
+score_normalization_cap = 1392.41
+
+[hn_rerank.freshness]
+half_life_hours = 66.01
+max_boost = 0.0411
+
+[hn_rerank.semantic]
+maxsim_weight = 0.95
+meansim_weight = 0.05
+sigmoid_k = 31.22
+sigmoid_threshold = 0.47
+knn_sigmoid_k = 6.35
+knn_maxsim_weight = 0.26
+knn_neighbors = 1
+
+[hn_rerank.classifier]
+k_feat = 5
+neg_sample_weight = 1.70
+
+[hn_rerank.clustering]
+similarity_threshold = 0.91
+outlier_similarity_threshold = 0.87
+min_samples_per_cluster = 2
+max_cluster_fraction = 0.25
+max_cluster_size = 40
+refine_iters = 2

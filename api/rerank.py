@@ -1,9 +1,11 @@
 from __future__ import annotations
 import asyncio
+import os
 import hashlib
 import json
 import logging
 import math
+import threading
 import re
 import time
 from datetime import datetime
@@ -12,22 +14,36 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Optional, Sequence, TypeAlias, cast
 
-import httpx
-import numpy as np
-import onnxruntime as ort
-from numpy.typing import NDArray
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics.pairwise import cosine_similarity
-from transformers import AutoTokenizer, BatchEncoding, PreTrainedTokenizerBase
-from aiolimiter import AsyncLimiter
-from tenacity import (
+def _ensure_joblib_settings() -> None:
+    # Disable joblib multiprocessing in this environment to avoid SemLock
+    # permission warnings; joblib falls back to serial either way.
+    os.environ.setdefault("JOBLIB_MULTIPROCESSING", "0")
+    tmp = os.environ.get("JOBLIB_TEMP_FOLDER") or os.environ.get("LOKY_TEMP_FOLDER")
+    if not tmp:
+        tmp = str(Path(__file__).resolve().parents[1] / ".cache" / "joblib")
+        os.environ["JOBLIB_TEMP_FOLDER"] = tmp
+        os.environ["LOKY_TEMP_FOLDER"] = tmp
+    Path(tmp).mkdir(parents=True, exist_ok=True)
+
+
+_ensure_joblib_settings()
+
+import httpx  # noqa: E402
+import numpy as np  # noqa: E402
+import onnxruntime as ort  # noqa: E402
+from numpy.typing import NDArray  # noqa: E402
+from sklearn.linear_model import LogisticRegressionCV  # noqa: E402
+from sklearn.metrics.pairwise import cosine_similarity  # noqa: E402
+from transformers import AutoTokenizer, BatchEncoding, PreTrainedTokenizerBase  # noqa: E402
+from aiolimiter import AsyncLimiter  # noqa: E402
+from tenacity import (  # noqa: E402
     AsyncRetrying,
     retry_if_exception_type,
     stop_after_attempt,
     wait_random_exponential,
 )
 
-from api.constants import (
+from api.constants import (  # noqa: E402
     ADAPTIVE_HN_THRESHOLD_OLD,
     ADAPTIVE_HN_THRESHOLD_YOUNG,
     ADAPTIVE_HN_WEIGHT_MAX,
@@ -85,13 +101,15 @@ from api.constants import (
     RANKING_NEGATIVE_WEIGHT,
     RATE_LIMIT_ERROR_BACKOFF_BASE,
     RATE_LIMIT_ERROR_BACKOFF_MAX,
-    SEMANTIC_SIGMOID_K,
-    SEMANTIC_SIGMOID_THRESHOLD,
+    KNN_SIGMOID_K,
+    KNN_MAXSIM_WEIGHT,
+    CLASSIFIER_K_FEAT,
+    CLASSIFIER_NEG_SAMPLE_WEIGHT,
     SIMILARITY_MIN,
     TEXT_CONTENT_MAX_TOKENS,
 )
-from api.llm_utils import build_payload
-from api.models import RankResult, Story, StoryDict, StoryForTldr
+from api.llm_utils import build_payload  # noqa: E402
+from api.models import RankResult, Story, StoryDict, StoryForTldr  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +135,8 @@ ClusterItem: TypeAlias = tuple[StoryDict, float]
 # Global singleton for the model
 _model: Optional[ONNXEmbeddingModel] = None
 _cluster_model: Optional[ONNXEmbeddingModel] = None
+_model_init_lock = threading.Lock()
+_cluster_model_init_lock = threading.Lock()
 
 CACHE_DIR: Path = Path(EMBEDDING_CACHE_DIR)
 CLUSTER_CACHE_DIR: Path = Path(CLUSTER_EMBEDDING_CACHE_DIR)
@@ -127,13 +147,25 @@ for _cache_dir in (CACHE_DIR, CLUSTER_CACHE_DIR):
 def _evict_old_embedding_cache_files(
     cache_dir: Path, max_files: int = EMBEDDING_CACHE_MAX_FILES
 ) -> None:
-    cache_files = list(cache_dir.glob("*.npz")) + list(cache_dir.glob("*.npy"))
-    if len(cache_files) <= max_files:
+    # Racy by nature under multi-process sweeps; files can disappear between
+    # glob/stat/unlink. Keep eviction best-effort and ignore transient misses.
+    candidates = list(cache_dir.glob("*.npz")) + list(cache_dir.glob("*.npy"))
+    existing: list[tuple[float, Path]] = []
+    for p in candidates:
+        try:
+            existing.append((p.stat().st_mtime, p))
+        except FileNotFoundError:
+            continue
+
+    if len(existing) <= max_files:
         return
-    cache_files.sort(key=lambda p: p.stat().st_mtime)
-    for f in cache_files[: len(cache_files) - max_files]:
+
+    existing.sort(key=lambda t: t[0])
+    for _, f in existing[: len(existing) - max_files]:
         try:
             f.unlink()
+        except FileNotFoundError:
+            continue
         except OSError:
             pass
 
@@ -156,6 +188,7 @@ class ONNXEmbeddingModel:
             f"{model_dir}/model.onnx", providers=providers
         )
         self.model_id: str = "bge-base-en-v1.5"
+        self._lock = threading.Lock()
 
     def encode(
         self,
@@ -172,26 +205,30 @@ class ONNXEmbeddingModel:
                 progress_callback(i, total_items)
 
             batch: list[str] = texts[i : i + batch_size]
-            inputs: BatchEncoding = self.tokenizer(
-                batch,
-                padding=True,
-                truncation=True,
-                max_length=512,
-                return_tensors="np",
-            )
+            with self._lock:
+                inputs: BatchEncoding = self.tokenizer(
+                    batch,
+                    padding=True,
+                    truncation=True,
+                    max_length=512,
+                    return_tensors="np",
+                )
+                # Copy arrays while tokenizer internals are exclusively held.
+                attention_mask = cast(
+                    NDArray[np.int64], inputs["attention_mask"].astype(np.int64, copy=True)
+                )
 
-            input_names: list[str] = [node.name for node in self.session.get_inputs()]
-            ort_inputs: dict[str, NDArray[np.int64]] = {
-                k: v.astype(np.int64) for k, v in inputs.items() if k in input_names
-            }
+                input_names: list[str] = [node.name for node in self.session.get_inputs()]
+                ort_inputs: dict[str, NDArray[np.int64]] = {
+                    k: v.astype(np.int64) for k, v in inputs.items() if k in input_names
+                }
 
-            outputs = self.session.run(None, ort_inputs)
-            last_hidden_state: NDArray[np.float32] = cast(
-                NDArray[np.float32], outputs[0]
-            )
+                outputs = self.session.run(None, ort_inputs)
+                last_hidden_state: NDArray[np.float32] = cast(
+                    NDArray[np.float32], outputs[0]
+                )
 
             # Mean Pooling
-            attention_mask = cast(NDArray[np.int64], inputs["attention_mask"])
             mask_expanded: NDArray[np.float64] = np.expand_dims(
                 attention_mask, -1
             ).astype(float)
@@ -226,7 +263,9 @@ class ONNXEmbeddingModel:
 def init_model() -> ONNXEmbeddingModel:
     global _model
     if _model is None:
-        _model = ONNXEmbeddingModel()
+        with _model_init_lock:
+            if _model is None:
+                _model = ONNXEmbeddingModel()
     return _model
 
 
@@ -236,7 +275,9 @@ def get_model() -> ONNXEmbeddingModel:
 def init_cluster_model() -> ONNXEmbeddingModel:
     global _cluster_model
     if _cluster_model is None:
-        _cluster_model = ONNXEmbeddingModel(model_dir=CLUSTER_EMBEDDING_MODEL_DIR)
+        with _cluster_model_init_lock:
+            if _cluster_model is None:
+                _cluster_model = ONNXEmbeddingModel(model_dir=CLUSTER_EMBEDDING_MODEL_DIR)
     return _cluster_model
 
 
@@ -1910,7 +1951,7 @@ def rank_stories(
             # Use inverse log weighting (1/log(1+N)) for even softer dampening.
             # This respects that large clusters represent confirmed, deep interest
             # while still preventing them from totally drowning out small niches.
-            _, labels = cluster_interests_with_labels(X_pos, positive_weights)
+            centroids, labels = cluster_interests_with_labels(X_pos, positive_weights)
             unique_labels, counts = np.unique(labels, return_counts=True)
             # Use log1p for soft dampening: 1/log(1+count)
             weight_map = {
@@ -1928,16 +1969,87 @@ def rank_stories(
             if positive_weights is not None:
                 pos_sample_weights *= positive_weights
 
-            # Negatives get standard weight 1.0
-            neg_sample_weights = np.ones(len(X_neg))
+            # Scale negative-class weight to tune classifier decision boundary.
+            neg_sample_weights = (
+                np.ones(len(X_neg), dtype=np.float32) * CLASSIFIER_NEG_SAMPLE_WEIGHT
+            )
 
             sample_weights = np.concatenate([pos_sample_weights, neg_sample_weights])
 
-            clf = LogisticRegression(class_weight="balanced", solver="liblinear", C=1.0)
+            # --- Feature augmentation: append derived similarity features ---
+            # Compute 3 features consistently for train and candidates to avoid
+            # train/test distribution mismatch (no hardcoded zeros).
+            k_feat = min(len(X_pos), CLASSIFIER_K_FEAT)
+            k_neg_feat = min(len(X_neg), CLASSIFIER_K_FEAT)
+
+            def _derived_features(
+                embs: NDArray[np.float32],
+                pos_ref: NDArray[np.float32],
+                neg_ref: NDArray[np.float32],
+                centroid_ref: NDArray[np.float32],
+                k_pos: int,
+                k_neg: int,
+                exclude_self_pos: bool = False,
+                exclude_self_neg: bool = False,
+            ) -> NDArray[np.float32]:
+                """Compute [max_sim_centroid, knn_pos_median, knn_neg_median]."""
+                # 1. Max cosine to any cluster centroid
+                sim_c = cosine_similarity(embs, centroid_ref)
+                f_centroid = np.max(sim_c, axis=1)
+
+                # 2. Median top-k cosine to positive embeddings
+                sim_p = cosine_similarity(embs, pos_ref)
+                if exclude_self_pos:
+                    np.fill_diagonal(sim_p, -1.0)  # exclude self-match
+                if k_pos > 0:
+                    f_knn_pos = np.median(
+                        np.partition(sim_p, -k_pos, axis=1)[:, -k_pos:], axis=1
+                    )
+                else:
+                    f_knn_pos = np.zeros(len(embs))
+
+                # 3. Median top-k cosine to negative embeddings
+                sim_n = cosine_similarity(embs, neg_ref)
+                if exclude_self_neg:
+                    np.fill_diagonal(sim_n, -1.0)
+                if k_neg > 0:
+                    f_knn_neg = np.median(
+                        np.partition(sim_n, -k_neg, axis=1)[:, -k_neg:], axis=1
+                    )
+                else:
+                    f_knn_neg = np.zeros(len(embs))
+
+                return np.column_stack([f_centroid, f_knn_pos, f_knn_neg]).astype(np.float32)
+
+            pos_derived = _derived_features(
+                X_pos, X_pos, X_neg, centroids, k_feat, k_neg_feat,
+                exclude_self_pos=True,
+            )
+            neg_derived = _derived_features(
+                X_neg, X_pos, X_neg, centroids, k_feat, k_neg_feat,
+                exclude_self_neg=True,
+            )
+            train_derived = np.vstack([pos_derived, neg_derived])
+            X_train = np.hstack([X_train, train_derived])
+
+            cand_derived = _derived_features(
+                cand_emb, X_pos, X_neg, centroids, k_feat, k_neg_feat,
+            )
+            cand_features = np.hstack([cand_emb, cand_derived])
+
+            clf = LogisticRegressionCV(
+                Cs=[0.01, 0.1, 1.0, 10.0],
+                cv=3,
+                class_weight="balanced",
+                l1_ratios=(0.0,),
+                solver="liblinear",
+                scoring="f1",
+                use_legacy_attributes=False,
+            )
             clf.fit(X_train, y_train, sample_weight=sample_weights)
 
             # Predict probabilities (class 1 = positive interest)
-            probs = clf.predict_proba(cand_emb)[:, 1]
+            probs = clf.predict_proba(cand_features)[:, 1]
             semantic_scores = probs.astype(np.float32)
 
             # Post-classifier negative penalty: classifier doesn't see hidden stories
@@ -2008,18 +2120,22 @@ def rank_stories(
             cluster_centroids = cluster_interests(positive_embeddings, positive_weights)
             if len(cluster_centroids) > 0:
                 cluster_sim = cosine_similarity(cluster_centroids, cand_emb)
-                semantic_scores = np.max(cluster_sim, axis=0).astype(np.float32)
+                cluster_max_scores = np.max(cluster_sim, axis=0).astype(np.float32)
             else:
-                semantic_scores = np.zeros(len(stories), dtype=np.float32)
+                cluster_max_scores = np.zeros(len(stories), dtype=np.float32)
 
-            # Apply soft sigmoid activation instead of hard threshold
-            # This suppresses noise while preserving strong signals
-            semantic_scores = 1.0 / (
-                1.0
-                + np.exp(
-                    -SEMANTIC_SIGMOID_K * (semantic_scores - SEMANTIC_SIGMOID_THRESHOLD)
-                )
+            # Blend cluster-max and k-NN scores, then z-score normalize
+            # This replaces the fixed sigmoid that saturated all k-NN scores to ~1.0
+            blended = (
+                KNN_MAXSIM_WEIGHT * cluster_max_scores
+                + (1.0 - KNN_MAXSIM_WEIGHT) * knn_scores
             )
+            mu = blended.mean()
+            sigma = blended.std() + 1e-9
+            z = (blended - mu) / sigma
+            # Gentle sigmoid (k=KNN_SIGMOID_K) maps z-scores to [0,1]
+            semantic_scores = 1.0 / (1.0 + np.exp(-KNN_SIGMOID_K * z))
+            semantic_scores = semantic_scores.astype(np.float32)
 
         # 3. Negative Signal (Penalty) - Only applies in heuristic mode
         # Use k-NN for negatives: penalize consistent "not interested" patterns

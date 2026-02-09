@@ -3,7 +3,7 @@ import json
 import time
 import logging
 from pathlib import Path
-from typing import TypedDict, cast
+from typing import Optional, TypedDict, cast
 import httpx
 from bs4 import BeautifulSoup
 from bs4.element import Tag
@@ -61,6 +61,24 @@ class HNClient:
                 self.client.cookies.update(cookies)
             except Exception:
                 pass
+
+    @staticmethod
+    def _load_cached_ids(
+        cache_path: Path,
+        allow_stale: bool,
+    ) -> Optional[UserCacheIds]:
+        if not cache_path.exists():
+            return None
+        try:
+            data = cast(UserCacheFile, json.loads(cache_path.read_text()))
+            if not allow_stale and time.time() - float(data["ts"]) >= USER_CACHE_TTL:
+                return None
+            ids = data.get("ids", {})
+            if isinstance(ids, dict):
+                return cast(UserCacheIds, ids)
+        except Exception:
+            pass
+        return None
 
     async def login(self, user: str, pw: str) -> tuple[bool, str]:
         resp: httpx.Response = await self.client.get("/login")
@@ -143,8 +161,48 @@ class HNClient:
             return out
         return set()
 
-    async def fetch_user_data(self, user: str) -> UserSignals:
+    async def fetch_user_data(
+        self,
+        user: str,
+        cache_only: bool = False,
+        allow_stale: bool = False,
+    ) -> UserSignals:
         cache_path: Path = USER_CACHE_DIR_PATH / f"{user}.json"
+
+        if cache_only:
+            cached_ids = self._load_cached_ids(cache_path, allow_stale=allow_stale)
+            if cached_ids is None:
+                logger.warning(f"Cache-only: no cached user data for @{user}")
+                return {
+                    "pos": set(),
+                    "upvoted": set(),
+                    "hidden": set(),
+                    "hidden_urls": set(),
+                    "favorites": set(),
+                    "favorites_urls": set(),
+                    "upvoted_urls": set(),
+                }
+
+            favorites = set(cached_ids.get("favorites", []))
+            favorites_urls = set(cached_ids.get("favorites_urls", []))
+            upvoted = set(cached_ids.get("upvoted", []))
+            upvoted_urls = set(cached_ids.get("upvoted_urls", []))
+            hidden = set(cached_ids.get("hidden", []))
+            hidden_urls = set(cached_ids.get("hidden_urls", []))
+            pos_cached = set(cached_ids.get("pos", []))
+            pos_combined = (favorites | upvoted) - hidden
+            if not pos_combined and pos_cached:
+                pos_combined = pos_cached
+
+            return {
+                "pos": pos_combined,
+                "upvoted": upvoted,
+                "hidden": hidden,
+                "hidden_urls": hidden_urls,
+                "favorites": favorites,
+                "favorites_urls": favorites_urls,
+                "upvoted_urls": upvoted_urls,
+            }
 
         # Check login status first (needed for hidden list)
         resp = await self.client.get("/")
@@ -167,18 +225,13 @@ class HNClient:
         upvoted: set[int] = set()
         upvoted_urls: set[str] = set()
         cache_valid = False
-
-        if cache_path.exists():
-            try:
-                data = cast(UserCacheFile, json.loads(cache_path.read_text()))
-                if time.time() - float(data["ts"]) < USER_CACHE_TTL:
-                    cache_valid = True
-                    favorites = set(data["ids"].get("favorites", []))
-                    favorites_urls = set(data["ids"].get("favorites_urls", []))
-                    upvoted = set(data["ids"].get("upvoted", []))
-                    upvoted_urls = set(data["ids"].get("upvoted_urls", []))
-            except Exception:
-                pass
+        cached_ids = self._load_cached_ids(cache_path, allow_stale=False)
+        if cached_ids is not None:
+            cache_valid = True
+            favorites = set(cached_ids.get("favorites", []))
+            favorites_urls = set(cached_ids.get("favorites_urls", []))
+            upvoted = set(cached_ids.get("upvoted", []))
+            upvoted_urls = set(cached_ids.get("upvoted_urls", []))
 
         if not cache_valid:
             # Fetch fresh favorites and upvotes

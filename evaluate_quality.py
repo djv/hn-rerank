@@ -4,20 +4,35 @@
 import argparse
 import asyncio
 import json
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Callable
 
 import httpx
 import numpy as np
 from numpy.typing import NDArray
 
-from api.client import HNClient
-from api.fetching import fetch_story, get_best_stories
-from api.models import Story
-from api.rerank import get_embeddings, rank_stories
-from api.constants import (
+def _ensure_joblib_settings() -> None:
+    # Disable joblib multiprocessing in this environment to avoid SemLock
+    # permission warnings; joblib falls back to serial either way.
+    os.environ.setdefault("JOBLIB_MULTIPROCESSING", "0")
+    tmp = os.environ.get("JOBLIB_TEMP_FOLDER") or os.environ.get("LOKY_TEMP_FOLDER")
+    if not tmp:
+        tmp = str(Path(__file__).resolve().parent / ".cache" / "joblib")
+        os.environ["JOBLIB_TEMP_FOLDER"] = tmp
+        os.environ["LOKY_TEMP_FOLDER"] = tmp
+    Path(tmp).mkdir(parents=True, exist_ok=True)
+
+
+_ensure_joblib_settings()
+
+from api.client import HNClient  # noqa: E402
+from api.fetching import fetch_story, get_best_stories  # noqa: E402
+from api.models import Story  # noqa: E402
+from api.rerank import get_embeddings, rank_stories  # noqa: E402
+from api.constants import (  # noqa: E402
     KNN_NEIGHBORS,
     RANKING_DIVERSITY_LAMBDA,
     RANKING_NEGATIVE_WEIGHT,
@@ -182,11 +197,19 @@ class RankingEvaluator:
         candidate_count: int = 200,
         use_classifier: bool = True,
         use_recency: bool = False,
+        cache_only: bool = False,
+        allow_stale: bool = False,
     ) -> bool:
         """Load and prepare data for evaluation. Returns True if successful."""
         client = HNClient()
+        if cache_only:
+            print("Cache-only mode: using cached data (TTL ignored, RSS disabled).")
         print(f"Fetching upvotes for {self.username}...")
-        user_data = await client.fetch_user_data(self.username)
+        user_data = await client.fetch_user_data(
+            self.username,
+            cache_only=cache_only,
+            allow_stale=allow_stale,
+        )
 
         all_positives = user_data["pos"] | user_data["upvoted"]
         hidden_ids = user_data.get("hidden", set())
@@ -202,7 +225,12 @@ class RankingEvaluator:
             print("Fetching positive stories...")
             pos_stories: list[Story] = []
             for sid in list(all_positives)[:limit_pos]:
-                story = await fetch_story(http, sid)
+                story = await fetch_story(
+                    http,
+                    sid,
+                    cache_only=cache_only,
+                    allow_stale=allow_stale,
+                )
                 if story and story.text_content:
                     pos_stories.append(story)
 
@@ -211,7 +239,12 @@ class RankingEvaluator:
             if use_classifier and hidden_ids:
                 print("Fetching hidden stories...")
                 for sid in list(hidden_ids)[:limit_neg]:
-                    story = await fetch_story(http, sid)
+                    story = await fetch_story(
+                        http,
+                        sid,
+                        cache_only=cache_only,
+                        allow_stale=allow_stale,
+                    )
                     if story and story.text_content:
                         neg_stories.append(story)
                 print(f"Loaded {len(neg_stories)} hidden stories")
@@ -250,12 +283,16 @@ class RankingEvaluator:
                 ages = now - times
                 pos_weights = np.exp(-ages * np.log(2) / half_life).astype(np.float32)
 
-            # Fetch candidates
+            # Fetch candidates (exclude both train and hidden story IDs)
+            neg_ids = {s.id for s in neg_stories}
             print(f"Fetching {candidate_count} candidates...")
             candidates = await get_best_stories(
                 limit=candidate_count,
-                exclude_ids=train_ids,
-                days=30
+                exclude_ids=train_ids | neg_ids,
+                days=30,
+                include_rss=False,
+                cache_only=cache_only,
+                allow_stale=allow_stale,
             )
 
             if not candidates:
@@ -332,8 +369,12 @@ class RankingEvaluator:
         use_classifier: bool = True,
         k_metrics: Optional[list[int]] = None,
         report_each: bool = True,
+        report_callback: Optional[Callable[[int, dict[str, float]], None]] = None,
+        parallel: bool = True,
     ) -> dict[str, float]:
         """Run k-fold cross-validation and return averaged metrics."""
+        from concurrent.futures import ThreadPoolExecutor
+
         if not self.dataset:
             raise ValueError("Dataset not loaded")
 
@@ -345,35 +386,41 @@ class RankingEvaluator:
         all_emb = get_embeddings([s.text_content for s in all_stories])
         n = len(all_stories)
 
-        # Shuffle indices for random folds
+        # Build combined weights (train weights + uniform for test stories)
+        if self.dataset.pos_weights is not None:
+            n_test = len(self.dataset.test_stories)
+            all_weights: Optional[NDArray[np.float32]] = np.concatenate([
+                self.dataset.pos_weights,
+                np.ones(n_test, dtype=np.float32),
+            ])
+        else:
+            all_weights = None
+
+        # Shuffle indices for random folds (deterministic before threads)
         indices = np.random.permutation(n)
         fold_size = n // n_folds
 
-        all_metrics: list[dict[str, float]] = []
-
-        for fold in range(n_folds):
-            # Split indices
+        def _run_fold(fold: int) -> dict[str, float]:
             test_start = fold * fold_size
             test_end = test_start + fold_size if fold < n_folds - 1 else n
             test_idx = set(indices[test_start:test_end])
             train_idx = [i for i in range(n) if i not in test_idx]
 
-            # Build fold data
             train_emb = all_emb[train_idx]
+            fold_weights = all_weights[train_idx] if all_weights is not None else None
             test_ids = {all_stories[i].id for i in test_idx}
 
-            # Candidates = all candidates + test stories
             candidate_ids = {c.id for c in self.dataset.candidates}
             fold_candidates = list(self.dataset.candidates)
             for i in test_idx:
                 if all_stories[i].id not in candidate_ids:
                     fold_candidates.append(all_stories[i])
 
-            # Run ranking
             results = rank_stories(
                 fold_candidates,
                 positive_embeddings=train_emb,
                 negative_embeddings=self.dataset.neg_embeddings,
+                positive_weights=fold_weights,
                 use_classifier=use_classifier,
                 diversity_lambda=diversity,
                 knn_k=knn,
@@ -381,6 +428,12 @@ class RankingEvaluator:
             )
 
             ranked_ids = [fold_candidates[r.index].id for r in results]
+
+            # Debug assertion: hidden stories must never appear in ranked output
+            neg_ids = {s.id for s in self.dataset.neg_stories}
+            leaked = set(ranked_ids) & neg_ids
+            assert not leaked, f"Hidden stories leaked into ranked results: {leaked}"
+
             fold_metrics: dict[str, float] = {"mrr": mrr(ranked_ids, test_ids)}
             fold_metrics["mean_rank"] = mean_rank(ranked_ids, test_ids)
             fold_metrics["median_rank"] = median_rank(ranked_ids, test_ids)
@@ -392,7 +445,18 @@ class RankingEvaluator:
                 fold_metrics[f"map@{k}"] = map_at_k(ranked_ids, test_ids, k)
                 fold_metrics[f"hit@{k}"] = hit_rate_at_k(ranked_ids, test_ids, k)
 
-            all_metrics.append(fold_metrics)
+            return fold_metrics
+
+        # Run folds (parallel or serial)
+        if parallel and n_folds > 1:
+            with ThreadPoolExecutor(max_workers=n_folds) as pool:
+                futures = [pool.submit(_run_fold, fold) for fold in range(n_folds)]
+                all_metrics = [f.result() for f in futures]
+        else:
+            all_metrics = [_run_fold(fold) for fold in range(n_folds)]
+
+        # Process results in fold order (reporting, callbacks, pruning)
+        for fold, fold_metrics in enumerate(all_metrics):
             if report_each:
                 print(f"\nFold {fold + 1}/{n_folds}:")
                 print(f"  MRR: {fold_metrics['mrr']:.3f}")
@@ -402,6 +466,12 @@ class RankingEvaluator:
                 print("  " + "-" * 50)
                 for k in k_metrics:
                     print("  " + _format_metrics_line(fold_metrics, k))
+            if report_callback:
+                interim_metrics: dict[str, float] = {}
+                for key in all_metrics[0]:
+                    values = [all_metrics[i][key] for i in range(fold + 1)]
+                    interim_metrics[key] = float(np.mean(values))
+                report_callback(fold, interim_metrics)
 
         # Average across folds
         avg_metrics: dict[str, float] = {}
@@ -430,6 +500,7 @@ async def main():
     parser.add_argument("--no-guard", action="store_true", help="Disable baseline regression guard")
     parser.add_argument("--guard-metrics", nargs="*", default=DEFAULT_GUARD_METRICS, help="Metrics to guard")
     parser.add_argument("--guard-tolerance", type=float, default=0.0, help="Allowed drop vs baseline")
+    parser.add_argument("--cache-only", action="store_true", help="Use cached data only (ignore TTL, no RSS)")
     args = parser.parse_args()
 
     evaluator = RankingEvaluator(args.username)
@@ -438,6 +509,8 @@ async def main():
         candidate_count=args.candidates,
         use_classifier=args.classifier,
         use_recency=args.recency,
+        cache_only=args.cache_only,
+        allow_stale=args.cache_only,
     )
 
     if not success:

@@ -1,0 +1,63 @@
+[
+  {
+    "diversity_lambda": 0.24001677514729347,
+    "neg_weight": 0.3545287410319948,
+    "knn_k": 4.0,
+    "adaptive_hn_min": 0.0014652112684515777,
+    "freshness_half_life": 75.07855687734974,
+    "hn_threshold_young": 13.666623592906273,
+    "hn_score_cap": 386.79907673490106,
+    "classifier_k_feat": 3.0,
+    "classifier_neg_sample_weight": 0.9513144475570396
+  },
+  {
+    "diversity_lambda": 0.5959328648600948,
+    "neg_weight": 0.5577253264474218,
+    "knn_k": 1.0,
+    "adaptive_hn_min": 0.06359697904208989,
+    "freshness_half_life": 75.2529371823947,
+    "hn_threshold_young": 7.766270739843911,
+    "hn_score_cap": 692.1631415355421,
+    "classifier_k_feat": 7.0,
+    "classifier_neg_sample_weight": 1.2034500579430618
+  },
+  {
+    "diversity_lambda": 0.23874799951612122,
+    "neg_weight": 0.36442012628259013,
+    "knn_k": 1.0,
+    "adaptive_hn_min": 0.006195878584366749,
+    "freshness_half_life": 91.46936406435913,
+    "hn_threshold_young": 9.952332044028365,
+    "hn_score_cap": 1268.589581181932,
+    "classifier_k_feat": 3.0,
+    "classifier_neg_sample_weight": 1.4670738155567618
+  },
+  {
+    "diversity_lambda": 0.28840464655535025,
+    "neg_weight": 0.4466479568970417,
+    "knn_k": 4.0,
+    "adaptive_hn_min": 0.0017660515430759991,
+    "freshness_boost": 0.08890194682934227,
+    "freshness_half_life": 71.65340857025271,
+    "knn_sigmoid_k": 6.248097456192108,
+    "knn_maxsim_weight": 0.4671842477714002,
+    "hn_threshold_young": 12.83790540127031,
+    "hn_score_cap": 229.24584836255232,
+    "classifier_k_feat": 3.0,
+    "classifier_neg_sample_weight": 1.0700803080527552
+  },
+  {
+    "diversity_lambda": 0.22334518139331144,
+    "neg_weight": 0.3291692032197889,
+    "knn_k": 3.0,
+    "adaptive_hn_min": 0.0025667785321488177,
+    "freshness_boost": 0.08167759394650949,
+    "freshness_half_life": 76.28167607722916,
+    "knn_sigmoid_k": 4.754336336402078,
+    "knn_maxsim_weight": 0.6077467560527849,
+    "hn_threshold_young": 13.079768464948396,
+    "hn_score_cap": 461.8990161491721,
+    "classifier_k_feat": 4.0,
+    "classifier_neg_sample_weight": 1.1624988438050883
+  }
+]

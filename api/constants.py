@@ -1,6 +1,44 @@
 """
 Constants and configuration values for HN reranking.
+Loads overrides from hn_rerank.toml if present.
 """
+import sys
+from pathlib import Path
+from typing import Any
+
+from dotenv import load_dotenv
+
+# Load .env file if present
+load_dotenv()
+
+# Try to import tomllib (Python 3.11+) or tomli
+try:
+    import tomllib
+except ImportError:
+    try:
+        import tomli as tomllib
+    except ImportError:
+        tomllib = None
+
+def _load_config() -> dict[str, Any]:
+    """Load configuration from hn_rerank.toml."""
+    config_path = Path("hn_rerank.toml")
+    if not config_path.exists() or not tomllib:
+        return {}
+    try:
+        with open(config_path, "rb") as f:
+            data = tomllib.load(f)
+        return data.get("hn_rerank", {})
+    except Exception as e:
+        print(f"Warning: Failed to load config: {e}", file=sys.stderr)
+        return {}
+
+_CONFIG = _load_config()
+
+def _get(section: str, key: str, default: Any) -> Any:
+    """Get config value with fallback to default."""
+    return _CONFIG.get(section, {}).get(key, default)
+
 
 # HN Score Calculation (Gravity Decay Formula)
 HN_SCORE_POINTS_EXP = 0.8
@@ -61,49 +99,48 @@ CLUSTER_EMBEDDING_MODEL_DIR = "onnx_model"
 SIMILARITY_MIN = -1.0
 SIMILARITY_MAX = 1.0
 SEMANTIC_MATCH_THRESHOLD = 0.50
-KNN_NEIGHBORS = 1  # Optuna core sweep (seed 48, CV=5, 500 candidates)
+KNN_NEIGHBORS = _get("semantic", "knn_neighbors", 1)
 
 # Multi-Interest Clustering
 DEFAULT_CLUSTER_COUNT = 30
 MIN_CLUSTERS = 2
 MAX_CLUSTERS = 40
-MIN_SAMPLES_PER_CLUSTER = 2  # Minimum cluster size (samples per cluster)
-MAX_CLUSTER_FRACTION = 0.25  # Max cluster size vs total signals
-MAX_CLUSTER_SIZE = 40  # Absolute max cluster size
-CLUSTER_REFINE_ITERS = 2  # Reassign to nearest centroid for tighter clusters
-CLUSTER_SIMILARITY_THRESHOLD = 0.91  # Raised for fine-tuned model
-CLUSTER_OUTLIER_SIMILARITY_THRESHOLD = 0.87  # Split low-similarity items into singleton clusters (raised for fine-tuned model)
+MIN_SAMPLES_PER_CLUSTER = _get("clustering", "min_samples_per_cluster", 2)
+MAX_CLUSTER_FRACTION = _get("clustering", "max_cluster_fraction", 0.25)
+MAX_CLUSTER_SIZE = _get("clustering", "max_cluster_size", 40)
+CLUSTER_REFINE_ITERS = _get("clustering", "refine_iters", 2)
+CLUSTER_SIMILARITY_THRESHOLD = _get("clustering", "similarity_threshold", 0.91)
+CLUSTER_OUTLIER_SIMILARITY_THRESHOLD = _get("clustering", "outlier_similarity_threshold", 0.87)
 
 # Ranking Weights
-RANKING_HN_WEIGHT = 0.05  # Weight for HN score vs semantic (legacy, unused with adaptive)
-RANKING_NEGATIVE_WEIGHT = 0.5529047831
-RANKING_DIVERSITY_LAMBDA = 0.2396634418
-RANKING_DIVERSITY_LAMBDA_CLASSIFIER = 0.30  # Classifier probs are sharper; needs stronger MMR
-RANKING_MAX_RESULTS = 500  # Max stories to rank via MMR (Increased)
+RANKING_HN_WEIGHT = 0.05
+RANKING_NEGATIVE_WEIGHT = _get("ranking", "negative_weight", 0.5529047831)
+RANKING_DIVERSITY_LAMBDA = _get("ranking", "diversity_lambda", 0.2396634418)
+RANKING_DIVERSITY_LAMBDA_CLASSIFIER = _get("ranking", "diversity_lambda_classifier", 0.30)
+RANKING_MAX_RESULTS = _get("ranking", "max_results", 500)
 
 # Adaptive HN Weight (age-based)
-# Optimization showed preference for strong semantic signal (low HN weight)
-ADAPTIVE_HN_WEIGHT_MIN = 0.0585400016
-ADAPTIVE_HN_WEIGHT_MAX = 0.0449033752  # min + 0.035 derived delta (Optuna core sweep)
-ADAPTIVE_HN_THRESHOLD_YOUNG = 5.8379569842
-ADAPTIVE_HN_THRESHOLD_OLD = 50.1201376639  # Hours - above this, use max weight (young + 42)
+ADAPTIVE_HN_WEIGHT_MIN = _get("adaptive_hn", "weight_min", 0.0585400016)
+ADAPTIVE_HN_WEIGHT_MAX = _get("adaptive_hn", "weight_max", 0.0449033752)
+ADAPTIVE_HN_THRESHOLD_YOUNG = _get("adaptive_hn", "threshold_young", 5.8379569842)
+ADAPTIVE_HN_THRESHOLD_OLD = _get("adaptive_hn", "threshold_old", 50.1201376639)
 
 # Freshness Decay
-FRESHNESS_HALF_LIFE_HOURS = 66.0122091339
-FRESHNESS_MAX_BOOST = 0.0411369570
+FRESHNESS_HALF_LIFE_HOURS = _get("freshness", "half_life_hours", 66.0122091339)
+FRESHNESS_MAX_BOOST = _get("freshness", "max_boost", 0.0411369570)
 
 # Semantic Scoring
-SEMANTIC_MAXSIM_WEIGHT = 0.95  # Weight for max cluster similarity
-SEMANTIC_MEANSIM_WEIGHT = 0.05  # Weight for mean cluster similarity
-SEMANTIC_SIGMOID_K = 31.2249293861  # Optuna (10-fold CV, 500 candidates)
-SEMANTIC_SIGMOID_THRESHOLD = 0.4749411784  # Optuna (10-fold CV, 500 candidates)
-KNN_SIGMOID_K = 6.3521201201
-KNN_MAXSIM_WEIGHT = 0.2635706275
-HN_SCORE_NORMALIZATION_CAP = 1392.4125765115
+SEMANTIC_MAXSIM_WEIGHT = _get("semantic", "maxsim_weight", 0.95)
+SEMANTIC_MEANSIM_WEIGHT = _get("semantic", "meansim_weight", 0.05)
+SEMANTIC_SIGMOID_K = _get("semantic", "sigmoid_k", 31.2249293861)
+SEMANTIC_SIGMOID_THRESHOLD = _get("semantic", "sigmoid_threshold", 0.4749411784)
+KNN_SIGMOID_K = _get("semantic", "knn_sigmoid_k", 6.3521201201)
+KNN_MAXSIM_WEIGHT = _get("semantic", "knn_maxsim_weight", 0.2635706275)
+HN_SCORE_NORMALIZATION_CAP = _get("adaptive_hn", "score_normalization_cap", 1392.4125765115)
 
 # Classifier Tuning
-CLASSIFIER_K_FEAT = 5
-CLASSIFIER_NEG_SAMPLE_WEIGHT = 1.6984260758
+CLASSIFIER_K_FEAT = _get("classifier", "k_feat", 5)
+CLASSIFIER_NEG_SAMPLE_WEIGHT = _get("classifier", "neg_sample_weight", 1.6984260758)
 
 # Clustering
 CLUSTER_ALGORITHM = "spectral"  # "spectral", "agglomerative", or "kmeans"

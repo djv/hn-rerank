@@ -1,0 +1,27 @@
+{
+  "count": 5,
+  "top_k": 30,
+  "cv_folds": 5,
+  "sources": [
+    {
+      "best_score": 0.3749745050617904,
+      "source": "runs/stage3_core_refine_seed60/optuna_20260206_173452.json"
+    },
+    {
+      "best_score": 0.3720790736875438,
+      "source": "runs/stage3_core_refine_seed61/optuna_20260206_185532.json"
+    },
+    {
+      "best_score": 0.367615755577115,
+      "source": "runs/optuna_auto/smoke3/optuna_20260205_231157.json"
+    },
+    {
+      "best_score": 0.28406815185726414,
+      "source": "runs/stage4_full_expand_seed70/optuna_20260206_221116.json"
+    },
+    {
+      "best_score": 0.25161011339630185,
+      "source": "runs/stage4_full_expand_seed71/optuna_20260206_231950.json"
+    }
+  ]
+}
