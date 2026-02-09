@@ -71,8 +71,8 @@ MIN_SAMPLES_PER_CLUSTER = 2  # Minimum cluster size (samples per cluster)
 MAX_CLUSTER_FRACTION = 0.25  # Max cluster size vs total signals
 MAX_CLUSTER_SIZE = 40  # Absolute max cluster size
 CLUSTER_REFINE_ITERS = 2  # Reassign to nearest centroid for tighter clusters
-CLUSTER_SIMILARITY_THRESHOLD = 0.92  # Raised for fine-tuned model
-CLUSTER_OUTLIER_SIMILARITY_THRESHOLD = 0.88  # Split low-similarity items into singleton clusters (raised for fine-tuned model)
+CLUSTER_SIMILARITY_THRESHOLD = 0.91  # Raised for fine-tuned model
+CLUSTER_OUTLIER_SIMILARITY_THRESHOLD = 0.87  # Split low-similarity items into singleton clusters (raised for fine-tuned model)
 
 # Ranking Weights
 RANKING_HN_WEIGHT = 0.05  # Weight for HN score vs semantic (legacy, unused with adaptive)
