@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from typing import Optional, cast
+from typing import cast
 
 from api.constants import LLM_TEMPERATURE
 
 
-def build_messages(contents: Optional[object]) -> list[dict[str, str]]:
+def build_messages(contents: object | None) -> list[dict[str, str]]:
     messages: list[dict[str, str]] = []
     if isinstance(contents, str):
         return [{"role": "user", "content": contents}]
@@ -34,8 +34,8 @@ def build_messages(contents: Optional[object]) -> list[dict[str, str]]:
 
 def build_payload(
     model: str,
-    contents: Optional[object],
-    config: Optional[dict[str, object]] = None,
+    contents: object | None,
+    config: dict[str, object] | None = None,
 ) -> dict[str, object]:
     payload: dict[str, object] = {
         "model": model,

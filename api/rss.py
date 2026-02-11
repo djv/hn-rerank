@@ -8,10 +8,11 @@ import logging
 import re
 import time
 import calendar
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Optional, Sequence, cast
+from typing import cast
+from collections.abc import Sequence
 from xml.etree import ElementTree as ET
 
 import httpx
@@ -46,7 +47,7 @@ def _write_cache_json(path: Path, data: dict[str, object] | Sequence[object]) ->
     evict_old_cache_files(RSS_CACHE_PATH, "*.json", RSS_CACHE_MAX_FILES)
 
 
-def _load_cached_text(path: Path, ttl: int) -> Optional[str]:
+def _load_cached_text(path: Path, ttl: int) -> str | None:
     if path.exists() and (time.time() - path.stat().st_mtime) < ttl:
         try:
             raw = json.loads(path.read_text())
@@ -96,14 +97,14 @@ def _fallback_extract_text(html_text: str) -> str:
     return text
 
 
-def _parse_date(text: str) -> Optional[int]:
+def _parse_date(text: str) -> int | None:
     if not text:
         return None
     try:
         dt = parsedate_to_datetime(text)
         if dt is not None:
             if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
+                dt = dt.replace(tzinfo=UTC)
             return int(dt.timestamp())
     except Exception:
         pass
@@ -111,7 +112,7 @@ def _parse_date(text: str) -> Optional[int]:
         iso = text.strip().replace("Z", "+00:00")
         dt = datetime.fromisoformat(iso)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         return int(dt.timestamp())
     except Exception:
         return None
@@ -265,7 +266,7 @@ async def _enrich_stories_with_full_text(
             story.text_content = f"{story.title}. {full_text}".strip()
 
 
-def _load_cached_urls(path: Path, ttl: int) -> Optional[list[str]]:
+def _load_cached_urls(path: Path, ttl: int) -> list[str] | None:
     if path.exists() and (time.time() - path.stat().st_mtime) < ttl:
         try:
             return json.loads(path.read_text())
@@ -274,7 +275,7 @@ def _load_cached_urls(path: Path, ttl: int) -> Optional[list[str]]:
     return None
 
 
-def _load_cached_stories(path: Path, ttl: int) -> Optional[list[Story]]:
+def _load_cached_stories(path: Path, ttl: int) -> list[Story] | None:
     if path.exists() and (time.time() - path.stat().st_mtime) < ttl:
         try:
             raw = json.loads(path.read_text())
@@ -289,7 +290,7 @@ async def fetch_rss_stories(
     days: int,
     max_feeds: int,
     per_feed: int,
-    exclude_urls: Optional[set[str]] = None,
+    exclude_urls: set[str] | None = None,
     fetch_full_content: bool = True,
 ) -> list[Story]:
     exclude_urls = exclude_urls or set()

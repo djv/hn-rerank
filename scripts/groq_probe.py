@@ -153,7 +153,8 @@ def main() -> int:
 
     prompt = args.prompt
     if args.prompt_file:
-        raw = open(args.prompt_file, "r").read()
+        with open(args.prompt_file) as fp:
+            raw = fp.read()
         try:
             data = json.loads(raw)
             if isinstance(data, list) and data:

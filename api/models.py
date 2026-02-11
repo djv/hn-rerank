@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional, TypedDict
+from typing import TypedDict
 
 
 class StoryDict(TypedDict):
@@ -11,7 +11,7 @@ class StoryDict(TypedDict):
 
     id: int
     title: str
-    url: Optional[str]
+    url: str | None
     score: int
     time: int
     comments: list[str]
@@ -33,8 +33,8 @@ class StoryDisplayDict(StoryForTldr):
     cluster_name: str
     points: int
     time_ago: str
-    url: Optional[str]
-    hn_url: Optional[str]
+    url: str | None
+    hn_url: str | None
     reason: str
     reason_url: str
     tldr: str
@@ -46,7 +46,7 @@ class Story:
 
     id: int
     title: str
-    url: Optional[str]
+    url: str | None
     score: int
     time: int
     comments: list[str] = field(default_factory=list)
@@ -101,9 +101,9 @@ class StoryDisplay:
     cluster_name: str
     points: int
     time_ago: str
-    url: Optional[str]
+    url: str | None
     title: str
-    hn_url: Optional[str]
+    hn_url: str | None
     reason: str  # Title of matched positive signal
     reason_url: str  # URL to matched positive signal
     comments: list[str]

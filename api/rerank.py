@@ -10,9 +10,9 @@ import re
 import time
 from datetime import datetime
 from email.utils import parsedate_to_datetime
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Optional, Sequence, TypeAlias, cast
+from typing import cast
 
 def _ensure_joblib_settings() -> None:
     # Disable joblib multiprocessing in this environment to avoid SemLock
@@ -38,11 +38,13 @@ from transformers import AutoTokenizer, BatchEncoding, PreTrainedTokenizerBase  
 from aiolimiter import AsyncLimiter  # noqa: E402
 from tenacity import (  # noqa: E402
     AsyncRetrying,
+    RetryCallState,
     retry_if_exception_type,
     stop_after_attempt,
     wait_random_exponential,
 )
 
+from api.cache_utils import atomic_write_json  # noqa: E402
 from api.constants import (  # noqa: E402
     ADAPTIVE_HN_THRESHOLD_OLD,
     ADAPTIVE_HN_THRESHOLD_YOUNG,
@@ -122,19 +124,19 @@ class GroqRetryableError(RuntimeError):
     """Raised for retryable Groq errors."""
 
     def __init__(
-        self, message: str, cooldown: Optional[float] = None, is_rate_limit: bool = False
+        self, message: str, cooldown: float | None = None, is_rate_limit: bool = False
     ) -> None:
         super().__init__(message)
         self.cooldown = cooldown
         self.is_rate_limit = is_rate_limit
 
 
-ClusterItem: TypeAlias = tuple[StoryDict, float]
+type ClusterItem = tuple[StoryDict, float]
 
 
 # Global singleton for the model
-_model: Optional[ONNXEmbeddingModel] = None
-_cluster_model: Optional[ONNXEmbeddingModel] = None
+_model: ONNXEmbeddingModel | None = None
+_cluster_model: ONNXEmbeddingModel | None = None
 _model_init_lock = threading.Lock()
 _cluster_model_init_lock = threading.Lock()
 
@@ -195,7 +197,7 @@ class ONNXEmbeddingModel:
         texts: list[str],
         normalize_embeddings: bool = True,
         batch_size: int = DEFAULT_EMBEDDING_BATCH_SIZE,
-        progress_callback: Optional[Callable[[int, int], None]] = None,
+        progress_callback: Callable[[int, int], None] | None = None,
     ) -> NDArray[np.float32]:
         all_embeddings: list[NDArray[np.float32]] = []
         total_items: int = len(texts)
@@ -266,6 +268,7 @@ def init_model() -> ONNXEmbeddingModel:
         with _model_init_lock:
             if _model is None:
                 _model = ONNXEmbeddingModel()
+    assert _model is not None
     return _model
 
 
@@ -278,6 +281,7 @@ def init_cluster_model() -> ONNXEmbeddingModel:
         with _cluster_model_init_lock:
             if _cluster_model is None:
                 _cluster_model = ONNXEmbeddingModel(model_dir=CLUSTER_EMBEDDING_MODEL_DIR)
+    assert _cluster_model is not None
     return _cluster_model
 
 
@@ -287,7 +291,7 @@ def _get_embeddings_with_model(
     cache_dir: Path,
     cache_version: str,
     is_query: bool = False,
-    progress_callback: Optional[Callable[[int, int], None]] = None,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> NDArray[np.float32]:
     if not texts:
         return np.array([], dtype=np.float32)
@@ -308,10 +312,7 @@ def _get_embeddings_with_model(
         )
         input_ids = encoded.get("input_ids", [])
         if isinstance(input_ids, list) and input_ids:
-            if isinstance(input_ids[0], list):
-                token_ids = input_ids[0]
-            else:
-                token_ids = input_ids
+            token_ids = input_ids[0] if isinstance(input_ids[0], list) else input_ids
         else:
             return text, False
 
@@ -333,7 +334,7 @@ def _get_embeddings_with_model(
             TEXT_CONTENT_MAX_TOKENS,
         )
 
-    vectors: list[Optional[NDArray[np.float32]]] = []
+    vectors: list[NDArray[np.float32] | None] = []
     to_compute_indices: list[int] = []
 
     expected_dim: int = 768  # bge-base-en-v1.5
@@ -346,7 +347,7 @@ def _get_embeddings_with_model(
         cache_path_npz: Path = cache_dir / f"{h}.npz"
         cache_path_npy: Path = cache_dir / f"{h}.npy"
 
-        vec: Optional[NDArray[np.float32]] = None
+        vec: NDArray[np.float32] | None = None
         if cache_path_npz.exists():
             try:
                 data = np.load(cache_path_npz)
@@ -399,7 +400,7 @@ def _get_embeddings_with_model(
 def get_embeddings(
     texts: list[str],
     is_query: bool = False,
-    progress_callback: Optional[Callable[[int, int], None]] = None,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> NDArray[np.float32]:
     model: ONNXEmbeddingModel = get_model()
     return _get_embeddings_with_model(
@@ -414,7 +415,7 @@ def get_embeddings(
 
 def get_cluster_embeddings(
     texts: list[str],
-    progress_callback: Optional[Callable[[int, int], None]] = None,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> NDArray[np.float32]:
     model: ONNXEmbeddingModel = init_cluster_model()
     return _get_embeddings_with_model(
@@ -429,7 +430,7 @@ def get_cluster_embeddings(
 
 def cluster_interests(
     embeddings: NDArray[np.float32],
-    weights: Optional[NDArray[np.float32]] = None,
+    weights: NDArray[np.float32] | None = None,
 ) -> NDArray[np.float32]:
     """
     Cluster user interest embeddings into K centroids.
@@ -441,7 +442,7 @@ def cluster_interests(
 
 def cluster_interests_with_labels(
     embeddings: NDArray[np.float32],
-    weights: Optional[NDArray[np.float32]] = None,
+    weights: NDArray[np.float32] | None = None,
     n_clusters: int = DEFAULT_CLUSTER_COUNT,
 ) -> tuple[NDArray[np.float32], NDArray[np.int32]]:
     """
@@ -530,7 +531,7 @@ def cluster_interests_with_labels(
 def _centroids_from_labels(
     embeddings: NDArray[np.float32],
     labels: NDArray[np.int32],
-    weights: Optional[NDArray[np.float32]] = None,
+    weights: NDArray[np.float32] | None = None,
 ) -> NDArray[np.float32]:
     """Compute centroids for each cluster label."""
     unique_labels = sorted(set(labels))
@@ -558,7 +559,7 @@ def split_outlier_clusters(
     embeddings: NDArray[np.float32],
     labels: NDArray[np.int32],
     min_similarity: float,
-    weights: Optional[NDArray[np.float32]] = None,
+    weights: NDArray[np.float32] | None = None,
 ) -> tuple[NDArray[np.float32], NDArray[np.int32], int]:
     """Split low-similarity items into singleton clusters.
 
@@ -795,7 +796,7 @@ _LLM_LIMITER: AsyncLimiter = AsyncLimiter(
 )
 
 
-def _parse_retry_after(value: str) -> Optional[float]:
+def _parse_retry_after(value: str) -> float | None:
     value = value.strip()
     if not value:
         return None
@@ -815,7 +816,7 @@ def _parse_retry_after(value: str) -> Optional[float]:
     return max(0.0, delta)
 
 
-def _retry_after_seconds(resp: httpx.Response) -> Optional[float]:
+def _retry_after_seconds(resp: httpx.Response) -> float | None:
     header = resp.headers.get("retry-after") or resp.headers.get("Retry-After")
     if not header:
         return None
@@ -844,8 +845,9 @@ _RATE_LIMIT_429_WAIT = wait_random_exponential(
 )
 
 
-def _retry_wait(retry_state: object) -> float:
-    exc = getattr(retry_state.outcome, "exception", lambda: None)()
+def _retry_wait(retry_state: RetryCallState) -> float:
+    outcome = retry_state.outcome
+    exc = outcome.exception() if outcome is not None else None
     if isinstance(exc, GroqRetryableError):
         if exc.cooldown is not None:
             return exc.cooldown
@@ -935,10 +937,7 @@ def _title_to_label(title: str) -> str:
     elif len(base) == 2:
         words = base
     elif len(base) == 1:
-        if len(tokens) >= 2:
-            words = tokens[:2]
-        else:
-            words = [base[0], "Topic"]
+        words = tokens[:2] if len(tokens) >= 2 else [base[0], "Topic"]
     else:
         words = ["Misc", "Topic"]
 
@@ -1053,7 +1052,7 @@ def _normalize_cluster_name(
     return _fallback_cluster_name(items)
 
 
-def _finalize_cluster_name(raw_name: str) -> Optional[str]:
+def _finalize_cluster_name(raw_name: str) -> str | None:
     """Normalize cluster name formatting without altering semantics."""
     cleaned = raw_name.strip()
     if not cleaned or "\n" in cleaned:
@@ -1084,7 +1083,7 @@ def _load_cluster_name_cache() -> dict[str, str]:
 
 def _save_cluster_name_cache(cache: dict[str, str]) -> None:
     CLUSTER_NAME_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CLUSTER_NAME_CACHE_PATH.write_text(json.dumps(cache))
+    atomic_write_json(CLUSTER_NAME_CACHE_PATH, cache)
 
 
 def _safe_json_loads(text: str) -> dict[str, object]:
@@ -1165,10 +1164,10 @@ def _safe_json_loads(text: str) -> dict[str, object]:
 
 async def _generate_with_retry(
     model: str = LLM_TLDR_MODEL,
-    contents: Optional[object] = None,
-    config: Optional[dict[str, object]] = None,
+    contents: object | None = None,
+    config: dict[str, object] | None = None,
     max_retries: int = 3,
-) -> Optional[str]:
+) -> str | None:
     """Call Groq API with exponential backoff retry logic using httpx."""
     import os
 
@@ -1248,8 +1247,8 @@ async def _generate_with_retry(
 
 async def generate_batch_cluster_names(
     clusters: dict[int, list[ClusterItem]],
-    progress_callback: Optional[Callable[[int, int], None]] = None,
-    debug_path: Optional[Path] = None,
+    progress_callback: Callable[[int, int], None] | None = None,
+    debug_path: Path | None = None,
 ) -> dict[int, str]:
     """Generate names for clusters one at a time to improve reliability."""
     if not clusters:
@@ -1325,7 +1324,7 @@ async def generate_batch_cluster_names(
             return batch_results
         pending_set = set(pending_ids)
         numeric_keys: list[str] = []
-        for k in batch_results.keys():
+        for k in batch_results:
             if isinstance(k, str) and k.strip().lstrip("-").isdigit():
                 numeric_keys.append(k)
         if not numeric_keys:
@@ -1777,12 +1776,12 @@ def _load_tldr_cache() -> dict[str, str]:
 def _save_tldr_cache(cache: dict[str, str]) -> None:
     """Save TL;DR cache to disk."""
     TLDR_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    TLDR_CACHE_PATH.write_text(json.dumps(cache))
+    atomic_write_json(TLDR_CACHE_PATH, cache)
 
 
 async def generate_batch_tldrs(
     stories: Sequence[StoryForTldr],
-    progress_callback: Optional[Callable[[int, int], None]] = None,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> dict[int, str]:
     """Generate TL;DRs for multiple stories in batches to save API quota."""
     if not stories:
@@ -1898,16 +1897,16 @@ JSON:"""
 
 def rank_stories(
     stories: list[Story],
-    positive_embeddings: Optional[NDArray[np.float32]],
-    negative_embeddings: Optional[NDArray[np.float32]] = None,
-    positive_weights: Optional[NDArray[np.float32]] = None,
+    positive_embeddings: NDArray[np.float32] | None,
+    negative_embeddings: NDArray[np.float32] | None = None,
+    positive_weights: NDArray[np.float32] | None = None,
     hn_weight: float = RANKING_HN_WEIGHT,
     neg_weight: float = RANKING_NEGATIVE_WEIGHT,
     diversity_lambda: float = RANKING_DIVERSITY_LAMBDA,
     use_classifier: bool = False,
     use_contrastive: bool = False,
     knn_k: int = KNN_NEIGHBORS,
-    progress_callback: Optional[Callable[[int, int], None]] = None,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> list[RankResult]:
     """
     Rank candidate stories by relevance to user interests.

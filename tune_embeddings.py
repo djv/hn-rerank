@@ -153,7 +153,7 @@ def tune(epochs: int = 3, batch_size: int = 16, use_triplets: bool = True) -> No
         evaluation_steps=eval_steps if evaluator else 0,
         warmup_steps=warmup_steps,
         output_path="tuned_model",
-        save_best_model=True if evaluator else False,
+        save_best_model=bool(evaluator),
         show_progress_bar=True,
     )
 

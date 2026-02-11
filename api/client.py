@@ -3,10 +3,11 @@ import json
 import time
 import logging
 from pathlib import Path
-from typing import Optional, TypedDict, cast
+from typing import TypedDict, cast
 import httpx
 from bs4 import BeautifulSoup
 from bs4.element import Tag
+from api.cache_utils import atomic_write_json
 from api.constants import USER_CACHE_DIR, USER_CACHE_TTL
 from api.url_utils import normalize_url
 
@@ -66,7 +67,7 @@ class HNClient:
     def _load_cached_ids(
         cache_path: Path,
         allow_stale: bool,
-    ) -> Optional[UserCacheIds]:
+    ) -> UserCacheIds | None:
         if not cache_path.exists():
             return None
         try:
@@ -92,7 +93,7 @@ class HNClient:
         resp = await self.client.post("/login", data=data)
         if "logout" in resp.text:
             COOKIES_FILE.parent.mkdir(parents=True, exist_ok=True)
-            COOKIES_FILE.write_text(json.dumps(dict(self.client.cookies)))
+            atomic_write_json(COOKIES_FILE, dict(self.client.cookies))
             return True, "Success"
 
         # Check for specific error message in HN response
@@ -266,9 +267,7 @@ class HNClient:
             "upvoted_urls": list(upvoted_urls),
         }
 
-        cache_path.write_text(
-            json.dumps({"ts": time.time(), "ids": out_ids})
-        )
+        atomic_write_json(cache_path, {"ts": time.time(), "ids": out_ids})
 
         return {
             "pos": pos_combined,

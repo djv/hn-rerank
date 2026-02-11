@@ -9,7 +9,8 @@ import time
 import logging
 from pathlib import Path
 from datetime import UTC, datetime, timedelta
-from typing import Awaitable, Callable, Optional, TypedDict, cast
+from typing import TypedDict, cast
+from collections.abc import Awaitable, Callable
 import httpx
 
 from api.cache_utils import atomic_write_json, evict_old_cache_files
@@ -51,14 +52,13 @@ def get_cached_candidates(
     key: str,
     ttl: int,
     allow_stale: bool = False,
-) -> Optional[list[int]]:
+) -> list[int] | None:
     path = CANDIDATE_CACHE_PATH / f"{key}.json"
-    if path.exists():
-        if allow_stale or time.time() - path.stat().st_mtime < ttl:
-            try:
-                return json.loads(path.read_text())
-            except Exception:
-                pass
+    if path.exists() and (allow_stale or time.time() - path.stat().st_mtime < ttl):
+        try:
+            return json.loads(path.read_text())
+        except Exception:
+            pass
     return None
 
 
@@ -67,7 +67,7 @@ def save_cached_candidates(key: str, ids: list[int]) -> None:
     atomic_write_json(path, ids)
 
 
-def _clean_text(txt: str) -> Optional[str]:
+def _clean_text(txt: str) -> str | None:
     """
     Cleans comment text. Returns None if text should be discarded.
     """
@@ -96,7 +96,7 @@ class AlgoliaComment(TypedDict, total=False):
     type: str
     points: int
     text: str
-    children: list["AlgoliaComment"]
+    children: list[AlgoliaComment]
 
 
 class AlgoliaItem(TypedDict, total=False):
@@ -177,7 +177,7 @@ async def fetch_story(
     sid: int,
     cache_only: bool = False,
     allow_stale: bool = False,
-) -> Optional[Story]:
+) -> Story | None:
     cache_file: Path = CACHE_PATH / f"{sid}.json"
     if cache_file.exists():
         try:
@@ -254,9 +254,9 @@ async def fetch_story(
 
 async def get_best_stories(
     limit: int,
-    exclude_ids: Optional[set[int]] = None,
-    exclude_urls: Optional[set[str]] = None,
-    progress_callback: Optional[Callable[[int, int], None]] = None,
+    exclude_ids: set[int] | None = None,
+    exclude_urls: set[str] | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
     days: int = ALGOLIA_DEFAULT_DAYS,
     include_rss: bool = True,
     cache_only: bool = False,
@@ -410,12 +410,12 @@ async def get_best_stories(
         if not hits:
             return []
 
-        tasks: list[Awaitable[Optional[Story]]] = [
+        tasks: list[Awaitable[Story | None]] = [
             fetch_story(client, sid, cache_only=cache_only, allow_stale=allow_stale)
             for sid in hits
         ]
         for i, task in enumerate(asyncio.as_completed(tasks)):
-            res: Optional[Story] = await task
+            res: Story | None = await task
             if res:
                 # URL-based exclusion for duplicates/hidden items
                 if exclude_urls and res.url:

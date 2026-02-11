@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import sys
+from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -85,10 +86,8 @@ def _parse_last_log(log_dir: Path) -> dict[str, float] | None:
             line = line.strip()
             if ":" in line:
                 key, val = line.split(":", 1)
-                try:
+                with suppress(ValueError):
                     best_params[key.strip()] = float(val.strip())
-                except ValueError:
-                    pass
 
         if best_params:
             return best_params
@@ -109,10 +108,8 @@ def _parse_last_log(log_dir: Path) -> dict[str, float] | None:
             continue
         parsed: dict[str, float] = {}
         for key, val in best.items():
-            try:
+            with suppress(TypeError, ValueError):
                 parsed[str(key)] = float(val)
-            except (TypeError, ValueError):
-                pass
         if parsed:
             return parsed
 
@@ -532,10 +529,10 @@ async def main():
         ADAPTIVE_HN_THRESHOLD_YOUNG=best_hn_threshold_young,
         ADAPTIVE_HN_THRESHOLD_OLD=best_hn_threshold_old,
         HN_SCORE_NORMALIZATION_CAP=best_hn_score_cap,
-        FRESHNESS_MAX_BOOST=best["freshness_boost"] if "freshness_boost" in best else FRESHNESS_MAX_BOOST,
-        FRESHNESS_HALF_LIFE_HOURS=best["freshness_half_life"] if "freshness_half_life" in best else FRESHNESS_HALF_LIFE_HOURS,
-        KNN_SIGMOID_K=best["knn_sigmoid_k"] if "knn_sigmoid_k" in best else KNN_SIGMOID_K,
-        KNN_MAXSIM_WEIGHT=best["knn_maxsim_weight"] if "knn_maxsim_weight" in best else KNN_MAXSIM_WEIGHT,
+        FRESHNESS_MAX_BOOST=best.get("freshness_boost", FRESHNESS_MAX_BOOST),
+        FRESHNESS_HALF_LIFE_HOURS=best.get("freshness_half_life", FRESHNESS_HALF_LIFE_HOURS),
+        KNN_SIGMOID_K=best.get("knn_sigmoid_k", KNN_SIGMOID_K),
+        KNN_MAXSIM_WEIGHT=best.get("knn_maxsim_weight", KNN_MAXSIM_WEIGHT),
         KNN_NEIGHBORS=best_knn,
         RANKING_DIVERSITY_LAMBDA_CLASSIFIER=best_classifier_div,
         CLASSIFIER_K_FEAT=best_classifier_k_feat,

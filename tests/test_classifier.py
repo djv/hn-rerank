@@ -27,28 +27,29 @@ def test_rank_stories_with_classifier():
     neg_emb = np.random.rand(5, 768).astype(np.float32)
     cand_emb = np.random.rand(10, 768).astype(np.float32)
 
-    with patch("api.rerank.get_embeddings", return_value=cand_emb):
-        with patch("api.rerank.cluster_interests_with_labels") as mock_cluster:
-            mock_cluster.return_value = (np.zeros((2, 768)), np.array([0, 0, 0, 1, 1]))
+    with (
+        patch("api.rerank.get_embeddings", return_value=cand_emb),
+        patch("api.rerank.cluster_interests_with_labels") as mock_cluster,
+        patch("api.rerank.LogisticRegressionCV") as mock_lr_class,
+    ):
+        mock_cluster.return_value = (np.zeros((2, 768)), np.array([0, 0, 0, 1, 1]))
+        mock_clf = MagicMock()
+        mock_lr_class.return_value = mock_clf
+        mock_clf.predict_proba.return_value = np.zeros((10, 2))
+        mock_clf.predict_proba.return_value[:, 1] = np.linspace(0, 1, 10)
 
-            with patch("api.rerank.LogisticRegressionCV") as mock_lr_class:
-                mock_clf = MagicMock()
-                mock_lr_class.return_value = mock_clf
-                mock_clf.predict_proba.return_value = np.zeros((10, 2))
-                mock_clf.predict_proba.return_value[:, 1] = np.linspace(0, 1, 10)
+        results = rank_stories(stories, pos_emb, neg_emb, use_classifier=True)
 
-                results = rank_stories(stories, pos_emb, neg_emb, use_classifier=True)
+        mock_lr_class.assert_called_once()
+        mock_clf.fit.assert_called_once()
+        mock_clf.predict_proba.assert_called_once()
 
-                mock_lr_class.assert_called_once()
-                mock_clf.fit.assert_called_once()
-                mock_clf.predict_proba.assert_called_once()
+        # X_train = 5 pos + 5 neg = 10 samples
+        args, kwargs = mock_clf.fit.call_args
+        assert "sample_weight" in kwargs
+        assert len(kwargs["sample_weight"]) == 10
 
-                # X_train = 5 pos + 5 neg = 10 samples
-                args, kwargs = mock_clf.fit.call_args
-                assert "sample_weight" in kwargs
-                assert len(kwargs["sample_weight"]) == 10
-
-                assert len(results) == 10
+        assert len(results) == 10
 
 
 def test_rank_stories_classifier_fallback():
@@ -58,11 +59,13 @@ def test_rank_stories_classifier_fallback():
     neg_emb = np.random.rand(1, 768).astype(np.float32)
     cand_emb = np.random.rand(1, 768).astype(np.float32)
 
-    with patch("api.rerank.get_embeddings", return_value=cand_emb):
-        with patch("api.rerank.LogisticRegressionCV") as mock_lr_class:
-            results = rank_stories(stories, pos_emb, neg_emb, use_classifier=True)
-            mock_lr_class.assert_not_called()
-            assert len(results) == 1
+    with (
+        patch("api.rerank.get_embeddings", return_value=cand_emb),
+        patch("api.rerank.LogisticRegressionCV") as mock_lr_class,
+    ):
+        results = rank_stories(stories, pos_emb, neg_emb, use_classifier=True)
+        mock_lr_class.assert_not_called()
+        assert len(results) == 1
 
 
 def test_logistic_regression_cv_selects_C():
@@ -87,7 +90,8 @@ def test_logistic_regression_cv_selects_C():
 
     # C_ should be auto-selected (not necessarily 1.0)
     assert hasattr(clf, "C_")
-    assert clf.C_[0] in [0.01, 0.1, 1.0, 10.0]
+    selected_c = float(np.atleast_1d(clf.C_)[0])
+    assert selected_c in [0.01, 0.1, 1.0, 10.0]
     # Should fit well on linearly separable data
     assert clf.score(X, y) > 0.95
 
@@ -105,40 +109,42 @@ def test_classifier_feature_augmentation_shape():
     cand_emb = rng.normal(size=(10, 8)).astype(np.float32)
     cand_emb /= np.linalg.norm(cand_emb, axis=1, keepdims=True) + 1e-9
 
-    with patch("api.rerank.get_embeddings", return_value=cand_emb):
-        with patch("api.rerank.cluster_interests_with_labels") as mock_cluster:
-            mock_cluster.return_value = (
-                np.zeros((2, 8)),
-                np.array([0, 0, 0, 1, 1]),
-            )
+    with (
+        patch("api.rerank.get_embeddings", return_value=cand_emb),
+        patch("api.rerank.cluster_interests_with_labels") as mock_cluster,
+        patch("api.rerank.LogisticRegressionCV") as mock_lr_class,
+    ):
+        mock_cluster.return_value = (
+            np.zeros((2, 8)),
+            np.array([0, 0, 0, 1, 1]),
+        )
 
-            with patch("api.rerank.LogisticRegressionCV") as mock_lr_class:
-                mock_clf = MagicMock()
-                mock_lr_class.return_value = mock_clf
-                mock_clf.predict_proba.return_value = np.column_stack([
-                    np.linspace(1, 0, 10),
-                    np.linspace(0, 1, 10),
-                ])
+        mock_clf = MagicMock()
+        mock_lr_class.return_value = mock_clf
+        mock_clf.predict_proba.return_value = np.column_stack([
+            np.linspace(1, 0, 10),
+            np.linspace(0, 1, 10),
+        ])
 
-                rank_stories(stories, pos_emb, neg_emb, use_classifier=True)
+        rank_stories(stories, pos_emb, neg_emb, use_classifier=True)
 
-                # Check X_train shape: 10 samples, dim+3 features
-                args, kwargs = mock_clf.fit.call_args
-                X_train = args[0]
-                assert X_train.shape == (10, 8 + 3), (
-                    f"Expected (10, 11), got {X_train.shape}"
-                )
+        # Check X_train shape: 10 samples, dim+3 features
+        args, kwargs = mock_clf.fit.call_args
+        X_train = args[0]
+        assert X_train.shape == (10, 8 + 3), (
+            f"Expected (10, 11), got {X_train.shape}"
+        )
 
-                # Check candidate features shape
-                cand_arg = mock_clf.predict_proba.call_args[0][0]
-                assert cand_arg.shape == (10, 8 + 3), (
-                    f"Expected (10, 11), got {cand_arg.shape}"
-                )
+        # Check candidate features shape
+        cand_arg = mock_clf.predict_proba.call_args[0][0]
+        assert cand_arg.shape == (10, 8 + 3), (
+            f"Expected (10, 11), got {cand_arg.shape}"
+        )
 
-                # Derived features should be bounded [-1, 1]
-                derived_train = X_train[:, 8:]
-                assert np.all(derived_train >= -1.0 - 1e-6)
-                assert np.all(derived_train <= 1.0 + 1e-6)
+        # Derived features should be bounded [-1, 1]
+        derived_train = X_train[:, 8:]
+        assert np.all(derived_train >= -1.0 - 1e-6)
+        assert np.all(derived_train <= 1.0 + 1e-6)
 
 
 def test_classifier_k_feat_independent():
@@ -156,25 +162,27 @@ def test_classifier_k_feat_independent():
     fit_X_trains = []
 
     for k_feat_val in [1, 5]:
-        with patch("api.rerank.CLASSIFIER_K_FEAT", k_feat_val):
-            with patch("api.rerank.get_embeddings", return_value=cand_emb):
-                with patch("api.rerank.cluster_interests_with_labels") as mock_cluster:
-                    mock_cluster.return_value = (
-                        np.zeros((2, 8)),
-                        np.array([0, 0, 0, 1, 1]),
-                    )
-                    with patch("api.rerank.LogisticRegressionCV") as mock_lr_class:
-                        mock_clf = MagicMock()
-                        mock_lr_class.return_value = mock_clf
-                        mock_clf.predict_proba.return_value = np.column_stack([
-                            np.linspace(1, 0, 10),
-                            np.linspace(0, 1, 10),
-                        ])
+        with (
+            patch("api.rerank.CLASSIFIER_K_FEAT", k_feat_val),
+            patch("api.rerank.get_embeddings", return_value=cand_emb),
+            patch("api.rerank.cluster_interests_with_labels") as mock_cluster,
+            patch("api.rerank.LogisticRegressionCV") as mock_lr_class,
+        ):
+            mock_cluster.return_value = (
+                np.zeros((2, 8)),
+                np.array([0, 0, 0, 1, 1]),
+            )
+            mock_clf = MagicMock()
+            mock_lr_class.return_value = mock_clf
+            mock_clf.predict_proba.return_value = np.column_stack([
+                np.linspace(1, 0, 10),
+                np.linspace(0, 1, 10),
+            ])
 
-                        rank_stories(stories, pos_emb, neg_emb, use_classifier=True)
+            rank_stories(stories, pos_emb, neg_emb, use_classifier=True)
 
-                        args, _ = mock_clf.fit.call_args
-                        fit_X_trains.append(args[0].copy())
+            args, _ = mock_clf.fit.call_args
+            fit_X_trains.append(args[0].copy())
 
     # Derived features (last 3 cols) should differ when k_feat changes
     derived_1 = fit_X_trains[0][:, 8:]
@@ -199,26 +207,28 @@ def test_classifier_neg_sample_weight_independent():
     neg_weights_seen = []
 
     for neg_w in [0.5, 1.75]:
-        with patch("api.rerank.CLASSIFIER_NEG_SAMPLE_WEIGHT", neg_w):
-            with patch("api.rerank.get_embeddings", return_value=cand_emb):
-                with patch("api.rerank.cluster_interests_with_labels") as mock_cluster:
-                    mock_cluster.return_value = (
-                        np.zeros((2, 8)),
-                        np.array([0, 0, 0, 1, 1]),
-                    )
-                    with patch("api.rerank.LogisticRegressionCV") as mock_lr_class:
-                        mock_clf = MagicMock()
-                        mock_lr_class.return_value = mock_clf
-                        mock_clf.predict_proba.return_value = np.column_stack([
-                            np.linspace(1, 0, 10),
-                            np.linspace(0, 1, 10),
-                        ])
+        with (
+            patch("api.rerank.CLASSIFIER_NEG_SAMPLE_WEIGHT", neg_w),
+            patch("api.rerank.get_embeddings", return_value=cand_emb),
+            patch("api.rerank.cluster_interests_with_labels") as mock_cluster,
+            patch("api.rerank.LogisticRegressionCV") as mock_lr_class,
+        ):
+            mock_cluster.return_value = (
+                np.zeros((2, 8)),
+                np.array([0, 0, 0, 1, 1]),
+            )
+            mock_clf = MagicMock()
+            mock_lr_class.return_value = mock_clf
+            mock_clf.predict_proba.return_value = np.column_stack([
+                np.linspace(1, 0, 10),
+                np.linspace(0, 1, 10),
+            ])
 
-                        rank_stories(stories, pos_emb, neg_emb, use_classifier=True)
+            rank_stories(stories, pos_emb, neg_emb, use_classifier=True)
 
-                        _, kwargs = mock_clf.fit.call_args
-                        sample_weight = kwargs["sample_weight"]
-                        neg_weights_seen.append(sample_weight[-len(neg_emb):].copy())
+            _, kwargs = mock_clf.fit.call_args
+            sample_weight = kwargs["sample_weight"]
+            neg_weights_seen.append(sample_weight[-len(neg_emb):].copy())
 
     assert np.allclose(neg_weights_seen[0], 0.5)
     assert np.allclose(neg_weights_seen[1], 1.75)
@@ -252,20 +262,22 @@ def test_evaluate_cv_parallel_matches_serial():
             test_ids={8, 9},
         )
 
-        with patch("evaluate_quality.get_embeddings", return_value=emb):
-            with patch("evaluate_quality.rank_stories") as mock_rank:
-                mock_rank.return_value = [
-                    RankResult(index=i, hybrid_score=1.0 - i * 0.1,
-                               best_fav_index=0, max_sim_score=0.5, knn_score=0.5)
-                    for i in range(10)
-                ]
+        with (
+            patch("evaluate_quality.get_embeddings", return_value=emb),
+            patch("evaluate_quality.rank_stories") as mock_rank,
+        ):
+            mock_rank.return_value = [
+                RankResult(index=i, hybrid_score=1.0 - i * 0.1,
+                           best_fav_index=0, max_sim_score=0.5, knn_score=0.5)
+                for i in range(10)
+            ]
 
-                # Fix the random seed for deterministic folds
-                np.random.seed(123)
-                return evaluator.evaluate_cv(
-                    n_folds=3, k_metrics=[10], report_each=False,
-                    parallel=parallel,
-                )
+            # Fix the random seed for deterministic folds
+            np.random.seed(123)
+            return evaluator.evaluate_cv(
+                n_folds=3, k_metrics=[10], report_each=False,
+                parallel=parallel,
+            )
 
     serial = _run_cv(parallel=False)
     parallel = _run_cv(parallel=True)
@@ -301,28 +313,30 @@ def test_evaluate_cv_passes_positive_weights():
         test_ids={8, 9},
     )
 
-    with patch("evaluate_quality.get_embeddings", return_value=emb):
-        with patch("evaluate_quality.rank_stories") as mock_rank:
-            # Return dummy results
-            from api.models import RankResult
-            mock_rank.return_value = [
-                RankResult(index=i, hybrid_score=1.0 - i * 0.1,
-                           best_fav_index=0, max_sim_score=0.5, knn_score=0.5)
-                for i in range(10)
-            ]
+    with (
+        patch("evaluate_quality.get_embeddings", return_value=emb),
+        patch("evaluate_quality.rank_stories") as mock_rank,
+    ):
+        # Return dummy results
+        from api.models import RankResult
+        mock_rank.return_value = [
+            RankResult(index=i, hybrid_score=1.0 - i * 0.1,
+                       best_fav_index=0, max_sim_score=0.5, knn_score=0.5)
+            for i in range(10)
+        ]
 
-            evaluator.evaluate_cv(
-                n_folds=2, k_metrics=[10], report_each=False
+        evaluator.evaluate_cv(
+            n_folds=2, k_metrics=[10], report_each=False
+        )
+
+        # Every call to rank_stories should have positive_weights
+        for c in mock_rank.call_args_list:
+            assert "positive_weights" in c.kwargs, (
+                "evaluate_cv must pass positive_weights to rank_stories"
             )
-
-            # Every call to rank_stories should have positive_weights
-            for c in mock_rank.call_args_list:
-                assert "positive_weights" in c.kwargs, (
-                    "evaluate_cv must pass positive_weights to rank_stories"
-                )
-                pw = c.kwargs["positive_weights"]
-                assert pw is not None
-                assert len(pw) > 0
+            pw = c.kwargs["positive_weights"]
+            assert pw is not None
+            assert len(pw) > 0
 
 
 def test_hidden_stories_excluded_from_candidates():

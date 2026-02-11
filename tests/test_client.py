@@ -14,38 +14,40 @@ async def test_fetch_user_data_mocked():
             text=f'<html><a id="me">{username}</a> | <a>logout</a></html>'
         )
 
-        with patch.object(client.client, "get", return_value=mock_resp):
-            with patch.object(client, "_scrape_items") as mock_items:
-                with patch.object(client, "_scrape_ids") as mock_ids:
-                    # _scrape_items: hidden (always fresh), favorites, then upvoted
-                    mock_items.side_effect = [
-                        ({5, 6}, {"http://hidden.com"}),  # hidden
-                        ({1, 2}, {"http://fav.com"}),  # favorites
-                        ({3, 4}, {"http://upvoted.com"}),  # upvoted
-                    ]
+        with (
+            patch.object(client.client, "get", return_value=mock_resp),
+            patch.object(client, "_scrape_items") as mock_items,
+            patch.object(client, "_scrape_ids") as mock_ids,
+            patch("pathlib.Path.exists", return_value=False),
+        ):
+            # _scrape_items: hidden (always fresh), favorites, then upvoted
+            mock_items.side_effect = [
+                ({5, 6}, {"http://hidden.com"}),  # hidden
+                ({1, 2}, {"http://fav.com"}),  # favorites
+                ({3, 4}, {"http://upvoted.com"}),  # upvoted
+            ]
 
-                    with patch("pathlib.Path.exists", return_value=False):
-                        data = await client.fetch_user_data(username)
+            data = await client.fetch_user_data(username)
 
-                        assert "pos" in data
-                        assert "upvoted" in data
-                        assert "hidden" in data
-                        # pos = (favorites | upvoted) - hidden = ({1,2} | {3,4}) - {5,6}
-                        assert data["pos"] == {1, 2, 3, 4}
-                        assert data["upvoted"] == {3, 4}
-                        assert data["favorites_urls"] == {"http://fav.com"}
-                        assert data["upvoted_urls"] == {"http://upvoted.com"}
-                        assert data["hidden"] == {5, 6}
+            assert "pos" in data
+            assert "upvoted" in data
+            assert "hidden" in data
+            # pos = (favorites | upvoted) - hidden = ({1,2} | {3,4}) - {5,6}
+            assert data["pos"] == {1, 2, 3, 4}
+            assert data["upvoted"] == {3, 4}
+            assert data["favorites_urls"] == {"http://fav.com"}
+            assert data["upvoted_urls"] == {"http://upvoted.com"}
+            assert data["hidden"] == {5, 6}
 
-                        # Verify scrape calls
-                        mock_items.assert_any_call(f"/hidden?id={username}", max_pages=20)
-                        mock_items.assert_any_call(
-                            f"/favorites?id={username}", max_pages=15
-                        )
-                        mock_items.assert_any_call(
-                            f"/upvoted?id={username}", max_pages=15
-                        )
-                        mock_ids.assert_not_called()
+            # Verify scrape calls
+            mock_items.assert_any_call(f"/hidden?id={username}", max_pages=20)
+            mock_items.assert_any_call(
+                f"/favorites?id={username}", max_pages=15
+            )
+            mock_items.assert_any_call(
+                f"/upvoted?id={username}", max_pages=15
+            )
+            mock_ids.assert_not_called()
 
 
 @pytest.mark.asyncio

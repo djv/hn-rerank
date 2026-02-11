@@ -7,13 +7,10 @@ import logging
 import os
 import sys
 import time
+import tomllib
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
-from types import ModuleType
-from importlib import import_module
-from importlib.util import find_spec
 
 import numpy as np
 from numpy.typing import NDArray
@@ -40,18 +37,12 @@ from api.constants import (
     SEMANTIC_MATCH_THRESHOLD,
 )
 
-_tomllib: ModuleType | None = None
-if find_spec("tomllib") is not None:  # pragma: no cover - Python 3.11+ only
-    _tomllib = import_module("tomllib")
-
-tomllib: ModuleType | None = _tomllib
-
 console: Console = Console()
 
 DEFAULT_CONFIG_PATH = Path("hn_rerank.toml")
 
 
-def _find_config_path(argv: list[str]) -> Optional[Path]:
+def _find_config_path(argv: list[str]) -> Path | None:
     for i, arg in enumerate(argv):
         if arg == "--config" and i + 1 < len(argv):
             return Path(argv[i + 1])
@@ -60,7 +51,7 @@ def _find_config_path(argv: list[str]) -> Optional[Path]:
     return None
 
 
-def _load_config(argv: list[str]) -> tuple[dict[str, object], Optional[Path]]:
+def _load_config(argv: list[str]) -> tuple[dict[str, object], Path | None]:
     config_path = _find_config_path(argv)
     explicit = config_path is not None
     if config_path is None:
@@ -72,9 +63,6 @@ def _load_config(argv: list[str]) -> tuple[dict[str, object], Optional[Path]]:
         if explicit:
             raise FileNotFoundError(f"Config file not found: {config_path}")
         return {}, None
-    if tomllib is None:
-        raise RuntimeError("tomllib not available; cannot load config.")
-
     raw = tomllib.loads(config_path.read_text())
     if isinstance(raw, dict) and isinstance(raw.get("hn_rerank"), dict):
         raw = raw["hn_rerank"]
@@ -266,7 +254,7 @@ def format_match_percent(knn_score: float) -> int:
 
 def build_candidate_cluster_map(
     cands: list[Story],
-    cluster_centroids: Optional[NDArray[np.float32]],
+    cluster_centroids: NDArray[np.float32] | None,
     threshold: float,
     force_assign_rss: bool = False,
 ) -> dict[int, int]:
@@ -292,7 +280,7 @@ def build_candidate_cluster_map(
 
 def get_cluster_id_for_result(
     result: RankResult,
-    cluster_labels: Optional[NDArray[np.int32]],
+    cluster_labels: NDArray[np.int32] | None,
     cand_cluster_map: dict[int, int],
 ) -> int:
     """Get cluster ID for a result (-1 if none)."""
@@ -309,7 +297,7 @@ def get_cluster_id_for_result(
 def select_ranked_results(
     ranked: list[RankResult],
     cands: list[Story],
-    cluster_labels: Optional[NDArray[np.int32]],
+    cluster_labels: NDArray[np.int32] | None,
     cluster_names: dict[int, str],
     cand_cluster_map: dict[int, int],
     count: int,
@@ -743,7 +731,7 @@ async def main() -> None:
                 for res in asyncio.as_completed(
                     [fetch_story(hn.client, sid) for sid in ids]
                 ):
-                    s: Optional[Story] = await res
+                    s: Story | None = await res
                     if s:
                         results.append(s)
                     progress.update(p_task, advance=step)
@@ -772,7 +760,7 @@ async def main() -> None:
         def emb_cb(curr: int, total: int) -> None:
             progress.update(e_task, total=total, completed=curr)
 
-        p_emb: Optional[NDArray[np.float32]] = (
+        p_emb: NDArray[np.float32] | None = (
             rerank.get_embeddings(
                 [s.text_content for s in pos_stories],
                 is_query=True,
@@ -781,7 +769,7 @@ async def main() -> None:
             if pos_stories
             else None
         )
-        n_emb: Optional[NDArray[np.float32]] = (
+        n_emb: NDArray[np.float32] | None = (
             rerank.get_embeddings(
                 [s.text_content for s in neg_stories],
                 is_query=True,
@@ -792,7 +780,7 @@ async def main() -> None:
         )
         progress.update(e_task, description="[green][+] Preferences embedded.")
 
-        cluster_emb: Optional[NDArray[np.float32]] = None
+        cluster_emb: NDArray[np.float32] | None = None
         if pos_stories:
             ce_task: TaskID = progress.add_task(
                 "[*] Embedding cluster content...", total=100
@@ -808,8 +796,8 @@ async def main() -> None:
             progress.update(ce_task, description="[green][+] Cluster content embedded.")
 
         # 2b. Clustering interests
-        cluster_labels: Optional[NDArray[np.int32]] = None
-        cluster_centroids: Optional[NDArray[np.float32]] = None
+        cluster_labels: NDArray[np.int32] | None = None
+        cluster_centroids: NDArray[np.float32] | None = None
         cluster_names: dict[int, str] = {}
         cluster_source = cluster_emb if cluster_emb is not None else p_emb
         if cluster_source is not None and len(cluster_source) > 0:
@@ -959,11 +947,11 @@ async def main() -> None:
     seen_urls: set[str] = set()
     seen_titles: set[str] = set()
 
-    def make_story_display(result: RankResult) -> Optional[StoryDisplay]:
+    def make_story_display(result: RankResult) -> StoryDisplay | None:
         """Create StoryDisplay from RankResult, handling dedup."""
         s: Story = cands[result.index]
 
-        url: Optional[str] = s.url
+        url: str | None = s.url
         title: str = s.title
 
         norm_url: str = normalize_url(url) if url else f"hn:{s.id}"

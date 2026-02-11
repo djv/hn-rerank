@@ -9,7 +9,8 @@ def normalize_url(url: str) -> str:
     if not url:
         return ""
     try:
-        normalized = url_normalize(url)
+        normalized_raw = url_normalize(url)
+        normalized = normalized_raw if isinstance(normalized_raw, str) else url
     except Exception:
         normalized = url
 

@@ -85,6 +85,5 @@ async def test_cluster_name_fallback_no_api_key(temp_cache_file):
     items: list[tuple[StoryDict, float]] = [(make_story(789, "Story 3"), 1.0)]
     clusters: dict[int, list[tuple[StoryDict, float]]] = {0: items}
 
-    with patch.dict("os.environ", {}, clear=True):
-        with pytest.raises(RuntimeError):
-            await rerank.generate_batch_cluster_names(clusters)
+    with patch.dict("os.environ", {}, clear=True), pytest.raises(RuntimeError):
+        await rerank.generate_batch_cluster_names(clusters)

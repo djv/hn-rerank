@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +32,5 @@ def evict_old_cache_files(
         return
     cache_files.sort(key=lambda p: p.stat().st_mtime)
     for f in cache_files[: len(cache_files) - max_files]:
-        try:
+        with suppress(OSError):
             f.unlink()
-        except OSError:
-            pass

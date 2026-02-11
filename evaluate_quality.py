@@ -8,7 +8,7 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Callable
+from collections.abc import Callable
 
 import httpx
 import numpy as np
@@ -128,7 +128,7 @@ def _format_metrics_line(metrics: dict[str, float], k: int) -> str:
     return f"{k:<6} {ndcg:<8.3f} {map_k:<8.3f} {prec:<8.1%} {rec:<8.1%} {hit:<8.1%}"
 
 
-def _load_baseline(path: str) -> Optional[dict[str, float]]:
+def _load_baseline(path: str) -> dict[str, float] | None:
     p = Path(path)
     if not p.exists():
         return None
@@ -171,8 +171,8 @@ class EvaluationDataset:
     neg_stories: list[Story]
     candidates: list[Story]
     train_embeddings: NDArray[np.float32]
-    neg_embeddings: Optional[NDArray[np.float32]]
-    pos_weights: Optional[NDArray[np.float32]]
+    neg_embeddings: NDArray[np.float32] | None
+    pos_weights: NDArray[np.float32] | None
     test_ids: set[int]
 
 
@@ -187,7 +187,7 @@ class CrossValFold:
 class RankingEvaluator:
     def __init__(self, username: str):
         self.username = username
-        self.dataset: Optional[EvaluationDataset] = None
+        self.dataset: EvaluationDataset | None = None
 
     async def load_data(
         self,
@@ -269,13 +269,13 @@ class RankingEvaluator:
             train_texts = [s.text_content for s in train_stories]
             train_emb = get_embeddings(train_texts)
 
-            neg_emb: Optional[NDArray[np.float32]] = None
+            neg_emb: NDArray[np.float32] | None = None
             if neg_stories:
                 neg_texts = [s.text_content for s in neg_stories]
                 neg_emb = get_embeddings(neg_texts)
 
             # Recency weights
-            pos_weights: Optional[NDArray[np.float32]] = None
+            pos_weights: NDArray[np.float32] | None = None
             if use_recency and train_stories:
                 now = time.time()
                 half_life = 90 * 24 * 3600
@@ -323,7 +323,7 @@ class RankingEvaluator:
         knn: int = 2,
         neg_weight: float = 0.5,
         use_classifier: bool = True,
-        k_metrics: Optional[list[int]] = None,
+        k_metrics: list[int] | None = None,
     ) -> dict[str, float]:
         """Run ranking and return metrics."""
         if not self.dataset:
@@ -367,9 +367,9 @@ class RankingEvaluator:
         knn: int = KNN_NEIGHBORS,
         neg_weight: float = RANKING_NEGATIVE_WEIGHT,
         use_classifier: bool = True,
-        k_metrics: Optional[list[int]] = None,
+        k_metrics: list[int] | None = None,
         report_each: bool = True,
-        report_callback: Optional[Callable[[int, dict[str, float]], None]] = None,
+        report_callback: Callable[[int, dict[str, float]], None] | None = None,
         parallel: bool = True,
     ) -> dict[str, float]:
         """Run k-fold cross-validation and return averaged metrics."""
@@ -389,7 +389,7 @@ class RankingEvaluator:
         # Build combined weights (train weights + uniform for test stories)
         if self.dataset.pos_weights is not None:
             n_test = len(self.dataset.test_stories)
-            all_weights: Optional[NDArray[np.float32]] = np.concatenate([
+            all_weights: NDArray[np.float32] | None = np.concatenate([
                 self.dataset.pos_weights,
                 np.ones(n_test, dtype=np.float32),
             ])

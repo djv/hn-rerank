@@ -3,6 +3,7 @@ Constants and configuration values for HN reranking.
 Loads overrides from hn_rerank.toml if present.
 """
 import sys
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -11,19 +12,10 @@ from dotenv import load_dotenv
 # Load .env file if present
 load_dotenv()
 
-# Try to import tomllib (Python 3.11+) or tomli
-try:
-    import tomllib
-except ImportError:
-    try:
-        import tomli as tomllib
-    except ImportError:
-        tomllib = None
-
 def _load_config() -> dict[str, Any]:
     """Load configuration from hn_rerank.toml."""
     config_path = Path("hn_rerank.toml")
-    if not config_path.exists() or not tomllib:
+    if not config_path.exists():
         return {}
     try:
         with open(config_path, "rb") as f:
@@ -98,7 +90,7 @@ CLUSTER_EMBEDDING_MODEL_DIR = "onnx_model"
 # Similarity Bounds
 SIMILARITY_MIN = -1.0
 SIMILARITY_MAX = 1.0
-SEMANTIC_MATCH_THRESHOLD = 0.50
+SEMANTIC_MATCH_THRESHOLD = 0.82
 KNN_NEIGHBORS = _get("semantic", "knn_neighbors", 1)
 
 # Multi-Interest Clustering
