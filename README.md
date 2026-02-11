@@ -18,7 +18,7 @@ HN Rerank fetches stories from the last 30 days and re-ranks them based on seman
 
 **Notes**
 - RSS items fetch full article text (via `trafilatura`) for embeddings and cache results in `.cache/rss`.
-- RSS ranking uses semantic score only (no HN score or freshness boost), and the final list targets at least one-third RSS items (best-effort).
+- RSS ranking uses semantic score only (no HN score or freshness boost), and the final list targets a 2:1 HN:RSS mix (best-effort based on availability).
 - Cluster names are required to come from the Groq call; missing or empty Groq responses raise an error.
 
 ## Quick Start
@@ -36,6 +36,15 @@ HN Rerank fetches stories from the last 30 days and re-ranks them based on seman
 3. **Configure API Key**:
    ```bash
    export GROQ_API_KEY="your-api-key"
+   ```
+   For persistent `systemd --user` timer runs, store it in a user-only file:
+   ```bash
+   mkdir -p ~/.config/hn_rerank
+   umask 077
+   cat > ~/.config/hn_rerank/secrets.env <<'EOF'
+   GROQ_API_KEY=your-api-key
+   EOF
+   chmod 600 ~/.config/hn_rerank/secrets.env
    ```
 
 4. **Generate Dashboard**:
@@ -79,6 +88,24 @@ debug_scores = false
 ```
 
 When `debug_scores = true` (or `--debug-scores`), a `scores_debug.json` file is written next to `index.html` with a per‑story score breakdown.
+
+## Systemd Timer
+
+If you run with `hn_rerank.timer`, reload units after changes:
+
+```bash
+cp /home/dev/hn_rerank/hn_rerank.service ~/.config/systemd/user/hn_rerank.service
+cp /home/dev/hn_rerank/hn_rerank.timer ~/.config/systemd/user/hn_rerank.timer
+systemctl --user daemon-reload
+systemctl --user enable --now hn_rerank.timer
+```
+
+Run one manual check:
+
+```bash
+systemctl --user start hn_rerank.service
+journalctl --user -u hn_rerank.service -n 50 --no-pager
+```
 ## Documentation
 
 - [**ARCHITECTURE.md**](ARCHITECTURE.md): Deep dive into the scoring algorithms, clustering, and data flow.

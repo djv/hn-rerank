@@ -7,6 +7,7 @@ Type=oneshot
 WorkingDirectory=/home/dev/hn_rerank
 ExecStart=/home/dev/hn_rerank/update_dashboard.sh
 Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-%h/.config/hn_rerank/secrets.env
 
 [Install]
 WantedBy=multi-user.target

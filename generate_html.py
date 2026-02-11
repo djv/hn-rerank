@@ -37,6 +37,7 @@ from api.constants import (
     KNN_NEIGHBORS,
     MAX_CLUSTERS,
     MAX_USER_STORIES,
+    SEMANTIC_MATCH_THRESHOLD,
 )
 
 _tomllib: ModuleType | None = None
@@ -267,6 +268,7 @@ def build_candidate_cluster_map(
     cands: list[Story],
     cluster_centroids: Optional[NDArray[np.float32]],
     threshold: float,
+    force_assign_rss: bool = False,
 ) -> dict[int, int]:
     """Assign candidates to clusters based on centroid similarity."""
     if cluster_centroids is None or not cands:
@@ -281,7 +283,7 @@ def build_candidate_cluster_map(
     cluster_map: dict[int, int] = {}
     for i in range(len(cands)):
         max_sim = float(np.max(sim_to_clusters[i]))
-        if max_sim >= threshold:
+        if max_sim >= threshold or (force_assign_rss and cands[i].id < 0):
             cluster_map[i] = int(np.argmax(sim_to_clusters[i]))
         else:
             cluster_map[i] = -1
@@ -296,6 +298,7 @@ def get_cluster_id_for_result(
     """Get cluster ID for a result (-1 if none)."""
     if (
         result.best_fav_index != -1
+        and result.max_sim_score >= SEMANTIC_MATCH_THRESHOLD
         and cluster_labels is not None
         and result.best_fav_index < len(cluster_labels)
     ):
@@ -339,28 +342,49 @@ def select_ranked_results(
         selected_results.append(result)
         used_indices.add(result.index)
 
-    rss_target: int = max(1, (count + 2) // 3)
-
     def is_rss_result(res: RankResult) -> bool:
         return cands[res.index].id < 0
 
+    # Target 2:1 HN:RSS in the final list (best-effort under availability limits).
+    desired_rss: int = count // 3
+    available_rss = sum(1 for r in ranked if is_rss_result(r))
+    available_hn = len(ranked) - available_rss
+    min_rss = max(0, count - available_hn)
+    max_rss = min(count, available_rss)
+    target_rss = min(max(desired_rss, min_rss), max_rss)
+
     rss_selected = sum(1 for r in selected_results if is_rss_result(r))
-    if rss_selected < rss_target:
-        rss_needed = rss_target - rss_selected
+
+    if rss_selected < target_rss:
         rss_candidates = [
             r for r in ranked if is_rss_result(r) and r.index not in used_indices
         ]
-        non_rss_selected = [r for r in selected_results if not is_rss_result(r)]
-        non_rss_selected.sort(key=lambda r: r.hybrid_score)
-
-        for new_rss in rss_candidates[:rss_needed]:
-            if not non_rss_selected:
+        hn_selected = [r for r in selected_results if not is_rss_result(r)]
+        hn_selected.sort(key=lambda r: r.hybrid_score)
+        for new_rss in rss_candidates:
+            if rss_selected >= target_rss or not hn_selected:
                 break
-            to_remove = non_rss_selected.pop(0)
+            to_remove = hn_selected.pop(0)
             selected_results.remove(to_remove)
             used_indices.discard(to_remove.index)
             selected_results.append(new_rss)
             used_indices.add(new_rss.index)
+            rss_selected += 1
+    elif rss_selected > target_rss:
+        hn_candidates = [
+            r for r in ranked if not is_rss_result(r) and r.index not in used_indices
+        ]
+        rss_selected_items = [r for r in selected_results if is_rss_result(r)]
+        rss_selected_items.sort(key=lambda r: r.hybrid_score)
+        for new_hn in hn_candidates:
+            if rss_selected <= target_rss or not rss_selected_items:
+                break
+            to_remove = rss_selected_items.pop(0)
+            selected_results.remove(to_remove)
+            used_indices.discard(to_remove.index)
+            selected_results.append(new_hn)
+            used_indices.add(new_hn.index)
+            rss_selected -= 1
 
     selected_results.sort(key=lambda x: x.hybrid_score, reverse=True)
     return selected_results
@@ -416,11 +440,22 @@ def generate_story_html(story: StoryDisplay) -> str:
     )
 
 
-def resolve_cluster_name(cluster_names: dict[int, str], cluster_id: int) -> str:
+def resolve_cluster_name(
+    cluster_names: dict[int, str],
+    cluster_id: int,
+    allow_empty_fallback: bool = False,
+) -> str:
     """Return cluster name with stable fallback for unnamed IDs."""
     if cluster_id == -1:
         return ""
-    return cluster_names.get(cluster_id, f"Group {cluster_id + 1}")
+    if cluster_id in cluster_names:
+        name = cluster_names[cluster_id].strip()
+        if name:
+            return name
+        if allow_empty_fallback:
+            return f"Group {cluster_id + 1}"
+        return ""
+    return f"Group {cluster_id + 1}"
 
 
 def _similarity_stats(values: NDArray[np.float32]) -> dict[str, float]:
@@ -915,7 +950,10 @@ async def main() -> None:
 
     # Compute cluster assignments for candidates (only if above similarity threshold)
     cand_cluster_map = build_candidate_cluster_map(
-        cands, cluster_centroids, CLUSTER_SIMILARITY_THRESHOLD
+        cands,
+        cluster_centroids,
+        CLUSTER_SIMILARITY_THRESHOLD,
+        force_assign_rss=True,
     )
 
     seen_urls: set[str] = set()
@@ -949,7 +987,11 @@ async def main() -> None:
         cid = get_cluster_id_for_result(
             result, cluster_labels, cand_cluster_map
         )
-        cluster_name: str = resolve_cluster_name(cluster_names, cid)
+        cluster_name: str = resolve_cluster_name(
+            cluster_names,
+            cid,
+            allow_empty_fallback=(s.id < 0),
+        )
 
         hn_url = f"https://news.ycombinator.com/item?id={s.id}" if s.id > 0 else None
 

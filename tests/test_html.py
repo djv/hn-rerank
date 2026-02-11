@@ -1,7 +1,16 @@
 import time
 import pytest
-from generate_html import generate_story_html, get_relative_time, resolve_cluster_name
-from api.models import StoryDisplay
+import numpy as np
+
+import generate_html
+from generate_html import (
+    build_candidate_cluster_map,
+    generate_story_html,
+    get_relative_time,
+    resolve_cluster_name,
+    select_ranked_results,
+)
+from api.models import RankResult, Story, StoryDisplay
 
 
 def test_generate_story_html_special_chars():
@@ -60,6 +69,13 @@ def test_resolve_cluster_name_fallback():
     assert resolve_cluster_name(cluster_names, 0) == "Systems"
     assert resolve_cluster_name(cluster_names, 1) == "Group 2"
     assert resolve_cluster_name(cluster_names, -1) == ""
+
+
+def test_resolve_cluster_name_empty_name_fallback_for_rss():
+    cluster_names = {2: ""}
+
+    assert resolve_cluster_name(cluster_names, 2) == ""
+    assert resolve_cluster_name(cluster_names, 2, allow_empty_fallback=True) == "Group 3"
 
 
 def test_generate_story_html_includes_cluster_chip():
@@ -210,3 +226,126 @@ def test_generate_story_html_rss_badge():
     )
     html = generate_story_html(story)
     assert "RSS" in html
+
+
+def test_build_candidate_cluster_map_force_assigns_rss(monkeypatch):
+    cands = [
+        Story(
+            id=-1,
+            title="RSS Story",
+            url="https://example.com/rss",
+            score=0,
+            time=1,
+            text_content="rss content",
+        ),
+        Story(
+            id=123,
+            title="HN Story",
+            url="https://example.com/hn",
+            score=10,
+            time=1,
+            text_content="hn content",
+        ),
+    ]
+    centroids = np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
+
+    monkeypatch.setattr(
+        generate_html.rerank,
+        "get_cluster_embeddings",
+        lambda _texts: np.array([[1.0, 0.0], [1.0, 0.0]], dtype=np.float32),
+    )
+
+    cluster_map = build_candidate_cluster_map(
+        cands,
+        centroids,
+        threshold=1.01,
+        force_assign_rss=True,
+    )
+
+    assert cluster_map[0] == 0
+    assert cluster_map[1] == -1
+
+
+def _mk_rank(idx: int, score: float) -> RankResult:
+    return RankResult(
+        index=idx,
+        hybrid_score=score,
+        best_fav_index=-1,
+        max_sim_score=0.0,
+        knn_score=0.0,
+    )
+
+
+def test_select_ranked_results_enforces_two_to_one_hn_to_rss_mix():
+    cands = [
+        Story(id=-(i + 1), title=f"RSS {i}", url=None, score=0, time=1, text_content="")
+        if i < 6
+        else Story(id=i + 1, title=f"HN {i}", url=None, score=0, time=1, text_content="")
+        for i in range(10)
+    ]
+    ranked = [_mk_rank(i, 1.0 - (i * 0.01)) for i in range(10)]
+
+    selected = select_ranked_results(
+        ranked,
+        cands,
+        cluster_labels=None,
+        cluster_names={},
+        cand_cluster_map={},
+        count=6,
+    )
+
+    rss_count = sum(1 for r in selected if cands[r.index].id < 0)
+    hn_count = len(selected) - rss_count
+    assert len(selected) == 6
+    assert rss_count == 2
+    assert hn_count == 4
+
+
+def test_select_ranked_results_allows_more_rss_when_hn_insufficient():
+    cands = [
+        Story(id=-(i + 1), title=f"RSS {i}", url=None, score=0, time=1, text_content="")
+        if i < 8
+        else Story(id=i + 1, title=f"HN {i}", url=None, score=0, time=1, text_content="")
+        for i in range(10)
+    ]
+    ranked = [_mk_rank(i, 1.0 - (i * 0.01)) for i in range(10)]
+
+    selected = select_ranked_results(
+        ranked,
+        cands,
+        cluster_labels=None,
+        cluster_names={},
+        cand_cluster_map={},
+        count=6,
+    )
+
+    rss_count = sum(1 for r in selected if cands[r.index].id < 0)
+    hn_count = len(selected) - rss_count
+    assert len(selected) == 6
+    assert hn_count == 2
+    assert rss_count == 4
+
+
+def test_select_ranked_results_allows_more_hn_when_rss_insufficient():
+    cands = [
+        Story(id=-1, title="RSS 0", url=None, score=0, time=1, text_content="")
+        if i == 0
+        else Story(id=i + 1, title=f"HN {i}", url=None, score=0, time=1, text_content="")
+        for i in range(10)
+    ]
+    ranked = [_mk_rank(i, 1.0 - (i * 0.01)) for i in range(10)]
+
+    selected = select_ranked_results(
+        ranked,
+        cands,
+        cluster_labels=None,
+        cluster_names={},
+        cand_cluster_map={},
+        count=6,
+    )
+
+    rss_count = sum(1 for r in selected if cands[r.index].id < 0)
+    hn_count = len(selected) - rss_count
+    assert len(selected) == 6
+    assert rss_count == 1
+    assert hn_count == 5
