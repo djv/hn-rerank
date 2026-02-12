@@ -16,8 +16,8 @@ diversity_lambda_classifier = 0.30
 max_results = 500
 
 [hn_rerank.adaptive_hn]
-weight_min = 0.0585
-weight_max = 0.0449
+weight_min = 0.0449
+weight_max = 0.0585
 threshold_young = 5.84
 threshold_old = 50.12
 score_normalization_cap = 1392.41

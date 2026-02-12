@@ -326,37 +326,38 @@ class RankingEvaluator:
         k_metrics: list[int] | None = None,
     ) -> dict[str, float]:
         """Run ranking and return metrics."""
-        if not self.dataset:
+        if self.dataset is None:
             raise ValueError("Dataset not loaded")
+        dataset = self.dataset
 
         if k_metrics is None:
             k_metrics = [10, 20, 30, 50]
 
         results = rank_stories(
-            self.dataset.candidates,
-            positive_embeddings=self.dataset.train_embeddings,
-            negative_embeddings=self.dataset.neg_embeddings,
-            positive_weights=self.dataset.pos_weights,
+            dataset.candidates,
+            positive_embeddings=dataset.train_embeddings,
+            negative_embeddings=dataset.neg_embeddings,
+            positive_weights=dataset.pos_weights,
             use_classifier=use_classifier,
             diversity_lambda=diversity,
             knn_k=knn,
             neg_weight=neg_weight,
         )
 
-        ranked_ids = [self.dataset.candidates[r.index].id for r in results]
+        ranked_ids = [dataset.candidates[r.index].id for r in results]
         metrics: dict[str, float] = {}
 
         # Global metrics (not k-dependent)
-        metrics["mrr"] = mrr(ranked_ids, self.dataset.test_ids)
-        metrics["mean_rank"] = mean_rank(ranked_ids, self.dataset.test_ids)
-        metrics["median_rank"] = median_rank(ranked_ids, self.dataset.test_ids)
+        metrics["mrr"] = mrr(ranked_ids, dataset.test_ids)
+        metrics["mean_rank"] = mean_rank(ranked_ids, dataset.test_ids)
+        metrics["median_rank"] = median_rank(ranked_ids, dataset.test_ids)
 
         for k in k_metrics:
-            metrics[f"ndcg@{k}"] = ndcg_at_k(ranked_ids, self.dataset.test_ids, k)
-            metrics[f"recall@{k}"] = recall_at_k(ranked_ids, self.dataset.test_ids, k)
-            metrics[f"precision@{k}"] = precision_at_k(ranked_ids, self.dataset.test_ids, k)
-            metrics[f"map@{k}"] = map_at_k(ranked_ids, self.dataset.test_ids, k)
-            metrics[f"hit@{k}"] = hit_rate_at_k(ranked_ids, self.dataset.test_ids, k)
+            metrics[f"ndcg@{k}"] = ndcg_at_k(ranked_ids, dataset.test_ids, k)
+            metrics[f"recall@{k}"] = recall_at_k(ranked_ids, dataset.test_ids, k)
+            metrics[f"precision@{k}"] = precision_at_k(ranked_ids, dataset.test_ids, k)
+            metrics[f"map@{k}"] = map_at_k(ranked_ids, dataset.test_ids, k)
+            metrics[f"hit@{k}"] = hit_rate_at_k(ranked_ids, dataset.test_ids, k)
 
         return metrics
 
@@ -375,22 +376,23 @@ class RankingEvaluator:
         """Run k-fold cross-validation and return averaged metrics."""
         from concurrent.futures import ThreadPoolExecutor
 
-        if not self.dataset:
+        if self.dataset is None:
             raise ValueError("Dataset not loaded")
+        dataset = self.dataset
 
         if k_metrics is None:
             k_metrics = [10, 20, 30, 50]
 
         # Combine train and test for CV splits
-        all_stories = self.dataset.train_stories + self.dataset.test_stories
+        all_stories = dataset.train_stories + dataset.test_stories
         all_emb = get_embeddings([s.text_content for s in all_stories])
         n = len(all_stories)
 
         # Build combined weights (train weights + uniform for test stories)
-        if self.dataset.pos_weights is not None:
-            n_test = len(self.dataset.test_stories)
+        if dataset.pos_weights is not None:
+            n_test = len(dataset.test_stories)
             all_weights: NDArray[np.float32] | None = np.concatenate([
-                self.dataset.pos_weights,
+                dataset.pos_weights,
                 np.ones(n_test, dtype=np.float32),
             ])
         else:
@@ -410,8 +412,8 @@ class RankingEvaluator:
             fold_weights = all_weights[train_idx] if all_weights is not None else None
             test_ids = {all_stories[i].id for i in test_idx}
 
-            candidate_ids = {c.id for c in self.dataset.candidates}
-            fold_candidates = list(self.dataset.candidates)
+            candidate_ids = {c.id for c in dataset.candidates}
+            fold_candidates = list(dataset.candidates)
             for i in test_idx:
                 if all_stories[i].id not in candidate_ids:
                     fold_candidates.append(all_stories[i])
@@ -419,7 +421,7 @@ class RankingEvaluator:
             results = rank_stories(
                 fold_candidates,
                 positive_embeddings=train_emb,
-                negative_embeddings=self.dataset.neg_embeddings,
+                negative_embeddings=dataset.neg_embeddings,
                 positive_weights=fold_weights,
                 use_classifier=use_classifier,
                 diversity_lambda=diversity,
@@ -430,7 +432,7 @@ class RankingEvaluator:
             ranked_ids = [fold_candidates[r.index].id for r in results]
 
             # Debug assertion: hidden stories must never appear in ranked output
-            neg_ids = {s.id for s in self.dataset.neg_stories}
+            neg_ids = {s.id for s in dataset.neg_stories}
             leaked = set(ranked_ids) & neg_ids
             assert not leaked, f"Hidden stories leaked into ranked results: {leaked}"
 

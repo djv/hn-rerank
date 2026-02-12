@@ -2178,6 +2178,8 @@ def rank_stories(
     if hn_weight > 0:
         # Young stories (<6h): trust semantic more (low HN weight)
         # Old stories (>48h): trust HN score more (higher HN weight)
+        young_hn_weight = min(ADAPTIVE_HN_WEIGHT_MIN, ADAPTIVE_HN_WEIGHT_MAX)
+        old_hn_weight = max(ADAPTIVE_HN_WEIGHT_MIN, ADAPTIVE_HN_WEIGHT_MAX)
         adaptive_t = np.clip(
             (ages_hours - ADAPTIVE_HN_THRESHOLD_YOUNG)
             / (ADAPTIVE_HN_THRESHOLD_OLD - ADAPTIVE_HN_THRESHOLD_YOUNG),
@@ -2185,8 +2187,7 @@ def rank_stories(
             1.0,
         )
         hn_weights: NDArray[np.float64] = (
-            ADAPTIVE_HN_WEIGHT_MIN
-            + adaptive_t * (ADAPTIVE_HN_WEIGHT_MAX - ADAPTIVE_HN_WEIGHT_MIN)
+            young_hn_weight + adaptive_t * (old_hn_weight - young_hn_weight)
         )
 
         # 7. Hybrid Score (per-story adaptive weighting)

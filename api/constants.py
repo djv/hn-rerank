@@ -112,8 +112,8 @@ RANKING_DIVERSITY_LAMBDA_CLASSIFIER = _get("ranking", "diversity_lambda_classifi
 RANKING_MAX_RESULTS = _get("ranking", "max_results", 500)
 
 # Adaptive HN Weight (age-based)
-ADAPTIVE_HN_WEIGHT_MIN = _get("adaptive_hn", "weight_min", 0.0585400016)
-ADAPTIVE_HN_WEIGHT_MAX = _get("adaptive_hn", "weight_max", 0.0449033752)
+ADAPTIVE_HN_WEIGHT_MIN = _get("adaptive_hn", "weight_min", 0.0449033752)
+ADAPTIVE_HN_WEIGHT_MAX = _get("adaptive_hn", "weight_max", 0.0585400016)
 ADAPTIVE_HN_THRESHOLD_YOUNG = _get("adaptive_hn", "threshold_young", 5.8379569842)
 ADAPTIVE_HN_THRESHOLD_OLD = _get("adaptive_hn", "threshold_old", 50.1201376639)
 
