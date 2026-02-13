@@ -128,3 +128,59 @@ uv run ruff check .
 # Type check
 uv run ty check .
 ```
+
+### Stable Multi-Seed Parameter Promotion
+
+Use the promotion runner to automate tuning across multiple seeds and only emit
+new params when gains are stable against baseline:
+
+```bash
+uv run promote_stable_params.py <your-hn-username> \
+  --seeds 42,43,44 \
+  --space core \
+  --trials 120 \
+  --cv-folds 5 \
+  --candidates 500 \
+  --cache-only
+```
+
+Artifacts are written under `runs/promotion/<timestamp>_*`:
+- `promotion_report.json`: per-seed run outputs + baseline/candidate comparisons
+- `promoted_params.json` and `promoted_params.toml`: only written when stability
+  gates pass (`mean_delta`, 95% lower confidence bound, regression-count limit)
+
+## UI Invariants and Change Demos
+
+Use Rodney for browser-level invariant checks on generated dashboard artifacts:
+
+```bash
+# Regenerate artifacts first (scheduled profile disables TL;DRs)
+uv run generate_html.py <your-hn-username> --no-tldr
+
+# Verify rendered invariants
+./scripts/check_ui_invariants.sh
+
+# Optional: also capture fresh screenshots
+./scripts/check_ui_invariants.sh --screenshots
+```
+
+Use Showboat for reproducible change documentation and regression checks:
+
+```bash
+# Verify existing demo docs still reproduce
+./scripts/verify_showboat_demos.sh
+
+# Create a new change demo
+uvx showboat init demo_new_change.md "Demo: <change title>"
+uvx showboat note demo_new_change.md "What changed and why"
+uvx showboat exec demo_new_change.md bash "./scripts/check_ui_invariants.sh"
+uvx showboat verify demo_new_change.md
+```
+
+If `showboat verify` fails, refresh the demo by re-running the recorded commands
+or regenerate updated output with `showboat verify <file> --output <new-file>`.
+
+Recommended workflow for UI-affecting changes:
+1. Regenerate `index.html` and `clusters.html`.
+2. Run `./scripts/check_ui_invariants.sh`.
+3. Update or add a Showboat demo and verify it.

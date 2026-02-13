@@ -247,9 +247,9 @@ def get_relative_time(timestamp: int) -> str:
         return f"{diff // 86400}d"
 
 
-def format_match_percent(knn_score: float) -> int:
+def format_match_percent(score: float) -> int:
     """Clamp match percent for display."""
-    return max(0, min(100, int(round(knn_score * 100))))
+    return max(0, min(100, int(round(score * 100))))
 
 
 def build_candidate_cluster_map(
@@ -284,6 +284,13 @@ def get_cluster_id_for_result(
     cand_cluster_map: dict[int, int],
 ) -> int:
     """Get cluster ID for a result (-1 if none)."""
+    # Prefer cluster assignment from candidate embedding when available.
+    # This keeps labels aligned with the candidate's own semantic position,
+    # while still allowing fallback to best-favorite mapping.
+    cand_cid = cand_cluster_map.get(result.index, -1)
+    if cand_cid != -1:
+        return cand_cid
+
     if (
         result.best_fav_index != -1
         and result.max_sim_score >= SEMANTIC_MATCH_THRESHOLD
@@ -291,7 +298,7 @@ def get_cluster_id_for_result(
         and result.best_fav_index < len(cluster_labels)
     ):
         return int(cluster_labels[result.best_fav_index])
-    return cand_cluster_map.get(result.index, -1)
+    return -1
 
 
 def select_ranked_results(
@@ -985,7 +992,7 @@ async def main() -> None:
 
         return StoryDisplay(
             id=s.id,
-            match_percent=format_match_percent(result.knn_score),
+            match_percent=format_match_percent(result.hybrid_score),
             cluster_name=cluster_name,
             points=s.score,
             time_ago=get_relative_time(s.time),

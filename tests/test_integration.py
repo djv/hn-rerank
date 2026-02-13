@@ -81,7 +81,7 @@ async def test_generate_html_integration(tmp_path):
         assert output_file.exists()
         html_content = output_file.read_text()
         assert "Integrated Test" in html_content
-        assert "90%" in html_content  # Uses knn_score for display
+        assert "95%" in html_content  # Uses hybrid_score for display
         assert username in html_content
         # TL;DR replaces raw comments
         assert "This is a test TL;DR summary." in html_content

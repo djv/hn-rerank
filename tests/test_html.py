@@ -6,6 +6,7 @@ import generate_html
 from generate_html import (
     build_candidate_cluster_map,
     generate_story_html,
+    get_cluster_id_for_result,
     get_relative_time,
     resolve_cluster_name,
     select_ranked_results,
@@ -349,3 +350,33 @@ def test_select_ranked_results_allows_more_hn_when_rss_insufficient():
     assert len(selected) == 6
     assert rss_count == 1
     assert hn_count == 5
+
+
+def test_get_cluster_id_prefers_candidate_assignment():
+    result = RankResult(
+        index=0,
+        hybrid_score=1.0,
+        best_fav_index=0,
+        max_sim_score=0.99,
+        knn_score=0.99,
+    )
+    cluster_labels = np.array([3], dtype=np.int32)
+    cand_cluster_map = {0: 7}
+
+    cid = get_cluster_id_for_result(result, cluster_labels, cand_cluster_map)
+    assert cid == 7
+
+
+def test_get_cluster_id_falls_back_to_best_fav_when_candidate_unassigned():
+    result = RankResult(
+        index=0,
+        hybrid_score=1.0,
+        best_fav_index=0,
+        max_sim_score=0.99,
+        knn_score=0.99,
+    )
+    cluster_labels = np.array([3], dtype=np.int32)
+    cand_cluster_map = {0: -1}
+
+    cid = get_cluster_id_for_result(result, cluster_labels, cand_cluster_map)
+    assert cid == 3
