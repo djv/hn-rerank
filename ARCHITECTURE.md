@@ -1,141 +1,160 @@
 # HN Rerank Architecture
 
 ## Overview
-HN Rerank is a local-first application that personalizes Hacker News content using semantic embedding models. It learns from your upvoted/favorited stories to rerank the front page (or recent stories) according to your specific interests.
 
-## Core Components
+HN Rerank is a local-first recommendation pipeline for Hacker News. It combines cached HN signals, locally generated embeddings, candidate discovery from Algolia and RSS, and static HTML rendering.
 
-### 1. CLI Entrypoint (`generate_html.py`)
-- **Orchestrator**: Manages the flow of fetching user data, embedding, clustering, fetching candidates, reranking, and generating the dashboard.
-- **UI Generation**: Produces two self-contained HTML files:
-    - `index.html` - Ranked recommendations with per-story cluster chips and LLM-generated TL;DRs.
-    - `clusters.html` - Full interest cluster visualization with stories per cluster.
-- **Concurrency**: Uses `asyncio` for parallel fetching of stories and non-blocking rate-limited LLM calls.
+The system is local for ranking and artifact generation, but not fully offline:
+- HN and Algolia provide source data.
+- RSS feeds and article fetches expand the candidate pool.
+- Groq is optional and only used for cluster naming and TL;DR generation.
+- The generated HTML currently pulls Tailwind from a CDN at render time.
 
-### 2. Client API (`api/client.py`)
-- **HN Client**: Handles authentication and user profile scraping (favorites/upvoted/hidden via HTML + `BeautifulSoup`).
-- **Session Management**: Stores login cookies in `.cache/user/cookies.json`.
-- **Signal Fetching**: Retrieves IDs of favorited, upvoted, and hidden stories.
-- **Security Note**: Cookies are stored in plain text. This is intended for local single-user use only.
+## Main Entry Point
 
-### 3. Content Fetching (`api/fetching.py`)
-- **Hybrid Approach**:
-    - **Discovery**: Uses Algolia API to find candidate stories (search by date/points).
-    - **Time Windows**: Fetches candidates in **7-day windows** to stay under Algolia's 1000-hit limit while minimizing API calls.
-    - **Detail**: Uses Algolia item API (`/api/v1/items/<id>`) to fetch story details and nested comments for ranking, so no HTML scraping is necessary for story content.
-    - **RSS Feeds**: Pulls additional candidates from a curated OPML list, parsing RSS/Atom entries into `Story` objects and fetching full article text for embeddings (cached in `.cache/rss`).
-    - **Caching**:
-        - **Positive Cache**: Stores valid story data for 24h.
-        - **Negative Cache**: Stores failures/invalid items (e.g., jobs, comments) to prevent infinite re-fetching loops.
-        - **Candidate Cache**: Stores Algolia search results per time-window. Recent window (30m TTL), older windows (1w TTL).
-        - **RSS Cache**: Stores OPML feed lists (daily TTL) and per-feed entries (hourly TTL).
-    - **Smart Scraping**: HTML scraping is only used by `api/client.py` to collect upvote/favorite IDs via BeautifulSoup; the candidate pipeline relies entirely on Algolia.
+### `generate_html.py`
 
-### 4. Reranking Engine (`api/rerank.py`)
-- **Model**: Uses a local **fine-tuned** ONNX embedding model (`bge-base-en-v1.5`).
-    - The base model is fine-tuned on HN interaction data (titles + top comments) using contrastive loss (`MultipleNegativesRankingLoss`) to improve domain-specific retrieval quality.
-    - Fine-tuning scripts (`prepare_data.py`, `tune_embeddings.py`, `export_tuned.py`) allow for local retraining on updated interaction data.
-- **Multi-Interest Clustering**:
-    - Uses **Agglomerative Clustering** with **Average Linkage** and **Cosine Metric**.
-    - **Default k=30** (configurable via `--clusters`). LLM naming handles semantic coherence.
-    - Enforces a minimum cluster size of **3** by merging tiny clusters into larger neighbors before splitting oversized groups.
-    - Splits oversized clusters to keep max size under **min(25% of signals, 40)**.
-    - `cluster_interests_with_labels(embeddings, weights, n_clusters)` returns `(centroids, labels)`.
-- **Cluster Naming** (`generate_batch_cluster_names()` via Groq API):
-    - Uses Groq API (`llama-3.3-70b-versatile`) to generate contextual 2-6 word labels from top titles + comment snippets.
-    - Batches naming requests (10 per call) to optimize quota.
-    - Debug logging records raw LLM naming responses for troubleshooting.
-    - Groq responses are required; missing or empty names raise an error.
-    - Cached by cluster content hash in `.cache/cluster_names.json`.
-    - Progress bar shows per-cluster naming progress.
-- **Scoring Algorithm** (two modes):
-    - **Classifier Mode (default)**: Logistic Regression trained on positive (upvoted) and negative (hidden) embeddings. Provides 3x better NDCG than k-NN heuristics when sufficient hidden signals exist.
-    - **k-NN Fallback**: When classifier is disabled or insufficient data:
-        - Calculates the **median** similarity of the top 2 nearest neighbors from your history.
-        - Hidden stories also use k-NN (top-2 median). Penalty applied when negative k-NN > positive k-NN (contrastive). Weight: 0.5.
-    - **Soft Sigmoid Activation**: Applies a sigmoid (k=31.2, threshold=0.475) to semantic scores to suppress noise while preserving strong signals.
-    - **Display Score**: k-NN score (median of top-k neighbors) for consistent ranking/display alignment.
-    - **Adaptive HN Weighting**: Story age determines HN weight:
-        - Young stories (<6h): ~8.1% HN weight (trust semantic similarity)
-        - Old stories (>48h): ~11.4% HN weight (trust social proof)
-        - Linear interpolation between thresholds
-    - **Freshness Boost**: Exponential decay (half-life: ~71h) adds up to ~0.22% boost for new stories. Prevents stale high-match stories from dominating.
-- **Diversity**: Applies Maximal Marginal Relevance (MMR, λ=0.17) to prevent redundant results.
-- **Story TL;DR** (`generate_batch_tldrs()` via Groq API):
-    - Generates concise summaries using `llama-3.1-8b-instant`.
-    - Batches requests (5 per call) to minimize API quota consumption.
-    - Format: Story summary, followed by a newline and key discussion points/debates.
-    - Replaces the raw comments section in the story card for a cleaner UI.
-    - Cached by story ID in `.cache/tldrs.json`.
+Responsibilities:
+- parse CLI arguments and optional `hn_rerank.toml`
+- load user signals through `HNClient`
+- fetch signal details and candidate stories
+- embed, cluster, rank, and select final stories
+- optionally generate cluster names and TL;DRs
+- render `index.html` and `clusters.html`
 
-### 5. Constants (`api/constants.py`)
-- Centralized configuration for cache TTLs, scoring weights, clustering parameters, and limits.
+Notable runtime behavior:
+- top-level config is loaded from `[hn_rerank]`
+- `HN_RERANK_FORCE_NO_TLDR=1` hard-disables TL;DR generation for automated runs
+- the displayed match badge uses `knn_score`
+- final selection targets a best-effort `2:1` HN:RSS mix
 
-## Data Flow
+## User Signals
 
-```
-1. Login/Profile     → Fetch user's upvoted and hidden IDs
-2. Signal Fetching   → Scrape content for these IDs, cache locally
-3. Embedding         → Generate vectors for user's history (BGE-base)
-4. Clustering        → Group signals into clusters (Agglomerative + Average Linkage)
-5. Cluster Naming    → Generate names via Groq API
-6. Candidate Fetch   → Get top N stories from Algolia (last 7-30 days, 7-day windows)
-7. Candidate Embed   → Generate vectors for candidates
-8. Reranking         → Compute similarity to centroids, apply MMR diversity
-9. UI Clustering     → Candidate chips show the User Interest Cluster that triggered the match
-10. TL;DR Generation → Generate 1-sentence summaries via Groq API
-11. Render           → Generate index.html + clusters.html
-```
+### `api/client.py`
 
-## HTML Output Structure
+`HNClient` handles:
+- cookie-backed HN login
+- scraping favorites, upvotes, and hidden items
+- URL normalization for duplicate and hidden-item suppression
+- short-lived caching of signal IDs in `.cache/user`
 
-### index.html (Ranked Recommendations)
-```
-┌─────────────────────────────────────┐
-│ HN Rerank | @username               │
-│ N interest clusters (link)          │
-├─────────────────────────────────────┤
-│ Story Card                          │
-│ ┌─────────────────────────────────┐ │
-│ │ 85% [ML, AI] 142pts 2h          │ │
-│ │ Story Title                     │ │
-│ │ ↳ Similar to: Your Past Story  │ │
-│ │ "Top comment snippet..."        │ │
-│ └─────────────────────────────────┘ │
-│ ...more stories...                  │
-└─────────────────────────────────────┘
-```
+Signal semantics:
+- positive set: `(favorites | upvoted) - hidden`
+- hidden items are always excluded from candidate selection
+- without login, the pipeline falls back to public favorites only
 
-Each story card shows:
-- Match percentage (semantic similarity)
-- Cluster chip (which interest cluster it matches)
-- HN points and age
-- "Similar to" link showing which upvoted story it matches
-- Top comment snippets
+## Candidate Discovery
 
-### clusters.html (Interest Clusters)
-```
-┌─────────────────────────────────────┐
-│ Interest Clusters | @username       │
-│ N signals → M clusters              │
-├─────────────────────────────────────┤
-│ ┌─────────┐ ┌─────────┐             │
-│ │ ML, AI  │ │ Rust    │             │
-│ │ 12 items│ │ 8 items │             │
-│ │ Story 1 │ │ Story 1 │             │
-│ │ Story 2 │ │ Story 2 │             │
-│ └─────────┘ └─────────┘             │
-└─────────────────────────────────────┘
-```
+### `api/fetching.py`
 
-## Key Invariants
-- **Hybrid Privacy**: Embeddings and reranking are local (ONNX). LLM features (naming, summaries) use Groq API.
-- **Privacy**: Cookies and data live in `.cache/` inside the project.
-- **Robustness**: Negative caching prevents API hammering on invalid IDs.
-- **Determinism**: Same input → same clustering output (fixed random state).
+Candidate discovery uses Algolia plus optional RSS expansion.
 
-## Testing
-- **Unit Tests**: `pytest` for core logic
-- **Property Tests**: `hypothesis` for invariants (clustering, ranking, boundaries)
-- **Coverage**: ~76% of `api/` module
-- **Type Checking**: Colab-only notebooks are excluded from `ty` checks.
+Algolia path:
+- queries are split into a live window plus archive windows to work around the 1000-hit cap
+- live windows are cached with short TTLs, older windows with longer TTLs
+- story detail fetches use Algolia item endpoints, not HN HTML scraping
+- non-story items and stories with too few usable comments are cached negatively as `None`
+
+Story content path:
+- comment text is cleaned, filtered, and depth-penalized
+- title plus top-ranked comments become `text_content` for embedding and ranking
+- UI comments are a shorter subset of the ranking comment pool
+
+RSS path:
+- parses RSS/Atom entries into synthetic negative IDs
+- optionally fetches full article text for embedding enrichment
+- excludes URLs already seen in favorites, upvotes, or hidden items
+
+## Embeddings and Clustering
+
+### `api/rerank.py`
+
+Embedding model:
+- local ONNX model under `onnx_model/`
+- tokenizer access is serialized for thread safety
+- embedding results are cached in `.cache/embeddings` and `.cache/embeddings_cluster`
+
+Clustering path:
+- default algorithm is `spectral`
+- alternatives exist for `agglomerative` and `kmeans`
+- cluster count is capped by sample count, `MAX_CLUSTERS`, and `MIN_SAMPLES_PER_CLUSTER`
+- post-processing refines assignments, merges small clusters, splits oversized clusters, and can split low-similarity outliers into singleton clusters
+
+The clustering configuration is controlled by constants and nested TOML sections such as `[hn_rerank.clustering]`.
+
+## Ranking
+
+### Ranking modes
+
+The ranking engine supports two modes:
+- classifier mode when both positive and negative signal sets have at least 5 embeddings
+- k-NN fallback otherwise
+
+Classifier mode:
+- trains a `LogisticRegressionCV` model per run
+- augments embedding features with centroid similarity, positive k-NN, and negative k-NN features
+- applies cluster-balanced positive sample weights and configurable negative sample weights
+- still computes k-NN display scores and explicit negative penalties after classification
+
+Fallback mode:
+- computes median top-k similarity against positive history
+- blends cluster-max similarity and k-NN behavior for semantic scoring
+- uses the best positive match for display reasoning
+
+Final ranking behavior:
+- hybrid score blends semantic relevance, adaptive HN weighting, and freshness
+- MMR-style diversification suppresses redundant candidates
+- the UI match badge uses `knn_score`, while ordering uses `hybrid_score`
+
+## LLM Enrichment
+
+Optional Groq-backed stages:
+- cluster naming via `generate_batch_cluster_names()`
+- story TL;DR generation via `generate_batch_tldrs()`
+
+Operational rules:
+- `GROQ_API_KEY` is required only when naming or TL;DRs are enabled
+- singleton clusters are left unnamed unless generic fallback naming is used
+- cluster naming and TL;DR results are cached under `.cache/`
+
+## Rendered Artifacts
+
+### `index.html`
+Contains:
+- ranked story cards
+- match badge from `knn_score`
+- RSS badge for RSS items
+- optional cluster chip
+- HN points and relative age
+- external story link and optional HN discussion link
+- optional TL;DR block
+
+### `clusters.html`
+Contains:
+- all positive signals grouped by cluster label
+- cluster sizes
+- recent stories per cluster
+
+Both pages are generated from inline Jinja templates in `generate_html.py`.
+
+## Configuration Model
+
+Current configuration is split across two layers:
+- `generate_html.py` parses top-level runtime options from `[hn_rerank]`
+- `api/constants.py` loads nested tuned values from `[hn_rerank.<section>]`
+
+This split works, but it is an architectural debt item because execution does not yet flow through a single typed config object.
+
+## Testing Surface
+
+The strongest automated coverage is around:
+- ranking invariants
+- clustering behavior
+- classifier fallbacks and weighting
+- HTML selection and rendering helpers
+- promotion and evaluation utilities
+
+The weakest coverage is around:
+- true end-to-end runtime integration
+- config precedence and parsing behavior
+- doc and test contract drift

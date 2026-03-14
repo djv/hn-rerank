@@ -1,13 +1,18 @@
+import json
+import time
 import pytest
 import respx
+import httpx
 from httpx import Response
 from unittest.mock import MagicMock
-from api.constants import MIN_COMMENT_LENGTH, MIN_STORY_COMMENTS
+from api.constants import MIN_CANDIDATE_COMMENTS, MIN_COMMENT_LENGTH, MIN_STORY_COMMENTS, STORY_CACHE_VERSION
 from api.fetching import (
     ALGOLIA_BASE,
     AlgoliaComment,
     _clean_text,
     _extract_comments_recursive,
+    build_candidate_filters,
+    fetch_story,
     get_best_stories,
 )
 
@@ -123,6 +128,75 @@ async def test_get_best_stories_accepts_min_comment_length():
         stories = await get_best_stories(limit=1, include_rss=False)
         assert len(stories) == 1
         assert stories[0].id == 42
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_fetch_story_uses_article_text_without_comment_threshold(monkeypatch, tmp_path):
+    respx.get(f"{ALGOLIA_BASE}/items/99").mock(
+        return_value=Response(
+            200,
+            json={
+                "id": 99,
+                "type": "story",
+                "title": "Sparse Comments Story",
+                "url": "https://example.com/full-story",
+                "points": 50,
+                "created_at_i": 1600000000,
+                "children": [
+                    {
+                        "type": "comment",
+                        "text": "This is one substantial comment that should still be kept for ranking context.",
+                        "points": 3,
+                        "children": [],
+                    }
+                ],
+            },
+        )
+    )
+
+    async def fake_fetch_full_text(client: httpx.AsyncClient, url: str) -> str:
+        assert url == "https://example.com/full-story"
+        return "Full article body with enough content to keep the story even when discussion is sparse."
+
+    monkeypatch.setattr("api.fetching.CACHE_PATH", tmp_path)
+    monkeypatch.setattr("api.fetching.fetch_full_text", fake_fetch_full_text)
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        story = await fetch_story(client, 99)
+
+    assert story is not None
+    assert "Full article body" in story.text_content
+    assert "substantial comment" in story.text_content
+    cached = json.loads((tmp_path / "99.json").read_text())
+    assert cached["version"] == STORY_CACHE_VERSION
+
+
+@pytest.mark.asyncio
+async def test_fetch_story_cache_only_ignores_old_cache_version(monkeypatch, tmp_path):
+    cache_file = tmp_path / "123.json"
+    cache_file.write_text(
+        json.dumps(
+            {
+                "ts": time.time(),
+                "story": {
+                    "id": 123,
+                    "title": "Old Cache",
+                    "url": "https://example.com/old-cache",
+                    "score": 1,
+                    "time": 1600000000,
+                    "comments": ["stale"],
+                    "text_content": "stale content",
+                },
+            }
+        )
+    )
+    monkeypatch.setattr("api.fetching.CACHE_PATH", tmp_path)
+
+    async with httpx.AsyncClient(timeout=1.0) as client:
+        story = await fetch_story(client, 123, cache_only=True)
+
+    assert story is None
 
 
 @pytest.mark.asyncio
@@ -348,30 +422,23 @@ class TestWindowFilters:
     """Test that window filters use correct boundary conditions."""
 
     def test_filter_uses_inclusive_start(self):
-        """Verify filter string uses >= for start (not >) to include boundary stories."""
-        # This is a unit test checking the filter construction logic
-        # We check the actual filter string format
-        from api.fetching import ALGOLIA_MIN_POINTS, MIN_STORY_COMMENTS
-
+        """Verify candidate filters use inclusive start and exclusive end."""
         ts_start = 1700000000
         ts_end = 1700086400
 
-        # Simulate the filter construction from get_best_stories
-        filters = [
-            f"created_at_i>={ts_start}",
-            f"points>{ALGOLIA_MIN_POINTS}",
-            f"num_comments>={MIN_STORY_COMMENTS}",
-        ]
-        filters.append(f"created_at_i<{ts_end}")
+        filters = build_candidate_filters(ts_start, ts_end)
 
-        filter_str = ",".join(filters)
+        assert f"created_at_i>={ts_start}" in filters
+        assert f"created_at_i<{ts_end}" in filters
+        assert f"created_at_i>{ts_start}" not in filters
 
-        # Check inclusive start
-        assert f"created_at_i>={ts_start}" in filter_str
-        # Check exclusive end (to prevent overlap)
-        assert f"created_at_i<{ts_end}" in filter_str
-        # Should NOT have exclusive start
-        assert f"created_at_i>{ts_start}" not in filter_str
+    def test_filter_comment_gate_matches_config(self):
+        filters = build_candidate_filters(1700000000, 1700086400)
+
+        if MIN_CANDIDATE_COMMENTS > 0:
+            assert f"num_comments>={MIN_CANDIDATE_COMMENTS}" in filters
+        else:
+            assert all("num_comments" not in f for f in filters)
 
 
 class TestWinTargetCalculation:

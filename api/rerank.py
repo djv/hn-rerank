@@ -64,6 +64,7 @@ from api.constants import (  # noqa: E402
     CLUSTER_AGGLOMERATIVE_METRIC,
     CLUSTER_REFINE_ITERS,
     CLUSTER_SPECTRAL_NEIGHBORS,
+    FRESHNESS_ENABLED,
     FRESHNESS_HALF_LIFE_HOURS,
     FRESHNESS_MAX_BOOST,
     HN_SCORE_NORMALIZATION_CAP,
@@ -96,6 +97,7 @@ from api.constants import (  # noqa: E402
     MAX_CLUSTER_SIZE,
     MIN_CLUSTERS,
     MIN_SAMPLES_PER_CLUSTER,
+    POSITIVE_RECENCY_HALF_LIFE_DAYS,
     RANKING_DIVERSITY_LAMBDA,
     RANKING_DIVERSITY_LAMBDA_CLASSIFIER,
     RANKING_HN_WEIGHT,
@@ -107,6 +109,9 @@ from api.constants import (  # noqa: E402
     KNN_MAXSIM_WEIGHT,
     CLASSIFIER_K_FEAT,
     CLASSIFIER_NEG_SAMPLE_WEIGHT,
+    CLASSIFIER_USE_CENTROID_FEATURE,
+    CLASSIFIER_USE_POS_KNN_FEATURE,
+    CLASSIFIER_USE_NEG_KNN_FEATURE,
     SIMILARITY_MIN,
     TEXT_CONTENT_MAX_TOKENS,
 )
@@ -114,6 +119,39 @@ from api.llm_utils import build_payload  # noqa: E402
 from api.models import RankResult, Story, StoryDict, StoryForTldr  # noqa: E402
 
 logger = logging.getLogger(__name__)
+
+
+def compute_recency_weights(
+    timestamps: Sequence[int | float],
+    *,
+    half_life_seconds: float = POSITIVE_RECENCY_HALF_LIFE_DAYS * 24 * 3600,
+    now: float | None = None,
+) -> NDArray[np.float32] | None:
+    """Return exponential recency weights aligned to the input timestamp order."""
+    if not timestamps:
+        return None
+    current_time = time.time() if now is None else now
+    times = np.array(timestamps, dtype=np.float32)
+    ages = current_time - times
+    return np.exp(-ages * np.log(2) / half_life_seconds).astype(np.float32)
+
+
+def _combine_classifier_features(
+    *,
+    centroid_feature: NDArray[np.float32],
+    pos_knn_feature: NDArray[np.float32],
+    neg_knn_feature: NDArray[np.float32],
+) -> NDArray[np.float32]:
+    columns: list[NDArray[np.float32]] = []
+    if CLASSIFIER_USE_CENTROID_FEATURE:
+        columns.append(centroid_feature.reshape(-1, 1))
+    if CLASSIFIER_USE_POS_KNN_FEATURE:
+        columns.append(pos_knn_feature.reshape(-1, 1))
+    if CLASSIFIER_USE_NEG_KNN_FEATURE:
+        columns.append(neg_knn_feature.reshape(-1, 1))
+    if not columns:
+        return np.zeros((len(centroid_feature), 0), dtype=np.float32)
+    return np.hstack(columns).astype(np.float32)
 
 
 class GroqQuotaError(RuntimeError):
@@ -190,7 +228,33 @@ class ONNXEmbeddingModel:
             f"{model_dir}/model.onnx", providers=providers
         )
         self.model_id: str = "bge-base-en-v1.5"
-        self._lock = threading.Lock()
+        # Hugging Face fast tokenizers mutate internal padding/truncation state per call,
+        # so tokenizer access must be serialized across threads.
+        self._tokenizer_lock = threading.Lock()
+        self._input_names: list[str] = [node.name for node in self.session.get_inputs()]
+
+    def truncate_to_token_budget(
+        self, text: str, max_tokens: int
+    ) -> tuple[str, bool]:
+        """Truncate text to token budget using tokenizer in a thread-safe way."""
+        with self._tokenizer_lock:
+            encoded = self.tokenizer(
+                text,
+                truncation=True,
+                max_length=max_tokens,
+                return_tensors=None,
+            )
+            input_ids = encoded.get("input_ids", [])
+            if isinstance(input_ids, list) and input_ids:
+                token_ids = input_ids[0] if isinstance(input_ids[0], list) else input_ids
+            else:
+                return text, False
+
+            truncated = len(token_ids) >= max_tokens
+            if not truncated:
+                return text, False
+            truncated_text = self.tokenizer.decode(token_ids, skip_special_tokens=True)
+            return truncated_text, True
 
     def encode(
         self,
@@ -207,7 +271,7 @@ class ONNXEmbeddingModel:
                 progress_callback(i, total_items)
 
             batch: list[str] = texts[i : i + batch_size]
-            with self._lock:
+            with self._tokenizer_lock:
                 inputs: BatchEncoding = self.tokenizer(
                     batch,
                     padding=True,
@@ -220,15 +284,16 @@ class ONNXEmbeddingModel:
                     NDArray[np.int64], inputs["attention_mask"].astype(np.int64, copy=True)
                 )
 
-                input_names: list[str] = [node.name for node in self.session.get_inputs()]
                 ort_inputs: dict[str, NDArray[np.int64]] = {
-                    k: v.astype(np.int64) for k, v in inputs.items() if k in input_names
+                    k: v.astype(np.int64) for k, v in inputs.items() if k in self._input_names
                 }
 
-                outputs = self.session.run(None, ort_inputs)
-                last_hidden_state: NDArray[np.float32] = cast(
-                    NDArray[np.float32], outputs[0]
-                )
+            # InferenceSession.run is thread-safe; keep it outside tokenizer lock
+            # so embedding inference can run in parallel across callers.
+            outputs = self.session.run(None, ort_inputs)
+            last_hidden_state: NDArray[np.float32] = cast(
+                NDArray[np.float32], outputs[0]
+            )
 
             # Mean Pooling
             mask_expanded: NDArray[np.float64] = np.expand_dims(
@@ -303,26 +368,11 @@ def _get_embeddings_with_model(
     truncated_count = 0
     processed_texts: list[str] = []
 
-    def _truncate_to_token_budget(text: str) -> tuple[str, bool]:
-        encoded = model.tokenizer(
-            text,
-            truncation=True,
-            max_length=TEXT_CONTENT_MAX_TOKENS,
-            return_tensors=None,
-        )
-        input_ids = encoded.get("input_ids", [])
-        if isinstance(input_ids, list) and input_ids:
-            token_ids = input_ids[0] if isinstance(input_ids[0], list) else input_ids
-        else:
-            return text, False
-
-        truncated = len(token_ids) >= TEXT_CONTENT_MAX_TOKENS
-        if not truncated:
-            return text, False
-        return model.tokenizer.decode(token_ids, skip_special_tokens=True), True
     for t in texts:
         text = f"{prefix}{t}"
-        truncated_text, was_truncated = _truncate_to_token_budget(text)
+        truncated_text, was_truncated = model.truncate_to_token_budget(
+            text, TEXT_CONTENT_MAX_TOKENS
+        )
         if was_truncated:
             truncated_count += 1
         processed_texts.append(truncated_text)
@@ -2018,7 +2068,11 @@ def rank_stories(
                 else:
                     f_knn_neg = np.zeros(len(embs))
 
-                return np.column_stack([f_centroid, f_knn_pos, f_knn_neg]).astype(np.float32)
+                return _combine_classifier_features(
+                    centroid_feature=f_centroid.astype(np.float32),
+                    pos_knn_feature=f_knn_pos.astype(np.float32),
+                    neg_knn_feature=f_knn_neg.astype(np.float32),
+                )
 
             pos_derived = _derived_features(
                 X_pos, X_pos, X_neg, centroids, k_feat, k_neg_feat,
@@ -2028,13 +2082,18 @@ def rank_stories(
                 X_neg, X_pos, X_neg, centroids, k_feat, k_neg_feat,
                 exclude_self_neg=True,
             )
-            train_derived = np.vstack([pos_derived, neg_derived])
-            X_train = np.hstack([X_train, train_derived])
+            if pos_derived.shape[1] > 0:
+                train_derived = np.vstack([pos_derived, neg_derived])
+                X_train = np.hstack([X_train, train_derived])
 
             cand_derived = _derived_features(
                 cand_emb, X_pos, X_neg, centroids, k_feat, k_neg_feat,
             )
-            cand_features = np.hstack([cand_emb, cand_derived])
+            cand_features = (
+                np.hstack([cand_emb, cand_derived])
+                if cand_derived.shape[1] > 0
+                else cand_emb
+            )
 
             clf = LogisticRegressionCV(
                 Cs=[0.01, 0.1, 1.0, 10.0],
@@ -2197,12 +2256,13 @@ def rank_stories(
 
         # 8. Freshness boost (exponential decay)
         # Newer stories get a boost; score halves every FRESHNESS_HALF_LIFE_HOURS
-        freshness: NDArray[np.float64] = np.power(
-            2.0, -ages_hours / FRESHNESS_HALF_LIFE_HOURS
-        )
-        freshness = np.clip(freshness, 0.0, 1.0)
-        freshness_boost = (FRESHNESS_MAX_BOOST * freshness).astype(np.float32)
-        hybrid_scores = hybrid_scores + freshness_boost
+        if FRESHNESS_ENABLED and FRESHNESS_MAX_BOOST > 0:
+            freshness: NDArray[np.float64] = np.power(
+                2.0, -ages_hours / FRESHNESS_HALF_LIFE_HOURS
+            )
+            freshness = np.clip(freshness, 0.0, 1.0)
+            freshness_boost = (FRESHNESS_MAX_BOOST * freshness).astype(np.float32)
+            hybrid_scores = hybrid_scores + freshness_boost
 
         # RSS stories use semantic score only (no HN score or freshness)
         if np.any(rss_mask):

@@ -37,6 +37,7 @@ clusters.html
 .pki/
 .rodney/
 checkpoints/
+archive/models/
 onnx_model_backup*/
 onnx_model_*backup*/
 cluster_name_debug.json

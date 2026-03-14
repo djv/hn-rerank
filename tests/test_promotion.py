@@ -10,6 +10,7 @@ from promote_stable_params import (
     _collect_candidates,
     _is_stable,
     _latest_optuna_json,
+    _load_optuna_result,
     _parse_seed_list,
     _render_promoted_toml,
     _resolved_params,
@@ -47,7 +48,9 @@ def test_score_metrics_penalizes_variance():
         "recall@50_std": 0.01,
     }
     noisy = {**stable, "mrr_std": 0.20, "ndcg@10_std": 0.20, "ndcg@30_std": 0.20, "recall@50_std": 0.20}
-    assert _score_metrics(stable) > _score_metrics(noisy)
+    assert _score_metrics(stable, std_penalty=0.5) > _score_metrics(
+        noisy, std_penalty=0.5
+    )
 
 
 def test_collect_candidates_dedups_identical_param_sets():
@@ -59,6 +62,52 @@ def test_collect_candidates_dedups_identical_param_sets():
     candidates = _collect_candidates(runs)
     assert len(candidates) == 1
     assert candidates[0][1] == params
+
+
+def test_collect_candidates_uses_top_k_candidates_per_seed():
+    runs = [
+        SeedRun(
+            seed=42,
+            run_dir="a",
+            json_path="a.json",
+            best_score=0.1,
+            best_params={"x": 1.0},
+            candidate_params=({"x": 1.0}, {"x": 2.0}),
+        )
+    ]
+    candidates = _collect_candidates(runs)
+    assert len(candidates) == 2
+    assert candidates[0][0] == "seed_42_top1"
+    assert candidates[1][0] == "seed_42_top2"
+
+
+def test_load_optuna_result_reads_top_trials(tmp_path):
+    payload = {
+        "best_score": 0.3,
+        "best_params": {"x": 1, "junk": "x"},
+        "top_trials": [
+            {"number": 7, "value": 0.3, "params": {"x": 1, "junk": "x"}},
+            {"number": 8, "value": 0.2, "params": {"x": 2}},
+            {"number": 9, "value": 0.1, "params": {"x": 3}},
+        ],
+    }
+    path = tmp_path / "optuna_result.json"
+    path.write_text(json.dumps(payload))
+
+    best_score, best_params, candidate_params = _load_optuna_result(path, top_k_per_seed=2)
+    assert best_score == 0.3
+    assert best_params == {"x": 1.0}
+    assert candidate_params == [{"x": 1.0}, {"x": 2.0}]
+
+
+def test_load_optuna_result_falls_back_to_best_when_no_top_trials(tmp_path):
+    payload = {"best_score": 0.2, "best_params": {"x": 4}}
+    path = tmp_path / "optuna_result.json"
+    path.write_text(json.dumps(payload))
+
+    _, best_params, candidate_params = _load_optuna_result(path, top_k_per_seed=3)
+    assert best_params == {"x": 4.0}
+    assert candidate_params == [{"x": 4.0}]
 
 
 def test_is_stable_true_when_gain_consistent():

@@ -302,6 +302,26 @@ def test_select_ranked_results_enforces_two_to_one_hn_to_rss_mix():
     assert hn_count == 4
 
 
+def test_select_ranked_results_no_longer_prioritizes_cluster_coverage():
+    cands = [
+        Story(id=1, title="HN 0", url=None, score=0, time=1, text_content=""),
+        Story(id=2, title="HN 1", url=None, score=0, time=1, text_content=""),
+        Story(id=3, title="HN 2", url=None, score=0, time=1, text_content=""),
+    ]
+    ranked = [_mk_rank(0, 0.99), _mk_rank(1, 0.98), _mk_rank(2, 0.97)]
+
+    selected = select_ranked_results(
+        ranked,
+        cands,
+        cluster_labels=np.array([0, 1], dtype=np.int32),
+        cluster_names={0: "Alpha", 1: "Beta"},
+        cand_cluster_map={0: 0, 1: 0, 2: 1},
+        count=2,
+    )
+
+    assert [result.index for result in selected] == [0, 1]
+
+
 def test_select_ranked_results_allows_more_rss_when_hn_insufficient():
     cands = [
         Story(id=-(i + 1), title=f"RSS {i}", url=None, score=0, time=1, text_content="")

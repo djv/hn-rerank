@@ -47,10 +47,12 @@ EMBEDDING_CACHE_DIR = ".cache/embeddings"
 CLUSTER_EMBEDDING_CACHE_DIR = ".cache/embeddings_cluster"
 EMBEDDING_CACHE_MAX_FILES = 20000
 STORY_CACHE_DIR = ".cache/stories"
+STORY_CACHE_VERSION = "v2"
 USER_CACHE_DIR = ".cache/user"
 STORY_CACHE_TTL = 86400
 USER_CACHE_TTL = 120  # 2 minutes
 CANDIDATE_CACHE_DIR = ".cache/candidates"
+CANDIDATE_CACHE_VERSION = "v2"
 CANDIDATE_CACHE_TTL_SHORT = 1800  # 30 minutes
 CANDIDATE_CACHE_TTL_LONG = 604800  # 1 week
 CANDIDATE_CACHE_TTL_ARCHIVE = 7776000  # 90 days
@@ -83,8 +85,10 @@ RSS_PER_FEED_LIMIT = 5
 # Inference
 DEFAULT_EMBEDDING_BATCH_SIZE = 8
 EMBEDDING_MIN_CLIP = 1e-9
-EMBEDDING_MODEL_VERSION = "v10-tuned"  # Fine-tuned on 218 triplets (96% accuracy)
-CLUSTER_EMBEDDING_MODEL_VERSION = "v10-tuned"
+# Current live ONNX artifact timestamped 2026-01-31. Exact checkpoint label is
+# not confirmed, so keep a neutral version id for cache invalidation/provenance.
+EMBEDDING_MODEL_VERSION = "prod-2026-01-31"
+CLUSTER_EMBEDDING_MODEL_VERSION = "prod-2026-01-31"
 CLUSTER_EMBEDDING_MODEL_DIR = "onnx_model"
 
 # Similarity Bounds
@@ -118,8 +122,13 @@ ADAPTIVE_HN_THRESHOLD_YOUNG = _get("adaptive_hn", "threshold_young", 5.837956984
 ADAPTIVE_HN_THRESHOLD_OLD = _get("adaptive_hn", "threshold_old", 50.1201376639)
 
 # Freshness Decay
+FRESHNESS_ENABLED = _get("freshness", "enabled", True)
 FRESHNESS_HALF_LIFE_HOURS = _get("freshness", "half_life_hours", 66.0122091339)
 FRESHNESS_MAX_BOOST = _get("freshness", "max_boost", 0.0411369570)
+
+# Positive-signal Recency Weighting
+POSITIVE_RECENCY_ENABLED = _get("recency", "enabled", True)
+POSITIVE_RECENCY_HALF_LIFE_DAYS = _get("recency", "half_life_days", 90.0)
 
 # Semantic Scoring
 SEMANTIC_MAXSIM_WEIGHT = _get("semantic", "maxsim_weight", 0.95)
@@ -133,6 +142,9 @@ HN_SCORE_NORMALIZATION_CAP = _get("adaptive_hn", "score_normalization_cap", 1392
 # Classifier Tuning
 CLASSIFIER_K_FEAT = _get("classifier", "k_feat", 5)
 CLASSIFIER_NEG_SAMPLE_WEIGHT = _get("classifier", "neg_sample_weight", 1.6984260758)
+CLASSIFIER_USE_CENTROID_FEATURE = _get("classifier", "use_centroid_feature", True)
+CLASSIFIER_USE_POS_KNN_FEATURE = _get("classifier", "use_pos_knn_feature", True)
+CLASSIFIER_USE_NEG_KNN_FEATURE = _get("classifier", "use_neg_knn_feature", True)
 
 # Clustering
 CLUSTER_ALGORITHM = "spectral"  # "spectral", "agglomerative", or "kmeans"
@@ -141,7 +153,8 @@ CLUSTER_AGGLOMERATIVE_METRIC = "cosine"
 CLUSTER_SPECTRAL_NEIGHBORS = 15
 
 # Comment Pool
-MIN_STORY_COMMENTS = 20  # Filter in Algolia query + fetch validation
+MIN_STORY_COMMENTS = 20  # Historical threshold kept for tests/tuning context
+MIN_CANDIDATE_COMMENTS = 0  # 0 = do not prefilter candidates by comment count
 MAX_COMMENTS_COLLECTED = 200  # Increased for richer signal
 TOP_COMMENTS_FOR_RANKING = 12  # Aligned with 512-token limit (Title + ~10-12 comments)
 TOP_COMMENTS_FOR_UI = 10

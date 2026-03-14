@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import asyncio
 import hashlib
-import html
 import json
 import logging
-import re
 import time
 import calendar
 from datetime import datetime, UTC
@@ -17,16 +14,12 @@ from xml.etree import ElementTree as ET
 
 import httpx
 import feedparser
-import trafilatura
-from bs4 import BeautifulSoup
-from bs4.element import Tag
 
 from api.cache_utils import atomic_write_json, evict_old_cache_files
+from api.content import compose_story_text, enrich_stories_with_full_text, strip_html
 from api.url_utils import normalize_url
 from api.constants import (
-    EXTERNAL_REQUEST_SEMAPHORE,
     RSS_EXTRA_FEEDS,
-    RSS_ARTICLE_CACHE_TTL,
     RSS_CACHE_DIR,
     RSS_CACHE_MAX_FILES,
     RSS_FEED_CACHE_TTL,
@@ -39,62 +32,10 @@ logger = logging.getLogger(__name__)
 RSS_CACHE_PATH: Path = Path(RSS_CACHE_DIR)
 RSS_CACHE_PATH.mkdir(parents=True, exist_ok=True)
 
-ARTICLE_SEM: asyncio.Semaphore = asyncio.Semaphore(EXTERNAL_REQUEST_SEMAPHORE)
-
 
 def _write_cache_json(path: Path, data: dict[str, object] | Sequence[object]) -> None:
     atomic_write_json(path, data)
     evict_old_cache_files(RSS_CACHE_PATH, "*.json", RSS_CACHE_MAX_FILES)
-
-
-def _load_cached_text(path: Path, ttl: int) -> str | None:
-    if path.exists() and (time.time() - path.stat().st_mtime) < ttl:
-        try:
-            raw = json.loads(path.read_text())
-            if isinstance(raw, dict):
-                text = raw.get("text")
-                if isinstance(text, str):
-                    return text
-        except Exception:
-            return None
-    return None
-
-
-def _cache_text(path: Path, text: str) -> None:
-    _write_cache_json(path, {"text": text})
-
-
-def _strip_html(txt: str) -> str:
-    if not txt:
-        return ""
-    clean = BeautifulSoup(txt, "html.parser").get_text(" ", strip=True)
-    clean = html.unescape(clean)
-    clean = re.sub(r"\s+([.,;:!?])", r"\1", clean)
-    clean = re.sub(r"\s+", " ", clean).strip()
-    return clean
-
-
-def _fallback_extract_text(html_text: str) -> str:
-    if not html_text:
-        return ""
-    soup = BeautifulSoup(html_text, "html.parser")
-    for tag in soup(["script", "style", "noscript", "header", "footer", "nav", "aside"]):
-        tag.decompose()
-
-    article = soup.find("article")
-    target: Tag | BeautifulSoup
-    if isinstance(article, Tag):
-        target = article
-    elif isinstance(soup.body, Tag):
-        target = soup.body
-    else:
-        target = soup
-
-    text = target.get_text(" ", strip=True)
-    text = html.unescape(text)
-    text = re.sub(r"\s+([.,;:!?])", r"\1", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
 
 
 def _parse_date(text: str) -> int | None:
@@ -183,8 +124,8 @@ def _parse_feed_entries(
         if ts < min_ts:
             continue
 
-        text = _strip_html(str(summary))
-        text_content = f"{title}. {text}".strip()
+        text = strip_html(str(summary))
+        text_content = compose_story_text(title=title, article_text=text)
         story = Story(
             id=_make_story_id(feed_url, link, title),
             title=title,
@@ -204,66 +145,6 @@ def _parse_feed_entries(
 def _cache_path(prefix: str, key: str) -> Path:
     digest = hashlib.sha256(key.encode()).hexdigest()
     return RSS_CACHE_PATH / f"{prefix}-{digest}.json"
-
-
-async def _fetch_full_text(client: httpx.AsyncClient, url: str) -> str:
-    if not url:
-        return ""
-    cache_path = _cache_path("article", url)
-    cached = _load_cached_text(cache_path, RSS_ARTICLE_CACHE_TTL)
-    if cached is not None:
-        return cached
-    try:
-        resp = await client.get(url, follow_redirects=True)
-    except Exception as e:
-        logger.debug(f"Failed to fetch article {url}: {e}")
-        return ""
-    if resp.status_code != 200 or not resp.text:
-        return ""
-    content_type = (resp.headers.get("content-type") or "").lower()
-    if "html" not in content_type:
-        return ""
-    extracted = trafilatura.extract(
-        resp.text,
-        url=url,
-        include_comments=False,
-        include_tables=False,
-        favor_precision=True,
-    )
-    if not extracted:
-        extracted = _fallback_extract_text(resp.text)
-    clean = _strip_html(extracted)
-    if not clean:
-        return ""
-    _cache_text(cache_path, clean)
-    return clean
-
-
-async def _enrich_stories_with_full_text(
-    client: httpx.AsyncClient, stories: list[Story]
-) -> None:
-    if not stories:
-        return
-
-    tasks: list[tuple[Story, asyncio.Task[str]]] = []
-    for story in stories:
-        if not story.url:
-            continue
-
-        async def _wrapped_fetch(url: str) -> str:
-            async with ARTICLE_SEM:
-                return await _fetch_full_text(client, url)
-
-        tasks.append((story, asyncio.create_task(_wrapped_fetch(story.url))))
-
-    for story, task in tasks:
-        try:
-            full_text = await task
-        except Exception as e:
-            logger.debug(f"Failed to fetch full text for {story.url}: {e}")
-            continue
-        if full_text:
-            story.text_content = f"{story.title}. {full_text}".strip()
 
 
 def _load_cached_urls(path: Path, ttl: int) -> list[str] | None:
@@ -362,6 +243,6 @@ async def fetch_rss_stories(
                 stories.append(story)
 
         if fetch_full_content and stories:
-            await _enrich_stories_with_full_text(client, stories)
+            await enrich_stories_with_full_text(client, stories)
 
         return stories

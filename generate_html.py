@@ -34,6 +34,7 @@ from api.constants import (
     KNN_NEIGHBORS,
     MAX_CLUSTERS,
     MAX_USER_STORIES,
+    POSITIVE_RECENCY_ENABLED,
     SEMANTIC_MATCH_THRESHOLD,
 )
 
@@ -248,7 +249,7 @@ def get_relative_time(timestamp: int) -> str:
 
 
 def format_match_percent(score: float) -> int:
-    """Clamp match percent for display."""
+    """Clamp a similarity-like score in [0, 1] to a display percentage."""
     return max(0, min(100, int(round(score * 100))))
 
 
@@ -309,33 +310,12 @@ def select_ranked_results(
     cand_cluster_map: dict[int, int],
     count: int,
 ) -> list[RankResult]:
-    """Select a diversified, ranked subset of results with RSS quota."""
+    """Select a ranked subset of results with RSS quota."""
     if not ranked:
         return []
 
-    selected_results: list[RankResult] = []
-    used_indices: set[int] = set()
-    seen_clusters: set[int] = set()
-
-    if cluster_names:
-        for result in ranked:
-            cid = get_cluster_id_for_result(result, cluster_labels, cand_cluster_map)
-            if cid != -1 and cid not in seen_clusters:
-                selected_results.append(result)
-                seen_clusters.add(cid)
-                used_indices.add(result.index)
-                if len(selected_results) >= count:
-                    break
-            if len(seen_clusters) >= len(cluster_names):
-                break
-
-    for result in ranked:
-        if len(selected_results) >= count:
-            break
-        if result.index in used_indices:
-            continue
-        selected_results.append(result)
-        used_indices.add(result.index)
+    selected_results: list[RankResult] = list(ranked[:count])
+    used_indices: set[int] = {result.index for result in selected_results}
 
     def is_rss_result(res: RankResult) -> bool:
         return cands[res.index].id < 0
@@ -648,6 +628,10 @@ async def main() -> None:
         parser.set_defaults(**config_defaults)
     args: argparse.Namespace = parser.parse_args()
 
+    # Scheduled/automated runs may set this env var to hard-disable TL;DR generation.
+    if os.environ.get("HN_RERANK_FORCE_NO_TLDR") == "1":
+        args.no_tldr = True
+
     if args.debug_clusters:
         logging.basicConfig(
             level=logging.INFO,
@@ -787,6 +771,10 @@ async def main() -> None:
         )
         progress.update(e_task, description="[green][+] Preferences embedded.")
 
+        positive_weights: NDArray[np.float32] | None = None
+        if POSITIVE_RECENCY_ENABLED:
+            positive_weights = rerank.compute_recency_weights([s.time for s in pos_stories])
+
         cluster_emb: NDArray[np.float32] | None = None
         if pos_stories:
             ce_task: TaskID = progress.add_task(
@@ -810,7 +798,9 @@ async def main() -> None:
         if cluster_source is not None and len(cluster_source) > 0:
             cl_task: TaskID = progress.add_task("[cyan]Clustering interests...", total=1)
             cluster_centroids, cluster_labels = rerank.cluster_interests_with_labels(
-                cluster_source, n_clusters=args.clusters
+                cluster_source,
+                positive_weights,
+                n_clusters=args.clusters,
             )
             progress.update(
                 cl_task, completed=1, description="[green][+] Interests clustered."
@@ -934,6 +924,7 @@ async def main() -> None:
             cands,
             p_emb,
             n_emb,
+            positive_weights=positive_weights,
             use_classifier=args.use_classifier,
             use_contrastive=args.contrastive,
             knn_k=args.knn,
@@ -992,7 +983,8 @@ async def main() -> None:
 
         return StoryDisplay(
             id=s.id,
-            match_percent=format_match_percent(result.hybrid_score),
+            # UI "match %" should reflect semantic similarity, not blended ranking utility.
+            match_percent=format_match_percent(result.knn_score),
             cluster_name=cluster_name,
             points=s.score,
             time_ago=get_relative_time(s.time),
@@ -1073,6 +1065,10 @@ async def main() -> None:
                 completed=len(stories_data),
                 description="[green][+] LLM content generated.",
             )
+    else:
+        # Hard guard: never render TL;DR blocks when disabled.
+        for sd in stories_data:
+            sd.tldr = ""
 
     print("[*] Generating HTML...")
 

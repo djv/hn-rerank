@@ -116,6 +116,30 @@ class TestBuildRangesNarrowing:
         assert _build_ranges(None, "core") == _DEFAULTS_CORE
         assert _build_ranges(None, "full") == _DEFAULTS_FULL
 
+    def test_integer_ranges_do_not_collapse_after_int_cast(self):
+        ranges = _build_ranges(
+            {
+                "knn_k": 1.0,
+                "classifier_k_feat": 5.0,
+            },
+            "cat_relevance",
+        )
+
+        knn_lo, knn_hi = int(ranges["knn_k"][0]), int(ranges["knn_k"][1])
+        clf_lo, clf_hi = (
+            int(ranges["classifier_k_feat"][0]),
+            int(ranges["classifier_k_feat"][1]),
+        )
+
+        assert knn_lo < knn_hi
+        assert clf_lo < clf_hi
+
+    def test_out_of_range_integer_prev_uses_default_range(self):
+        ranges = _build_ranges({"classifier_k_feat": 0.0, "knn_k": 10.0}, "cat_relevance")
+
+        assert ranges["classifier_k_feat"] == _DEFAULTS_FULL["classifier_k_feat"]
+        assert ranges["knn_k"] == _DEFAULTS_FULL["knn_k"]
+
 
 # ---------------------------------------------------------------------------
 # _parse_last_log

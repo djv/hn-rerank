@@ -10,45 +10,20 @@ import math
 import os
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
 
 import numpy as np
 
 from evaluate_quality import RankingEvaluator
-import api.rerank
-from api.constants import (
-    ADAPTIVE_HN_THRESHOLD_YOUNG,
-    ADAPTIVE_HN_WEIGHT_MIN,
-    CLASSIFIER_K_FEAT,
-    CLASSIFIER_NEG_SAMPLE_WEIGHT,
-    CLUSTER_OUTLIER_SIMILARITY_THRESHOLD,
-    CLUSTER_SPECTRAL_NEIGHBORS,
-    DEFAULT_CLUSTER_COUNT,
-    FRESHNESS_HALF_LIFE_HOURS,
-    FRESHNESS_MAX_BOOST,
-    HN_SCORE_NORMALIZATION_CAP,
-    KNN_MAXSIM_WEIGHT,
-    KNN_NEIGHBORS,
-    KNN_SIGMOID_K,
-    RANKING_DIVERSITY_LAMBDA,
-    RANKING_NEGATIVE_WEIGHT,
+from tuning_common import (
+    patched_rerank_params,
+    render_promoted_toml as _render_promoted_toml,
+    resolve_params as _resolved_params,
+    score_metrics as _score_metrics,
 )
-from optimize_hyperparameters import (
-    ADAPTIVE_HN_DELTA,
-    HN_THRESHOLD_GAP,
-    _derive_classifier_diversity_lambda,
-)
-
-OBJECTIVE_WEIGHTS: dict[str, float] = {
-    "mrr": 0.30,
-    "ndcg@10": 0.35,
-    "ndcg@30": 0.20,
-    "recall@50": 0.15,
-}
 
 Z_95: float = 1.96
 
@@ -60,6 +35,7 @@ class SeedRun:
     json_path: str
     best_score: float
     best_params: dict[str, float]
+    candidate_params: tuple[dict[str, float], ...] = field(default_factory=tuple)
 
 
 @dataclass
@@ -99,7 +75,21 @@ def _latest_optuna_json(log_dir: Path) -> Path | None:
     return files[0] if files else None
 
 
-def _load_optuna_result(path: Path) -> tuple[float, dict[str, float]]:
+def _parse_numeric_params(raw: Any) -> dict[str, float]:
+    if not isinstance(raw, dict):
+        return {}
+    parsed: dict[str, float] = {}
+    for key, value in raw.items():
+        try:
+            parsed[str(key)] = float(value)
+        except (TypeError, ValueError):
+            continue
+    return parsed
+
+
+def _load_optuna_result(
+    path: Path, top_k_per_seed: int
+) -> tuple[float, dict[str, float], list[dict[str, float]]]:
     payload = json.loads(path.read_text())
     if not isinstance(payload, dict):
         raise ValueError(f"Invalid payload in {path}")
@@ -111,23 +101,33 @@ def _load_optuna_result(path: Path) -> tuple[float, dict[str, float]]:
     if not isinstance(best_params, dict):
         raise ValueError(f"Missing best_params in {path}")
 
-    parsed: dict[str, float] = {}
-    for key, value in best_params.items():
-        try:
-            parsed[str(key)] = float(value)
-        except (TypeError, ValueError):
-            continue
-    if not parsed:
+    parsed_best = _parse_numeric_params(best_params)
+    if not parsed_best:
         raise ValueError(f"No numeric best_params in {path}")
-    return float(best_score), parsed
 
+    top_candidates: list[dict[str, float]] = []
+    top_trials = payload.get("top_trials")
+    if isinstance(top_trials, list):
+        for item in top_trials:
+            if len(top_candidates) >= top_k_per_seed:
+                break
+            if not isinstance(item, dict):
+                continue
+            parsed = _parse_numeric_params(item.get("params"))
+            if parsed:
+                top_candidates.append(parsed)
 
-def _score_metrics(metrics: dict[str, float]) -> float:
-    mean = sum(w * metrics.get(k, 0.0) for k, w in OBJECTIVE_WEIGHTS.items())
-    std = sum(w * metrics.get(f"{k}_std", 0.0) for k, w in OBJECTIVE_WEIGHTS.items())
-    return float(mean - 0.5 * std)
+    # Backward compatibility: older optimizer JSON contains only best_params.
+    if not top_candidates:
+        top_candidates.append(parsed_best)
 
+    # Ensure best params are always represented in the candidate set.
+    seen_signatures = {_param_signature(c) for c in top_candidates}
+    best_sig = _param_signature(parsed_best)
+    if best_sig not in seen_signatures:
+        top_candidates.append(parsed_best)
 
+    return float(best_score), parsed_best, top_candidates
 def _param_signature(params: dict[str, float]) -> str:
     return json.dumps(params, sort_keys=True, separators=(",", ":"))
 
@@ -135,149 +135,37 @@ def _param_signature(params: dict[str, float]) -> str:
 def _collect_candidates(seed_runs: list[SeedRun]) -> list[tuple[str, dict[str, float]]]:
     unique: dict[str, tuple[str, dict[str, float]]] = {}
     for run in seed_runs:
-        name = f"seed_{run.seed}"
-        sig = _param_signature(run.best_params)
-        if sig not in unique:
-            unique[sig] = (name, run.best_params)
+        ranked_params = list(run.candidate_params) or [run.best_params]
+        for rank, params in enumerate(ranked_params, start=1):
+            name = f"seed_{run.seed}_top{rank}"
+            sig = _param_signature(params)
+            if sig not in unique:
+                unique[sig] = (name, params)
     return list(unique.values())
-
-
-def _resolved_params(params: dict[str, float]) -> dict[str, dict[str, float]]:
-    diversity_lambda = float(params.get("diversity_lambda", RANKING_DIVERSITY_LAMBDA))
-    ranking = {
-        "negative_weight": float(params.get("neg_weight", RANKING_NEGATIVE_WEIGHT)),
-        "diversity_lambda": diversity_lambda,
-        "diversity_lambda_classifier": float(
-            _derive_classifier_diversity_lambda(diversity_lambda)
-        ),
-    }
-
-    adaptive_hn_min = float(params.get("adaptive_hn_min", ADAPTIVE_HN_WEIGHT_MIN))
-    threshold_young = float(
-        params.get("hn_threshold_young", ADAPTIVE_HN_THRESHOLD_YOUNG)
-    )
-    adaptive_hn = {
-        "weight_min": adaptive_hn_min,
-        "weight_max": adaptive_hn_min + ADAPTIVE_HN_DELTA,
-        "threshold_young": threshold_young,
-        "threshold_old": threshold_young + HN_THRESHOLD_GAP,
-        "score_normalization_cap": float(
-            params.get("hn_score_cap", HN_SCORE_NORMALIZATION_CAP)
-        ),
-    }
-
-    freshness = {
-        "half_life_hours": float(
-            params.get("freshness_half_life", FRESHNESS_HALF_LIFE_HOURS)
-        ),
-        "max_boost": float(params.get("freshness_boost", FRESHNESS_MAX_BOOST)),
-    }
-
-    semantic = {
-        "knn_sigmoid_k": float(params.get("knn_sigmoid_k", KNN_SIGMOID_K)),
-        "knn_maxsim_weight": float(params.get("knn_maxsim_weight", KNN_MAXSIM_WEIGHT)),
-        "knn_neighbors": int(round(float(params.get("knn_k", KNN_NEIGHBORS)))),
-    }
-
-    classifier = {
-        "k_feat": int(round(float(params.get("classifier_k_feat", CLASSIFIER_K_FEAT)))),
-        "neg_sample_weight": float(
-            params.get("classifier_neg_sample_weight", CLASSIFIER_NEG_SAMPLE_WEIGHT)
-        ),
-    }
-
-    return {
-        "ranking": ranking,
-        "adaptive_hn": adaptive_hn,
-        "freshness": freshness,
-        "semantic": semantic,
-        "classifier": classifier,
-    }
-
-
-def _render_promoted_toml(resolved: dict[str, dict[str, float]]) -> str:
-    ranking = resolved["ranking"]
-    adaptive_hn = resolved["adaptive_hn"]
-    freshness = resolved["freshness"]
-    semantic = resolved["semantic"]
-    classifier = resolved["classifier"]
-
-    return (
-        "# Auto-generated promoted params.\n"
-        "# Merge this into hn_rerank.toml under [hn_rerank.*] sections.\n\n"
-        "[hn_rerank.ranking]\n"
-        f"negative_weight = {ranking['negative_weight']:.10f}\n"
-        f"diversity_lambda = {ranking['diversity_lambda']:.10f}\n"
-        f"diversity_lambda_classifier = {ranking['diversity_lambda_classifier']:.10f}\n\n"
-        "[hn_rerank.adaptive_hn]\n"
-        f"weight_min = {adaptive_hn['weight_min']:.10f}\n"
-        f"weight_max = {adaptive_hn['weight_max']:.10f}\n"
-        f"threshold_young = {adaptive_hn['threshold_young']:.10f}\n"
-        f"threshold_old = {adaptive_hn['threshold_old']:.10f}\n"
-        f"score_normalization_cap = {adaptive_hn['score_normalization_cap']:.10f}\n\n"
-        "[hn_rerank.freshness]\n"
-        f"half_life_hours = {freshness['half_life_hours']:.10f}\n"
-        f"max_boost = {freshness['max_boost']:.10f}\n\n"
-        "[hn_rerank.semantic]\n"
-        f"knn_sigmoid_k = {semantic['knn_sigmoid_k']:.10f}\n"
-        f"knn_maxsim_weight = {semantic['knn_maxsim_weight']:.10f}\n"
-        f"knn_neighbors = {semantic['knn_neighbors']}\n\n"
-        "[hn_rerank.classifier]\n"
-        f"k_feat = {classifier['k_feat']}\n"
-        f"neg_sample_weight = {classifier['neg_sample_weight']:.10f}\n"
-    )
-
-
 def _eval_candidate_scores(
     evaluator: RankingEvaluator,
     params: dict[str, float],
     eval_seeds: list[int],
     cv_folds: int,
+    std_penalty: float,
 ) -> list[float]:
-    resolved = _resolved_params(params)
-    ranking = resolved["ranking"]
-    adaptive_hn = resolved["adaptive_hn"]
-    freshness = resolved["freshness"]
-    semantic = resolved["semantic"]
-    classifier = resolved["classifier"]
-
-    patch_kwargs: dict[str, Any] = {
-        "ADAPTIVE_HN_WEIGHT_MIN": adaptive_hn["weight_min"],
-        "ADAPTIVE_HN_WEIGHT_MAX": adaptive_hn["weight_max"],
-        "ADAPTIVE_HN_THRESHOLD_YOUNG": adaptive_hn["threshold_young"],
-        "ADAPTIVE_HN_THRESHOLD_OLD": adaptive_hn["threshold_old"],
-        "HN_SCORE_NORMALIZATION_CAP": adaptive_hn["score_normalization_cap"],
-        "FRESHNESS_MAX_BOOST": freshness["max_boost"],
-        "FRESHNESS_HALF_LIFE_HOURS": freshness["half_life_hours"],
-        "KNN_SIGMOID_K": semantic["knn_sigmoid_k"],
-        "KNN_MAXSIM_WEIGHT": semantic["knn_maxsim_weight"],
-        "KNN_NEIGHBORS": semantic["knn_neighbors"],
-        "RANKING_DIVERSITY_LAMBDA_CLASSIFIER": ranking[
-            "diversity_lambda_classifier"
-        ],
-        "CLASSIFIER_K_FEAT": classifier["k_feat"],
-        "CLASSIFIER_NEG_SAMPLE_WEIGHT": classifier["neg_sample_weight"],
-        # Kept fixed by optimization script; keep parity.
-        "CLUSTER_OUTLIER_SIMILARITY_THRESHOLD": CLUSTER_OUTLIER_SIMILARITY_THRESHOLD,
-        "DEFAULT_CLUSTER_COUNT": DEFAULT_CLUSTER_COUNT,
-        "CLUSTER_SPECTRAL_NEIGHBORS": CLUSTER_SPECTRAL_NEIGHBORS,
-    }
-
     scores: list[float] = []
-    with patch.multiple(api.rerank, **patch_kwargs):
+    with patched_rerank_params(params) as resolved:
+        ranking = resolved["ranking"]
+        semantic = resolved["semantic"]
         for seed in eval_seeds:
             np.random.seed(seed)
             metrics = evaluator.evaluate_cv(
                 n_folds=cv_folds,
-                diversity=ranking["diversity_lambda"],
-                knn=semantic["knn_neighbors"],
-                neg_weight=ranking["negative_weight"],
+                diversity=float(ranking["diversity_lambda"]),
+                knn=int(semantic["knn_neighbors"]),
+                neg_weight=float(ranking["negative_weight"]),
                 use_classifier=True,
                 k_metrics=[10, 30, 50],
                 report_each=False,
                 parallel=False,
             )
-            scores.append(_score_metrics(metrics))
+            scores.append(_score_metrics(metrics, std_penalty=std_penalty))
     return scores
 
 
@@ -314,6 +202,9 @@ def _run_optuna_seed(
     cache_only: bool,
     baseline: str,
     guard_tolerance: float,
+    std_penalty: float,
+    warm_start_log_dir: Path | None,
+    top_k_per_seed: int,
 ) -> SeedRun:
     cmd = [
         sys.executable,
@@ -325,6 +216,8 @@ def _run_optuna_seed(
         space,
         "--cv-folds",
         str(cv_folds),
+        "--std-penalty",
+        str(std_penalty),
         "--candidates",
         str(candidates),
         "--n-jobs",
@@ -338,6 +231,8 @@ def _run_optuna_seed(
         "--guard-tolerance",
         str(guard_tolerance),
     ]
+    if warm_start_log_dir is not None:
+        cmd.extend(["--warm-start-log-dir", str(warm_start_log_dir)])
     if cache_only:
         cmd.append("--cache-only")
 
@@ -348,13 +243,16 @@ def _run_optuna_seed(
     json_path = _latest_optuna_json(log_dir)
     if json_path is None:
         raise RuntimeError(f"No Optuna JSON output found in {log_dir}")
-    best_score, best_params = _load_optuna_result(json_path)
+    best_score, best_params, candidate_params = _load_optuna_result(
+        json_path, top_k_per_seed=top_k_per_seed
+    )
     return SeedRun(
         seed=seed,
         run_dir=str(log_dir),
         json_path=str(json_path),
         best_score=best_score,
         best_params=best_params,
+        candidate_params=tuple(candidate_params),
     )
 
 
@@ -380,7 +278,13 @@ async def main() -> int:
         default="core",
         help="Optuna space to search",
     )
-    parser.add_argument("--cv-folds", type=int, default=5, help="CV folds")
+    parser.add_argument("--cv-folds", type=int, default=8, help="CV folds")
+    parser.add_argument(
+        "--std-penalty",
+        type=float,
+        default=0.5,
+        help="Penalty multiplier for weighted metric std in objective",
+    )
     parser.add_argument("--candidates", type=int, default=500, help="Candidate pool size")
     parser.add_argument("--n-jobs", type=int, default=4, help="Optuna parallel workers")
     parser.add_argument(
@@ -400,6 +304,11 @@ async def main() -> int:
         help="Root directory for promotion runs/artifacts",
     )
     parser.add_argument(
+        "--warm-start-run",
+        default=None,
+        help="Optional previous promotion run dir for per-seed warm start (expects seed_<n>/ subdirs)",
+    )
+    parser.add_argument(
         "--min-improvement",
         type=float,
         default=0.005,
@@ -412,20 +321,33 @@ async def main() -> int:
         help="Max seeds allowed to regress vs baseline",
     )
     parser.add_argument(
+        "--top-k-per-seed",
+        type=int,
+        default=5,
+        help="Evaluate top-K Optuna trials per seed as promotion candidates",
+    )
+    parser.add_argument(
         "--cache-only",
         action="store_true",
         help="Use cached data only for all evaluation/loading",
     )
     args = parser.parse_args()
+    if args.top_k_per_seed < 1:
+        raise SystemExit("--top-k-per-seed must be >= 1")
 
     seeds = _parse_seed_list(args.seeds)
+    warm_start_root = Path(args.warm_start_run) if args.warm_start_run else None
+    if warm_start_root is not None and not warm_start_root.exists():
+        raise SystemExit(f"Warm-start run directory not found: {warm_start_root}")
+
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_root = Path(args.run_root) / f"{ts}_{args.space}_{len(seeds)}seeds"
     run_root.mkdir(parents=True, exist_ok=True)
 
     print(
         f"[promotion] start username={args.username} space={args.space} "
-        f"seeds={seeds} trials={args.trials} cv={args.cv_folds}"
+        f"seeds={seeds} trials={args.trials} cv={args.cv_folds} "
+        f"std_penalty={args.std_penalty} top_k_per_seed={args.top_k_per_seed}"
     )
     print(f"[promotion] artifacts: {run_root}")
 
@@ -434,6 +356,19 @@ async def main() -> int:
         seed_dir = run_root / f"seed_{seed}"
         seed_dir.mkdir(parents=True, exist_ok=True)
         print(f"[promotion] optimize seed={seed} log_dir={seed_dir}")
+        warm_seed_dir: Path | None = None
+        if warm_start_root is not None:
+            candidate_warm_dir = warm_start_root / f"seed_{seed}"
+            if candidate_warm_dir.exists():
+                warm_seed_dir = candidate_warm_dir
+                print(
+                    f"[promotion] seed={seed} warm_start_log_dir={warm_seed_dir}"
+                )
+            else:
+                print(
+                    f"[promotion] seed={seed} no warm start dir at "
+                    f"{candidate_warm_dir}; using default ranges"
+                )
         run = _run_optuna_seed(
             username=args.username,
             seed=seed,
@@ -446,11 +381,14 @@ async def main() -> int:
             cache_only=args.cache_only,
             baseline=args.baseline,
             guard_tolerance=args.guard_tolerance,
+            std_penalty=args.std_penalty,
+            warm_start_log_dir=warm_seed_dir,
+            top_k_per_seed=args.top_k_per_seed,
         )
         seed_runs.append(run)
         print(
             f"[promotion] seed={seed} best_score={run.best_score:.6f} "
-            f"json={run.json_path}"
+            f"json={run.json_path} candidates={len(run.candidate_params)}"
         )
 
     evaluator = RankingEvaluator(args.username)
@@ -471,6 +409,7 @@ async def main() -> int:
         params={},
         eval_seeds=seeds,
         cv_folds=args.cv_folds,
+        std_penalty=args.std_penalty,
     )
     baseline_mean = float(np.mean(baseline_scores))
     print(
@@ -479,6 +418,7 @@ async def main() -> int:
     )
 
     candidates = _collect_candidates(seed_runs)
+    print(f"[promotion] evaluating {len(candidates)} unique candidate param sets")
     summaries: list[CandidateSummary] = []
     for name, params in candidates:
         scores = _eval_candidate_scores(
@@ -486,6 +426,7 @@ async def main() -> int:
             params=params,
             eval_seeds=seeds,
             cv_folds=args.cv_folds,
+            std_penalty=args.std_penalty,
         )
         deltas = [score - base for score, base in zip(scores, baseline_scores, strict=True)]
         stable, mean_delta, std_delta, lcb_delta_95, regressions = _is_stable(
@@ -523,7 +464,10 @@ async def main() -> int:
         "seeds": seeds,
         "trials_per_seed": args.trials,
         "cv_folds": args.cv_folds,
+        "std_penalty": args.std_penalty,
+        "top_k_per_seed": args.top_k_per_seed,
         "candidates": args.candidates,
+        "candidate_count": len(candidates),
         "baseline_scores": baseline_scores,
         "baseline_mean": baseline_mean,
         "seed_runs": [
@@ -533,6 +477,8 @@ async def main() -> int:
                 "json_path": run.json_path,
                 "best_score": run.best_score,
                 "best_params": run.best_params,
+                "candidate_param_count": len(run.candidate_params),
+                "candidate_params": list(run.candidate_params),
             }
             for run in seed_runs
         ],

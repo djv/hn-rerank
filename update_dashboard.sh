@@ -46,7 +46,8 @@ if [ -z "$UV_BIN" ]; then
     exit 1
 fi
 
-if "$UV_BIN" run generate_html.py --no-tldr >> "$LOG_FILE" 2>&1; then
+echo "[$(date)] Running: HN_RERANK_FORCE_NO_TLDR=1 $UV_BIN run generate_html.py --no-tldr" >> "$LOG_FILE"
+if HN_RERANK_FORCE_NO_TLDR=1 "$UV_BIN" run generate_html.py --no-tldr >> "$LOG_FILE" 2>&1; then
     echo "[$(date)] Update successful." >> "$LOG_FILE"
 else
     echo "[$(date)] Update FAILED. Check $LOG_FILE for details." >> "$LOG_FILE"

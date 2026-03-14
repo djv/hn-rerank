@@ -17,9 +17,11 @@ from api.cache_utils import atomic_write_json, evict_old_cache_files
 from api.constants import (
     ALGOLIA_DEFAULT_DAYS,
     ALGOLIA_MIN_POINTS,
+    CANDIDATE_CACHE_VERSION,
     EXTERNAL_REQUEST_SEMAPHORE,
     MIN_COMMENT_LENGTH,
-    MIN_STORY_COMMENTS,
+    MIN_CANDIDATE_COMMENTS,
+    STORY_CACHE_VERSION,
     TOP_COMMENTS_FOR_RANKING,
     TOP_COMMENTS_FOR_UI,
     STORY_CACHE_DIR,
@@ -33,6 +35,7 @@ from api.constants import (
     RSS_OPML_URL,
     RSS_PER_FEED_LIMIT,
 )
+from api.content import ARTICLE_SEM, compose_story_text, fetch_full_text, strip_html
 from api.models import Story, StoryDict
 from api.rss import fetch_rss_stories
 from api.url_utils import normalize_url
@@ -103,6 +106,8 @@ class AlgoliaItem(TypedDict, total=False):
     type: str
     title: str
     url: str
+    text: str
+    story_text: str
     points: int
     created_at_i: int
     children: list[AlgoliaComment]
@@ -123,6 +128,7 @@ class CommentScore(TypedDict):
 
 class CachedStory(TypedDict):
     ts: float
+    version: str
     story: StoryDict | None
 
 
@@ -179,10 +185,24 @@ async def fetch_story(
     allow_stale: bool = False,
 ) -> Story | None:
     cache_file: Path = CACHE_PATH / f"{sid}.json"
+
+    def cache_missing_story() -> None:
+        atomic_write_json(
+            cache_file,
+            {
+                "ts": time.time(),
+                "version": STORY_CACHE_VERSION,
+                "story": None,
+            },
+        )
+
     if cache_file.exists():
         try:
             data = cast(CachedStory, json.loads(cache_file.read_text()))
-            if allow_stale or time.time() - float(data["ts"]) < STORY_CACHE_TTL:
+            if (
+                data.get("version") == STORY_CACHE_VERSION
+                and (allow_stale or time.time() - float(data["ts"]) < STORY_CACHE_TTL)
+            ):
                 cached_story = data.get("story")
                 return (
                     Story.from_dict(cast(StoryDict, cached_story))
@@ -201,38 +221,49 @@ async def fetch_story(
             # Use Algolia API instead of scraping HN (avoids rate limits)
             resp: httpx.Response = await client.get(f"{ALGOLIA_BASE}/items/{sid}")
             if resp.status_code != 200:
-                atomic_write_json(cache_file, {"ts": time.time(), "story": None})
+                cache_missing_story()
                 return None
 
             item = cast(AlgoliaItem, resp.json())
 
             # Validate it's a story
             if item.get("type") != "story":
-                atomic_write_json(cache_file, {"ts": time.time(), "story": None})
+                cache_missing_story()
                 return None
 
             title = html.unescape(item.get("title", ""))
             url = item.get("url", "")
             score = item.get("points", 0) or 0
             created_at = item.get("created_at_i", 0) or 0
+            story_text = strip_html(
+                str(item.get("story_text") or item.get("text") or "")
+            )
 
             # Extract comments from nested structure
             children = item.get("children", [])
             all_comments = _extract_comments_recursive(children)
 
-            # Require minimum comments for meaningful signal
-            if len(all_comments) < MIN_STORY_COMMENTS:
-                atomic_write_json(cache_file, {"ts": time.time(), "story": None})
-                return None
-
             # Sort by score (position + depth penalty), lower = better
             all_comments.sort(key=lambda x: x["score"])
             selected = all_comments[:TOP_COMMENTS_FOR_RANKING]
-            top_for_rank = " ".join([c["text"] for c in selected])
             ui_comments = [c["text"] for c in selected[:TOP_COMMENTS_FOR_UI]]
 
-            # Use natural title weighting
-            title_context = f"{title}."
+            article_text = ""
+            if url:
+                async with ARTICLE_SEM:
+                    article_text = await fetch_full_text(client, url)
+
+            text_content = compose_story_text(
+                title=title,
+                self_text=story_text,
+                article_text=article_text,
+                comments=[c["text"] for c in selected],
+            )
+
+            if not text_content:
+                cache_missing_story()
+                return None
+
             story = Story(
                 id=sid,
                 title=title,
@@ -240,9 +271,13 @@ async def fetch_story(
                 score=score,
                 time=created_at,
                 comments=ui_comments,
-                text_content=f"{title_context} {top_for_rank}",
+                text_content=text_content,
             )
-            cache_payload: CachedStory = {"ts": time.time(), "story": story.to_dict()}
+            cache_payload: CachedStory = {
+                "ts": time.time(),
+                "version": STORY_CACHE_VERSION,
+                "story": story.to_dict(),
+            }
             atomic_write_json(cache_file, cache_payload)
             evict_old_cache_files(CACHE_PATH, "*.json", STORY_CACHE_MAX_FILES)
             return story
@@ -250,6 +285,17 @@ async def fetch_story(
             # Don't cache transient errors (network, etc)
             logger.debug(f"Failed to fetch story {sid}: {e}")
             return None
+
+
+def build_candidate_filters(ts_start: int, ts_end: int) -> list[str]:
+    filters = [
+        f"created_at_i>={ts_start}",
+        f"points>{ALGOLIA_MIN_POINTS}",
+    ]
+    if MIN_CANDIDATE_COMMENTS > 0:
+        filters.append(f"num_comments>={MIN_CANDIDATE_COMMENTS}")
+    filters.append(f"created_at_i<{ts_end}")
+    return filters
 
 
 async def get_best_stories(
@@ -333,7 +379,7 @@ async def get_best_stories(
             # For archive windows, ts_end is fixed/stable so we keep it
             key_suffix = f"{ts_start}" if is_live else f"{ts_start}-{ts_end}"
             cache_key = hashlib.md5(
-                f"{key_suffix}-{ALGOLIA_MIN_POINTS}-{MIN_STORY_COMMENTS}".encode()
+                f"{CANDIDATE_CACHE_VERSION}-{key_suffix}-{ALGOLIA_MIN_POINTS}-{MIN_CANDIDATE_COMMENTS}".encode()
             ).hexdigest()
 
             # TTL Logic:
@@ -365,15 +411,8 @@ async def get_best_stories(
                 )
                 fetch_count = min(max(win_target, 200), ALGOLIA_MAX_PER_QUERY)
 
-                # Construct filters
-                # Use >= for start to include boundary stories (prevents gaps between windows)
-                filters = [
-                    f"created_at_i>={ts_start}",
-                    f"points>{ALGOLIA_MIN_POINTS}",
-                    f"num_comments>={MIN_STORY_COMMENTS}",
-                ]
-                # Always add upper bound (< end) to prevent overlap and bound live window
-                filters.append(f"created_at_i<{ts_end}")
+                # Use >= for start to include boundary stories and < end to avoid overlap.
+                filters = build_candidate_filters(ts_start, ts_end)
 
                 params: dict[str, str | int] = {
                     "tags": "story",

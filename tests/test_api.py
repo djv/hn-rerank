@@ -1,6 +1,7 @@
 import pytest
 import numpy as np
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
+from api.constants import STORY_CACHE_VERSION
 from api.rerank import rank_stories
 from api.fetching import fetch_story
 from api.models import Story
@@ -27,7 +28,7 @@ async def test_fetch_story_cached():
         import time
 
         mock_file.read_text.return_value = json.dumps(
-            {"ts": time.time(), "story": story}
+            {"ts": time.time(), "version": STORY_CACHE_VERSION, "story": story}
         )
 
         res = await fetch_story(mock_client, sid)
@@ -47,6 +48,36 @@ async def test_fetch_story_network_error():
 
         res = await fetch_story(mock_client, 123)
         assert res is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_story_keeps_title_only_story():
+    mock_client = AsyncMock()
+    mock_response = Mock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "type": "story",
+        "title": "Title Only",
+        "url": "",
+        "points": 42,
+        "created_at_i": 1700000000,
+        "story_text": "",
+        "children": [],
+    }
+    mock_client.get.return_value = mock_response
+
+    with (
+        patch("api.fetching.CACHE_PATH") as mock_path,
+        patch("api.fetching.atomic_write_json"),
+        patch("api.fetching.evict_old_cache_files"),
+    ):
+        mock_path.__truediv__.return_value.exists.return_value = False
+
+        res = await fetch_story(mock_client, 123)
+
+    assert res is not None
+    assert res.title == "Title Only"
+    assert res.text_content == "Title Only."
 
 
 def test_rank_stories_basic():
@@ -125,3 +156,22 @@ def test_rank_stories_empty_positive_embeddings():
         result = results[0]
         assert result.max_sim_score == 0.0
         assert result.best_fav_index == -1
+
+
+def test_rank_stories_disables_freshness_boost_when_configured():
+    stories = [
+        Story(id=1, title="New", url=None, score=100, time=2000, text_content="New"),
+        Story(id=2, title="Old", url=None, score=100, time=1000, text_content="Old"),
+    ]
+    pos_emb = np.array([[1.0] * 768])
+    cand_emb = np.array([[1.0] * 768, [1.0] * 768])
+
+    with (
+        patch("api.rerank.get_embeddings", return_value=cand_emb),
+        patch("api.rerank.FRESHNESS_ENABLED", False),
+        patch("api.rerank.FRESHNESS_MAX_BOOST", 0.5),
+    ):
+        results = rank_stories(stories, pos_emb)
+
+    assert len(results) == 2
+    assert all(result.freshness_boost == 0.0 for result in results)

@@ -14,10 +14,10 @@ import sys
 from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import patch
 
 import optuna
 from optuna.trial import Trial
+from optuna.trial import TrialState
 from optuna.samplers import TPESampler
 from optuna.pruners import MedianPruner, NopPruner
 
@@ -36,30 +36,30 @@ def _ensure_joblib_settings() -> None:
 _ensure_joblib_settings()
 
 from evaluate_quality import RankingEvaluator, DEFAULT_GUARD_METRICS, _guard_metrics, _load_baseline  # noqa: E402
-import api.rerank  # noqa: E402
 from api.constants import (  # noqa: E402
     ADAPTIVE_HN_THRESHOLD_YOUNG,
     ADAPTIVE_HN_WEIGHT_MIN,
     CLASSIFIER_K_FEAT,
     CLASSIFIER_NEG_SAMPLE_WEIGHT,
-    CLUSTER_OUTLIER_SIMILARITY_THRESHOLD,
-    DEFAULT_CLUSTER_COUNT,
-    CLUSTER_SPECTRAL_NEIGHBORS,
     FRESHNESS_MAX_BOOST,
     FRESHNESS_HALF_LIFE_HOURS,
     HN_SCORE_NORMALIZATION_CAP,
     KNN_NEIGHBORS,
     KNN_SIGMOID_K,
     KNN_MAXSIM_WEIGHT,
+    POSITIVE_RECENCY_ENABLED,
     RANKING_DIVERSITY_LAMBDA,
     RANKING_NEGATIVE_WEIGHT,
 )
+import tuning_common as _tuning_common  # noqa: E402
 
-# --- Derived-parameter constants ---
-# Gap between young/old HN thresholds (hours). Top trials: 20–80h, default 42h.
-HN_THRESHOLD_GAP: float = 42.0
-# Delta between adaptive HN min/max. Top trials: 0.01–0.06, default ≈0.033.
-ADAPTIVE_HN_DELTA: float = 0.035
+HN_THRESHOLD_GAP = _tuning_common.HN_THRESHOLD_GAP
+ADAPTIVE_HN_DELTA = _tuning_common.ADAPTIVE_HN_DELTA
+_derive_adaptive_hn_max = _tuning_common.derive_adaptive_hn_max
+_derive_classifier_diversity_lambda = _tuning_common.derive_classifier_diversity_lambda
+_derive_hn_threshold_old = _tuning_common.derive_hn_threshold_old
+patched_rerank_params = _tuning_common.patched_rerank_params
+_score_metrics = _tuning_common.score_metrics
 
 # Configure logging to suppress verbose output during optimization
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -136,7 +136,7 @@ def _build_ranges(
         "knn_maxsim_weight": (0.25, 0.65),
         "hn_threshold_young": (4.0, 16.0),
         "hn_score_cap": (120.0, 1600.0),
-        "classifier_k_feat": (2, 9),
+        "classifier_k_feat": (1, 9),
         "classifier_neg_sample_weight": (0.7, 2.0),
     }
     spaces: dict[str, set[str]] = {
@@ -157,6 +157,7 @@ def _build_ranges(
     if tuned_keys is None:
         raise ValueError(f"Unknown space: {space}")
     defaults = {k: v for k, v in full_defaults.items() if k in tuned_keys}
+    integer_keys = {"knn_k", "classifier_k_feat"}
 
     if prev is None:
         return defaults
@@ -166,28 +167,22 @@ def _build_ranges(
     for key, (lo, hi) in defaults.items():
         if key in prev:
             v = prev[key]
+            if v < lo or v > hi:
+                narrowed[key] = (lo, hi)
+                continue
+            if key in integer_keys:
+                center = int(round(v))
+                radius = max(1, int((hi - lo) * 0.2))
+                narrowed[key] = (
+                    float(max(lo, center - radius)),
+                    float(min(hi, center + radius)),
+                )
+                continue
             span = (hi - lo) * 0.2
             narrowed[key] = (max(lo, v - span), min(hi, v + span))
         else:
             narrowed[key] = (lo, hi)
     return narrowed
-
-
-def _derive_classifier_diversity_lambda(diversity_lambda: float) -> float:
-    """Classifier diversity ≥ 0.30 floor (runtime already does this max)."""
-    return max(diversity_lambda, 0.30)
-
-
-def _derive_hn_threshold_old(hn_threshold_young: float) -> float:
-    """Old threshold = young + fixed gap."""
-    return hn_threshold_young + HN_THRESHOLD_GAP
-
-
-def _derive_adaptive_hn_max(adaptive_hn_base: float) -> float:
-    """Adaptive HN max = base + fixed delta."""
-    return adaptive_hn_base + ADAPTIVE_HN_DELTA
-
-
 def _load_enqueued_params(path: str | None) -> list[dict[str, float]]:
     """Load optional list of parameter dicts to enqueue before optimization."""
     if not path:
@@ -226,6 +221,12 @@ async def main():
     parser.add_argument("--n-jobs", type=int, default=4, help="Number of parallel Optuna workers (threads)")
     parser.add_argument("--no-prune", action="store_true", help="Disable Optuna pruning")
     parser.add_argument("--cv-folds", type=int, default=3, help="Number of CV folds")
+    parser.add_argument(
+        "--std-penalty",
+        type=float,
+        default=0.5,
+        help="Penalty multiplier for weighted metric std in objective",
+    )
     parser.add_argument("--log-dir", type=str, default=".", help="Directory for log files")
     parser.add_argument(
         "--warm-start-log-dir",
@@ -245,7 +246,15 @@ async def main():
         default="core",
         help="Search-space size: core tunes fewer high-impact knobs; full tunes all non-cluster knobs.",
     )
+    parser.add_argument(
+        "--top-trials-json-limit",
+        type=int,
+        default=50,
+        help="How many top completed trials to include in output JSON",
+    )
     args = parser.parse_args()
+    if args.top_trials_json_limit < 1:
+        raise SystemExit("--top-trials-json-limit must be >= 1")
 
     # Timestamped log filename
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -270,7 +279,7 @@ async def main():
         holdout=0.2,
         candidate_count=args.candidates,
         use_classifier=True,
-        use_recency=True,
+        use_recency=POSITIVE_RECENCY_ENABLED,
         cache_only=args.cache_only,
         allow_stale=args.cache_only,
     )
@@ -283,34 +292,15 @@ async def main():
 
     baseline = _load_baseline(args.baseline)
 
-    def score_metrics(metrics: dict[str, float]) -> float:
-        # Reweighted objective: MRR + NDCG@10 + NDCG@30 + Recall@50
-        # Variance penalty discourages configs that are unstable across folds
-        mean = (
-            0.30 * metrics.get("mrr", 0.0)
-            + 0.35 * metrics.get("ndcg@10", 0.0)
-            + 0.20 * metrics.get("ndcg@30", 0.0)
-            + 0.15 * metrics.get("recall@50", 0.0)
-        )
-        std = (
-            0.30 * metrics.get("mrr_std", 0.0)
-            + 0.35 * metrics.get("ndcg@10_std", 0.0)
-            + 0.20 * metrics.get("ndcg@30_std", 0.0)
-            + 0.15 * metrics.get("recall@50_std", 0.0)
-        )
-        return mean - 0.5 * std
-
     # 2. Define Objective Function
     def objective(trial: Trial) -> float:
         r = ranges  # alias
 
-        # Ranking weights — classifier diversity derived from diversity_lambda
         diversity_lambda = (
             trial.suggest_float("diversity_lambda", *r["diversity_lambda"])
             if "diversity_lambda" in r
             else RANKING_DIVERSITY_LAMBDA
         )
-        classifier_diversity_lambda = _derive_classifier_diversity_lambda(diversity_lambda)
         neg_weight = (
             trial.suggest_float("neg_weight", *r["neg_weight"])
             if "neg_weight" in r
@@ -324,15 +314,11 @@ async def main():
         else:
             knn_k = KNN_NEIGHBORS
 
-        # Adaptive HN Weighting — max derived from min + fixed delta
         adaptive_hn_min = (
             trial.suggest_float("adaptive_hn_min", *r["adaptive_hn_min"])
             if "adaptive_hn_min" in r
             else ADAPTIVE_HN_WEIGHT_MIN
         )
-        adaptive_hn_max = _derive_adaptive_hn_max(adaptive_hn_min)
-
-        # Freshness
         freshness_boost = (
             trial.suggest_float("freshness_boost", *r["freshness_boost"])
             if "freshness_boost" in r
@@ -344,7 +330,6 @@ async def main():
             else FRESHNESS_HALF_LIFE_HOURS
         )
 
-        # Semantic scoring (k-NN path)
         knn_sigmoid_k = (
             trial.suggest_float("knn_sigmoid_k", *r["knn_sigmoid_k"])
             if "knn_sigmoid_k" in r
@@ -356,22 +341,17 @@ async def main():
             else KNN_MAXSIM_WEIGHT
         )
 
-        # Adaptive HN thresholds — old derived from young + fixed gap
         hn_threshold_young = (
             trial.suggest_float("hn_threshold_young", *r["hn_threshold_young"])
             if "hn_threshold_young" in r
             else ADAPTIVE_HN_THRESHOLD_YOUNG
         )
-        hn_threshold_old = _derive_hn_threshold_old(hn_threshold_young)
-
-        # HN score normalization
         hn_score_cap = (
             trial.suggest_float("hn_score_cap", *r["hn_score_cap"])
             if "hn_score_cap" in r
             else HN_SCORE_NORMALIZATION_CAP
         )
 
-        # Classifier tuning
         if "classifier_k_feat" in r:
             k_feat_lo, k_feat_hi = int(r["classifier_k_feat"][0]), int(r["classifier_k_feat"][1])
             classifier_k_feat = trial.suggest_int("classifier_k_feat", k_feat_lo, k_feat_hi)
@@ -383,33 +363,24 @@ async def main():
             else CLASSIFIER_NEG_SAMPLE_WEIGHT
         )
 
-        # Clustering (frozen to stable defaults to reduce search dimensionality)
-        cluster_outlier_threshold = CLUSTER_OUTLIER_SIMILARITY_THRESHOLD
-        cluster_count = DEFAULT_CLUSTER_COUNT
-        cluster_spectral_neighbors = CLUSTER_SPECTRAL_NEIGHBORS
+        trial_params = {
+            "diversity_lambda": diversity_lambda,
+            "neg_weight": neg_weight,
+            "knn_k": knn_k,
+            "adaptive_hn_min": adaptive_hn_min,
+            "freshness_boost": freshness_boost,
+            "freshness_half_life": freshness_half_life,
+            "knn_sigmoid_k": knn_sigmoid_k,
+            "knn_maxsim_weight": knn_maxsim_weight,
+            "hn_threshold_young": hn_threshold_young,
+            "hn_score_cap": hn_score_cap,
+            "classifier_k_feat": classifier_k_feat,
+            "classifier_neg_sample_weight": classifier_neg_sample_weight,
+        }
 
-        # Patch the constants in api.rerank
-        with patch.multiple(
-            api.rerank,
-            ADAPTIVE_HN_WEIGHT_MIN=adaptive_hn_min,
-            ADAPTIVE_HN_WEIGHT_MAX=adaptive_hn_max,
-            ADAPTIVE_HN_THRESHOLD_YOUNG=hn_threshold_young,
-            ADAPTIVE_HN_THRESHOLD_OLD=hn_threshold_old,
-            HN_SCORE_NORMALIZATION_CAP=hn_score_cap,
-            FRESHNESS_MAX_BOOST=freshness_boost,
-            FRESHNESS_HALF_LIFE_HOURS=freshness_half_life,
-            KNN_SIGMOID_K=knn_sigmoid_k,
-            KNN_MAXSIM_WEIGHT=knn_maxsim_weight,
-            KNN_NEIGHBORS=knn_k,
-            RANKING_DIVERSITY_LAMBDA_CLASSIFIER=classifier_diversity_lambda,
-            CLASSIFIER_K_FEAT=classifier_k_feat,
-            CLASSIFIER_NEG_SAMPLE_WEIGHT=classifier_neg_sample_weight,
-            CLUSTER_OUTLIER_SIMILARITY_THRESHOLD=cluster_outlier_threshold,
-            DEFAULT_CLUSTER_COUNT=cluster_count,
-            CLUSTER_SPECTRAL_NEIGHBORS=cluster_spectral_neighbors,
-        ):
+        with patched_rerank_params(trial_params):
             def report_callback(step: int, interim_metrics: dict[str, float]) -> None:
-                score = score_metrics(interim_metrics)
+                score = _score_metrics(interim_metrics, std_penalty=args.std_penalty)
                 trial.report(score, step)
                 if trial.should_prune():
                     raise optuna.TrialPruned()
@@ -423,6 +394,14 @@ async def main():
                 k_metrics=[10, 30, 50],
                 report_each=False,
                 report_callback=report_callback,
+            )
+            trial.set_user_attr(
+                "cv_metrics",
+                {
+                    str(key): float(value)
+                    for key, value in metrics.items()
+                    if isinstance(value, (int, float))
+                },
             )
 
         line = (
@@ -444,7 +423,7 @@ async def main():
                 for msg in failures:
                     print(f"  - {msg}")
 
-        return score_metrics(metrics)
+        return _score_metrics(metrics, std_penalty=args.std_penalty)
 
     # 3. Run Optimization
     sampler = TPESampler(
@@ -472,7 +451,11 @@ async def main():
         for k, v in raw_params.items():
             if k not in ranges:
                 continue
-            enqueue_params[k] = int(v) if k in int_params else float(v)
+            lo, hi = ranges[k]
+            if k in int_params:
+                enqueue_params[k] = max(int(lo), min(int(hi), int(round(v))))
+            else:
+                enqueue_params[k] = max(lo, min(hi, float(v)))
         return enqueue_params
 
     enqueued_signatures: set[str] = set()
@@ -511,40 +494,13 @@ async def main():
 
     # Run final evaluation with best params to show all metrics
     best = study.best_params
-    best_diversity = float(best.get("diversity_lambda", RANKING_DIVERSITY_LAMBDA))
-    best_neg_weight = float(best.get("neg_weight", RANKING_NEGATIVE_WEIGHT))
-    best_knn = int(best.get("knn_k", KNN_NEIGHBORS))
-    best_adaptive_hn_min = float(best.get("adaptive_hn_min", ADAPTIVE_HN_WEIGHT_MIN))
-    best_hn_threshold_young = float(best.get("hn_threshold_young", ADAPTIVE_HN_THRESHOLD_YOUNG))
-    best_hn_score_cap = float(best.get("hn_score_cap", HN_SCORE_NORMALIZATION_CAP))
-    best_classifier_k_feat = int(best.get("classifier_k_feat", CLASSIFIER_K_FEAT))
-    best_classifier_neg_sample_weight = float(best.get("classifier_neg_sample_weight", CLASSIFIER_NEG_SAMPLE_WEIGHT))
-    best_classifier_div = _derive_classifier_diversity_lambda(best_diversity)
-    best_adaptive_hn_max = _derive_adaptive_hn_max(best_adaptive_hn_min)
-    best_hn_threshold_old = _derive_hn_threshold_old(best_hn_threshold_young)
-    with patch.multiple(
-        api.rerank,
-        ADAPTIVE_HN_WEIGHT_MIN=best_adaptive_hn_min,
-        ADAPTIVE_HN_WEIGHT_MAX=best_adaptive_hn_max,
-        ADAPTIVE_HN_THRESHOLD_YOUNG=best_hn_threshold_young,
-        ADAPTIVE_HN_THRESHOLD_OLD=best_hn_threshold_old,
-        HN_SCORE_NORMALIZATION_CAP=best_hn_score_cap,
-        FRESHNESS_MAX_BOOST=best.get("freshness_boost", FRESHNESS_MAX_BOOST),
-        FRESHNESS_HALF_LIFE_HOURS=best.get("freshness_half_life", FRESHNESS_HALF_LIFE_HOURS),
-        KNN_SIGMOID_K=best.get("knn_sigmoid_k", KNN_SIGMOID_K),
-        KNN_MAXSIM_WEIGHT=best.get("knn_maxsim_weight", KNN_MAXSIM_WEIGHT),
-        KNN_NEIGHBORS=best_knn,
-        RANKING_DIVERSITY_LAMBDA_CLASSIFIER=best_classifier_div,
-        CLASSIFIER_K_FEAT=best_classifier_k_feat,
-        CLASSIFIER_NEG_SAMPLE_WEIGHT=best_classifier_neg_sample_weight,
-        CLUSTER_OUTLIER_SIMILARITY_THRESHOLD=CLUSTER_OUTLIER_SIMILARITY_THRESHOLD,
-        DEFAULT_CLUSTER_COUNT=DEFAULT_CLUSTER_COUNT,
-        CLUSTER_SPECTRAL_NEIGHBORS=CLUSTER_SPECTRAL_NEIGHBORS,
-    ):
+    with patched_rerank_params(best) as resolved:
+        ranking = resolved["ranking"]
+        semantic = resolved["semantic"]
         final_metrics = evaluator.evaluate(
-            diversity=best_diversity,
-            knn=best_knn,
-            neg_weight=best_neg_weight,
+            diversity=float(ranking["diversity_lambda"]),
+            knn=int(semantic["knn_neighbors"]),
+            neg_weight=float(ranking["negative_weight"]),
             use_classifier=True,
             k_metrics=[10, 20, 30, 50]
         )
@@ -575,12 +531,34 @@ async def main():
 
     # Also write structured JSON for programmatic consumption
     json_path = log_path.with_suffix(".json")
+    completed_trials = [
+        trial
+        for trial in study.trials
+        if trial.state == TrialState.COMPLETE and trial.value is not None
+    ]
+    completed_trials.sort(key=lambda trial: float(trial.value), reverse=True)
+    top_trials = []
+    for trial in completed_trials[: args.top_trials_json_limit]:
+        entry = {
+            "number": int(trial.number),
+            "value": float(trial.value),
+            "params": trial.params,
+        }
+        cv_metrics = trial.user_attrs.get("cv_metrics")
+        if isinstance(cv_metrics, dict):
+            entry["cv_metrics"] = cv_metrics
+        top_trials.append(entry)
+
     json_path.write_text(json.dumps({
         "best_score": study.best_value,
         "best_params": study.best_params,
         "final_metrics": final_metrics,
         "n_trials": args.trials,
         "cv_folds": args.cv_folds,
+        "std_penalty": args.std_penalty,
+        "completed_trial_count": len(completed_trials),
+        "top_trials_limit": args.top_trials_json_limit,
+        "top_trials": top_trials,
     }, indent=2))
 
 
