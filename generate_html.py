@@ -5,14 +5,17 @@ import getpass
 import json
 import logging
 import os
+import re
 import sys
 import time
 import tomllib
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
 
+import httpx
 import numpy as np
+from bs4 import BeautifulSoup
 from numpy.typing import NDArray
 from jinja2 import Environment
 from markupsafe import Markup
@@ -101,6 +104,90 @@ def _load_config(argv: list[str]) -> tuple[dict[str, object], Path | None]:
         if isinstance(value, expected_type):
             config[key] = value
     return config, config_path
+
+
+def _extract_hn_dupe_target(page_html: str, sid: int) -> tuple[bool, int | None]:
+    """Return (is_dupe, target_story_id) from an HN item page."""
+    soup = BeautifulSoup(page_html, "html.parser")
+    titleline = soup.select_one("span.titleline")
+    if titleline is None or "[dupe]" not in titleline.get_text(" ", strip=True):
+        return False, None
+
+    for link in soup.select(".comment a[href]"):
+        href_value = link.get("href")
+        href = href_value if isinstance(href_value, str) else ""
+        match = re.search(r"(?:^|[?&])id=(\d+)", href)
+        if match is None:
+            continue
+        target_id = int(match.group(1))
+        if target_id != sid:
+            return True, target_id
+    return True, None
+
+
+async def _fetch_hn_dupe_target(
+    client: httpx.AsyncClient, sid: int
+) -> tuple[bool, int | None]:
+    try:
+        resp = await client.get(
+            "https://news.ycombinator.com/item",
+            params={"id": sid},
+        )
+        if resp.status_code != 200 or not resp.text:
+            return False, None
+        return _extract_hn_dupe_target(resp.text, sid)
+    except Exception as exc:
+        logging.debug("Failed to fetch HN dupe marker for %s: %s", sid, exc)
+        return False, None
+
+
+async def filter_top_ranked_hn_dupes(
+    ranked: list[RankResult],
+    cands: list[Story],
+    exclude_ids: set[int],
+    count: int,
+) -> list[RankResult]:
+    """Drop top-ranked HN duplicate submissions when the primary thread is already known."""
+    if not ranked:
+        return ranked
+
+    check_limit = min(len(ranked), max(20, count * 3))
+    checked_positions = [
+        pos
+        for pos, result in enumerate(ranked[:check_limit])
+        if cands[result.index].is_hn and cands[result.index].id > 0
+    ]
+    if not checked_positions:
+        return ranked
+
+    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+        dupe_info = await asyncio.gather(
+            *[
+                _fetch_hn_dupe_target(client, cands[ranked[pos].index].id)
+                for pos in checked_positions
+            ]
+        )
+
+    candidate_ids = {story.id for story in cands if story.id > 0}
+    checked_by_index = {
+        ranked[pos].index: info for pos, info in zip(checked_positions, dupe_info)
+    }
+
+    filtered: list[RankResult] = []
+    skipped = 0
+    for result in ranked:
+        info = checked_by_index.get(result.index)
+        if info is not None:
+            is_dupe, target_id = info
+            if is_dupe and (target_id is None or target_id in exclude_ids or target_id in candidate_ids):
+                skipped += 1
+                continue
+        filtered.append(result)
+
+    if skipped:
+        print(f"[+] Filtered {skipped} duplicate HN submissions from top-ranked results")
+    return filtered
+
 
 HTML_TEMPLATE: str = """
 <!DOCTYPE html>
@@ -257,7 +344,6 @@ def build_candidate_cluster_map(
     cands: list[Story],
     cluster_centroids: NDArray[np.float32] | None,
     threshold: float,
-    force_assign_rss: bool = False,
 ) -> dict[int, int]:
     """Assign candidates to clusters based on centroid similarity."""
     if cluster_centroids is None or not cands:
@@ -272,7 +358,7 @@ def build_candidate_cluster_map(
     cluster_map: dict[int, int] = {}
     for i in range(len(cands)):
         max_sim = float(np.max(sim_to_clusters[i]))
-        if max_sim >= threshold or (force_assign_rss and cands[i].id < 0):
+        if max_sim >= threshold:
             cluster_map[i] = int(np.argmax(sim_to_clusters[i]))
         else:
             cluster_map[i] = -1
@@ -310,69 +396,69 @@ def select_ranked_results(
     cand_cluster_map: dict[int, int],
     count: int,
 ) -> list[RankResult]:
-    """Select a ranked subset of results with RSS quota."""
+    """Select a ranked subset of results with an external-source quota."""
     if not ranked:
         return []
 
     selected_results: list[RankResult] = list(ranked[:count])
     used_indices: set[int] = {result.index for result in selected_results}
 
-    def is_rss_result(res: RankResult) -> bool:
-        return cands[res.index].id < 0
+    def is_external_result(res: RankResult) -> bool:
+        return cands[res.index].is_external
 
-    # Target 2:1 HN:RSS in the final list (best-effort under availability limits).
-    desired_rss: int = count // 3
-    available_rss = sum(1 for r in ranked if is_rss_result(r))
-    available_hn = len(ranked) - available_rss
-    min_rss = max(0, count - available_hn)
-    max_rss = min(count, available_rss)
-    target_rss = min(max(desired_rss, min_rss), max_rss)
+    # Target 2:1 HN:external in the final list (best-effort under availability limits).
+    desired_external: int = count // 3
+    available_external = sum(1 for r in ranked if is_external_result(r))
+    available_hn = len(ranked) - available_external
+    min_external = max(0, count - available_hn)
+    max_external = min(count, available_external)
+    target_external = min(max(desired_external, min_external), max_external)
 
-    rss_selected = sum(1 for r in selected_results if is_rss_result(r))
+    external_selected = sum(1 for r in selected_results if is_external_result(r))
 
-    if rss_selected < target_rss:
-        rss_candidates = [
-            r for r in ranked if is_rss_result(r) and r.index not in used_indices
+    if external_selected < target_external:
+        external_candidates = [
+            r for r in ranked if is_external_result(r) and r.index not in used_indices
         ]
-        hn_selected = [r for r in selected_results if not is_rss_result(r)]
+        hn_selected = [r for r in selected_results if not is_external_result(r)]
         hn_selected.sort(key=lambda r: r.hybrid_score)
-        for new_rss in rss_candidates:
-            if rss_selected >= target_rss or not hn_selected:
+        for new_external in external_candidates:
+            if external_selected >= target_external or not hn_selected:
                 break
             to_remove = hn_selected.pop(0)
             selected_results.remove(to_remove)
             used_indices.discard(to_remove.index)
-            selected_results.append(new_rss)
-            used_indices.add(new_rss.index)
-            rss_selected += 1
-    elif rss_selected > target_rss:
+            selected_results.append(new_external)
+            used_indices.add(new_external.index)
+            external_selected += 1
+    elif external_selected > target_external:
         hn_candidates = [
-            r for r in ranked if not is_rss_result(r) and r.index not in used_indices
+            r for r in ranked if not is_external_result(r) and r.index not in used_indices
         ]
-        rss_selected_items = [r for r in selected_results if is_rss_result(r)]
-        rss_selected_items.sort(key=lambda r: r.hybrid_score)
+        external_selected_items = [r for r in selected_results if is_external_result(r)]
+        external_selected_items.sort(key=lambda r: r.hybrid_score)
         for new_hn in hn_candidates:
-            if rss_selected <= target_rss or not rss_selected_items:
+            if external_selected <= target_external or not external_selected_items:
                 break
-            to_remove = rss_selected_items.pop(0)
+            to_remove = external_selected_items.pop(0)
             selected_results.remove(to_remove)
             used_indices.discard(to_remove.index)
             selected_results.append(new_hn)
             used_indices.add(new_hn.index)
-            rss_selected -= 1
+            external_selected -= 1
 
     selected_results.sort(key=lambda x: x.hybrid_score, reverse=True)
     return selected_results
 
 
 STORY_CARD_TEMPLATE: str = """
-<div class="story-card group{% if is_rss %} rss-story{% endif %}">
+<div class="story-card group{% if is_external %} rss-story{% endif %}">
     <div class="flex items-center gap-2 mb-0.5 flex-wrap">
         <span class="px-1.5 py-0.5 rounded bg-hn/10 text-hn text-[10px] font-bold">
             {{ score }}%
         </span>
-        {% if is_rss %}
-        <span class="rss-badge">RSS</span>
+        {% if source_badge %}
+        <span class="rss-badge">{{ source_badge }}</span>
         {% endif %}
         {% if cluster_name %}
         <span class="cluster-chip">{{ cluster_name }}</span>
@@ -404,7 +490,8 @@ def generate_story_html(story: StoryDisplay) -> str:
     link_url = story.url or story.hn_url or "#"
     return _STORY_TEMPLATE.render(
         score=story.match_percent,
-        is_rss=story.id < 0,
+        is_external=story.is_external,
+        source_badge=story.badge_label,
         cluster_name=story.cluster_name,
         points=story.points,
         time_ago=story.time_ago,
@@ -930,6 +1017,12 @@ async def main() -> None:
             knn_k=args.knn,
             progress_callback=rank_cb,
         )
+        ranked = await filter_top_ranked_hn_dupes(
+            ranked,
+            cands,
+            exclude_ids=exclude_ids,
+            count=args.count,
+        )
         progress.update(
             r_task, completed=100, description="[green][+] Reranking complete."
         )
@@ -939,7 +1032,6 @@ async def main() -> None:
         cands,
         cluster_centroids,
         CLUSTER_SIMILARITY_THRESHOLD,
-        force_assign_rss=True,
     )
 
     seen_urls: set[str] = set()
@@ -952,7 +1044,7 @@ async def main() -> None:
         url: str | None = s.url
         title: str = s.title
 
-        norm_url: str = normalize_url(url) if url else f"hn:{s.id}"
+        norm_url: str = normalize_url(url) if url else f"{s.source}:{s.id}"
         norm_title: str = title.lower().strip() if title else ""
 
         if norm_url in seen_urls or norm_title in seen_titles:
@@ -976,10 +1068,12 @@ async def main() -> None:
         cluster_name: str = resolve_cluster_name(
             cluster_names,
             cid,
-            allow_empty_fallback=(s.id < 0),
+            allow_empty_fallback=s.is_external,
         )
 
-        hn_url = f"https://news.ycombinator.com/item?id={s.id}" if s.id > 0 else None
+        discussion_url = s.discussion_url
+        if discussion_url is None and s.is_hn and s.id > 0:
+            discussion_url = f"https://news.ycombinator.com/item?id={s.id}"
 
         return StoryDisplay(
             id=s.id,
@@ -990,10 +1084,11 @@ async def main() -> None:
             time_ago=get_relative_time(s.time),
             url=s.url,
             title=s.title or "Untitled",
-            hn_url=hn_url,
+            hn_url=discussion_url,
             reason=reason,
             reason_url=reason_url,
             comments=list(s.comments),
+            source=s.source,
         )
 
     selected_results = select_ranked_results(
@@ -1004,8 +1099,11 @@ async def main() -> None:
         cand_cluster_map,
         args.count,
     )
-    rss_count = sum(1 for r in selected_results if cands[r.index].id < 0)
-    print(f"[+] Selected {rss_count}/{len(selected_results)} RSS stories.")
+    source_counts = Counter(cands[r.index].source for r in selected_results)
+    counts_summary = ", ".join(
+        f"{source}={count}" for source, count in sorted(source_counts.items())
+    )
+    print(f"[+] Selected sources: {counts_summary}")
 
     if args.debug_scores:
         debug_path = (
@@ -1019,9 +1117,10 @@ async def main() -> None:
             debug_rows.append(
                 {
                     "id": story.id,
+                    "source": story.source,
                     "title": story.title,
                     "url": story.url,
-                    "is_rss": story.id < 0,
+                    "is_external": story.is_external,
                     "hybrid_score": result.hybrid_score,
                     "semantic_score": result.semantic_score,
                     "hn_score": result.hn_score,
@@ -1091,11 +1190,9 @@ async def main() -> None:
             items = clusters[cid]
             stories_in_cluster: str = ""
             for story in items[:15]:  # Limit display
-                hn_url = (
-                    f"https://news.ycombinator.com/item?id={story.id}"
-                    if story.id > 0
-                    else None
-                )
+                hn_url = story.discussion_url
+                if hn_url is None and story.is_hn and story.id > 0:
+                    hn_url = f"https://news.ycombinator.com/item?id={story.id}"
                 link_url = story.url or hn_url or ""
                 stories_in_cluster += _CLUSTER_STORY_TEMPLATE.render(
                     hn_url=link_url,

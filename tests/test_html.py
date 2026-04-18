@@ -5,6 +5,7 @@ import numpy as np
 import generate_html
 from generate_html import (
     build_candidate_cluster_map,
+    filter_top_ranked_hn_dupes,
     generate_story_html,
     get_cluster_id_for_result,
     get_relative_time,
@@ -205,6 +206,7 @@ def test_generate_story_html_without_hn_url_hides_comment_link():
         reason="",
         reason_url="",
         comments=[],
+        source="rss",
     )
     html = generate_story_html(story)
     assert "RSS Story" in html
@@ -224,12 +226,35 @@ def test_generate_story_html_rss_badge():
         reason="",
         reason_url="",
         comments=[],
+        source="rss",
     )
     html = generate_story_html(story)
     assert "RSS" in html
 
 
-def test_build_candidate_cluster_map_force_assigns_rss(monkeypatch):
+def test_generate_story_html_external_comments_link():
+    story = StoryDisplay(
+        id=-7,
+        match_percent=80,
+        cluster_name="",
+        points=0,
+        time_ago="1h",
+        url="https://example.com/article",
+        title="Lobsters Story",
+        hn_url="https://lobste.rs/s/example/post",
+        reason="",
+        reason_url="",
+        comments=[],
+        source="lobsters",
+    )
+    html = generate_story_html(story)
+    assert 'href="https://example.com/article"' in html
+    assert 'href="https://lobste.rs/s/example/post"' in html
+    assert 'title="Comments"' in html
+    assert "Lobsters" in html
+
+
+def test_build_candidate_cluster_map_respects_threshold_for_external(monkeypatch):
     cands = [
         Story(
             id=-1,
@@ -238,6 +263,7 @@ def test_build_candidate_cluster_map_force_assigns_rss(monkeypatch):
             score=0,
             time=1,
             text_content="rss content",
+            source="rss",
         ),
         Story(
             id=123,
@@ -260,10 +286,9 @@ def test_build_candidate_cluster_map_force_assigns_rss(monkeypatch):
         cands,
         centroids,
         threshold=1.01,
-        force_assign_rss=True,
     )
 
-    assert cluster_map[0] == 0
+    assert cluster_map[0] == -1
     assert cluster_map[1] == -1
 
 
@@ -277,9 +302,43 @@ def _mk_rank(idx: int, score: float) -> RankResult:
     )
 
 
+@pytest.mark.asyncio
+async def test_filter_top_ranked_hn_dupes_skips_known_duplicate(monkeypatch):
+    cands = [
+        Story(id=20, title="Dupe", url="https://example.com/dupe", score=10, time=1, text_content=""),
+        Story(id=30, title="Keep", url="https://example.com/keep", score=9, time=1, text_content=""),
+        Story(id=-1, title="RSS", url="https://example.com/rss", score=0, time=1, text_content="", source="rss"),
+    ]
+    ranked = [_mk_rank(0, 0.99), _mk_rank(1, 0.98), _mk_rank(2, 0.97)]
+
+    async def fake_fetch(_client, sid: int) -> tuple[bool, int | None]:
+        if sid == 20:
+            return True, 10
+        return False, None
+
+    monkeypatch.setattr(generate_html, "_fetch_hn_dupe_target", fake_fetch)
+
+    filtered = await filter_top_ranked_hn_dupes(
+        ranked,
+        cands,
+        exclude_ids={10},
+        count=2,
+    )
+
+    assert [result.index for result in filtered] == [1, 2]
+
+
 def test_select_ranked_results_enforces_two_to_one_hn_to_rss_mix():
     cands = [
-        Story(id=-(i + 1), title=f"RSS {i}", url=None, score=0, time=1, text_content="")
+        Story(
+            id=-(i + 1),
+            title=f"RSS {i}",
+            url=None,
+            score=0,
+            time=1,
+            text_content="",
+            source="rss",
+        )
         if i < 6
         else Story(id=i + 1, title=f"HN {i}", url=None, score=0, time=1, text_content="")
         for i in range(10)
@@ -295,10 +354,10 @@ def test_select_ranked_results_enforces_two_to_one_hn_to_rss_mix():
         count=6,
     )
 
-    rss_count = sum(1 for r in selected if cands[r.index].id < 0)
-    hn_count = len(selected) - rss_count
+    external_count = sum(1 for r in selected if cands[r.index].is_external)
+    hn_count = len(selected) - external_count
     assert len(selected) == 6
-    assert rss_count == 2
+    assert external_count == 2
     assert hn_count == 4
 
 
@@ -324,7 +383,15 @@ def test_select_ranked_results_no_longer_prioritizes_cluster_coverage():
 
 def test_select_ranked_results_allows_more_rss_when_hn_insufficient():
     cands = [
-        Story(id=-(i + 1), title=f"RSS {i}", url=None, score=0, time=1, text_content="")
+        Story(
+            id=-(i + 1),
+            title=f"RSS {i}",
+            url=None,
+            score=0,
+            time=1,
+            text_content="",
+            source="rss",
+        )
         if i < 8
         else Story(id=i + 1, title=f"HN {i}", url=None, score=0, time=1, text_content="")
         for i in range(10)
@@ -340,16 +407,16 @@ def test_select_ranked_results_allows_more_rss_when_hn_insufficient():
         count=6,
     )
 
-    rss_count = sum(1 for r in selected if cands[r.index].id < 0)
-    hn_count = len(selected) - rss_count
+    external_count = sum(1 for r in selected if cands[r.index].is_external)
+    hn_count = len(selected) - external_count
     assert len(selected) == 6
     assert hn_count == 2
-    assert rss_count == 4
+    assert external_count == 4
 
 
 def test_select_ranked_results_allows_more_hn_when_rss_insufficient():
     cands = [
-        Story(id=-1, title="RSS 0", url=None, score=0, time=1, text_content="")
+        Story(id=-1, title="RSS 0", url=None, score=0, time=1, text_content="", source="rss")
         if i == 0
         else Story(id=i + 1, title=f"HN {i}", url=None, score=0, time=1, text_content="")
         for i in range(10)
@@ -365,10 +432,10 @@ def test_select_ranked_results_allows_more_hn_when_rss_insufficient():
         count=6,
     )
 
-    rss_count = sum(1 for r in selected if cands[r.index].id < 0)
-    hn_count = len(selected) - rss_count
+    external_count = sum(1 for r in selected if cands[r.index].is_external)
+    hn_count = len(selected) - external_count
     assert len(selected) == 6
-    assert rss_count == 1
+    assert external_count == 1
     assert hn_count == 5
 
 

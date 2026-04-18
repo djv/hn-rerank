@@ -36,6 +36,7 @@ async def test_generate_html_integration(tmp_path):
         patch("generate_html.rerank.compute_recency_weights") as mock_recency,
         patch("generate_html.rerank.cluster_interests_with_labels") as mock_cluster,
         patch("generate_html.rerank.rank_stories") as mock_rank,
+        patch("generate_html.filter_top_ranked_hn_dupes", new_callable=AsyncMock) as mock_dupes,
         patch(
             "generate_html.rerank.generate_batch_tldrs", new_callable=AsyncMock
         ) as mock_batch_tldrs,
@@ -73,6 +74,7 @@ async def test_generate_html_integration(tmp_path):
         mock_rank.return_value = [
             RankResult(index=0, hybrid_score=0.95, best_fav_index=0, max_sim_score=0.95, knn_score=0.90)
         ]
+        mock_dupes.return_value = mock_rank.return_value
 
         # Mock sys.argv
         with patch.object(
