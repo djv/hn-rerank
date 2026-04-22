@@ -2,18 +2,18 @@
 
 Current production embedding artifact:
 - Active path: `onnx_model/`
-- Preserved copy: `archive/models/onnx_model_prod_2026-01-31_b244bb8b/`
-- `model.onnx` SHA256: `b244bb8b65de59a101e807843c12033d6302247126ad2d0efb62bab5e09e26ab`
-- File timestamp: `2026-01-31 20:03:36 UTC`
+- Active model: `intfloat/e5-base-v2`
+- Active metadata: `onnx_model/hn_embedding_model.json`
+- Active `model.onnx` SHA256: `400309c22deacd385419da5557e012ad341394a32fe949f23df6ddb9110619d3`
+- Promotion benchmark: `runs/benchmarks/biencoder_bakeoff_20260422.json`
+- Preserved previous production copy: `archive/models/onnx_model_prod_2026-01-31_b244bb8b/`
+- Previous production SHA256: `b244bb8b65de59a101e807843c12033d6302247126ad2d0efb62bab5e09e26ab`
 
 What is known:
-- The active ONNX artifact was created on January 31, 2026.
-- It postdates the current `tuned_model/` checkpoint timestamp (`2026-01-27`) and predates the later `v10-tuned` metadata change committed on February 1, 2026.
-- The repo includes a RunPod workflow in `finetune_runpod.py` that exports `onnx_model/` remotely, downloads `onnx_model.tar.gz`, and extracts it locally. The production artifact layout and timestamps are consistent with that flow.
+- Production was switched to the E5 artifact exported into `archive/models/e5_base_v2/` and then copied into `onnx_model/` on 2026-04-22 UTC.
+- Both ranking and clustering now load the same live `onnx_model/` artifact.
+- The previous production artifact remains preserved with explicit runtime metadata for rollback.
 
-What is not confirmed:
-- The exact checkpoint label for the active production ONNX artifact.
-- Whether the artifact was installed via `finetune_runpod.py` directly or by an equivalent manual export/import flow.
-
-Practical conclusion:
-- Treat the current production artifact as a distinct versioned model, not as the same thing as the current `tuned_model/` checkpoint and not as the stock baseline export.
+Rollback:
+- Replace `onnx_model/` with `archive/models/onnx_model_prod_2026-01-31_b244bb8b/`.
+- Restore `EMBEDDING_MODEL_VERSION` and `CLUSTER_EMBEDDING_MODEL_VERSION` in `api/constants.py` to `prod-2026-01-31` if a same-day rollback needs cache separation.

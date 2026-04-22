@@ -7,11 +7,17 @@ import contextlib
 import hashlib
 import json
 import statistics
-from dataclasses import dataclass
+import sys
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from api.constants import POSITIVE_RECENCY_ENABLED
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from api.constants import POSITIVE_RECENCY_ENABLED  # noqa: E402
+from api.model_metadata import load_model_spec  # noqa: E402
 
 
 IMPORTANT_METRICS = [
@@ -101,7 +107,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Compare multiple local ONNX model directories on the same evaluation dataset."
     )
-    parser.add_argument("username", help="HN username to evaluate")
+    parser.add_argument("username", nargs="?", help="HN username to evaluate")
+    parser.add_argument(
+        "--snapshot",
+        type=Path,
+        help="Frozen benchmark snapshot to evaluate instead of loading live data",
+    )
     parser.add_argument(
         "--model",
         dest="models",
@@ -158,6 +169,17 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Optional path to write the full benchmark payload as JSON",
     )
+    parser.add_argument(
+        "--final-list",
+        action="store_true",
+        help="Evaluate the final displayed list instead of raw rank_stories output",
+    )
+    parser.add_argument(
+        "--count",
+        type=int,
+        default=40,
+        help="Displayed story count when --final-list is enabled",
+    )
     return parser
 
 
@@ -167,12 +189,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     if len(args.models) < 2:
         parser.error("provide at least two --model entries")
+    if not args.snapshot and not args.username:
+        parser.error("provide either a username or --snapshot")
     if args.cv_folds < 2:
         parser.error("--cv-folds must be at least 2")
     if args.candidates < 1:
         parser.error("--candidates must be at least 1")
     if not 0.0 < args.holdout < 1.0:
         parser.error("--holdout must be between 0 and 1")
+    if args.count < 1:
+        parser.error("--count must be at least 1")
 
     args.seeds = normalize_seeds(args.seeds)
     return args
@@ -210,6 +236,9 @@ def override_rerank_model(
 
 
 def clone_dataset_for_model(eq_module: Any, rerank_module: Any, dataset: Any) -> Any:
+    train_embeddings = rerank_module.get_embeddings(
+        [story.text_content for story in dataset.train_stories]
+    )
     neg_embeddings = None
     if dataset.neg_stories:
         neg_embeddings = rerank_module.get_embeddings(
@@ -223,7 +252,7 @@ def clone_dataset_for_model(eq_module: Any, rerank_module: Any, dataset: Any) ->
         test_stories=list(dataset.test_stories),
         neg_stories=list(dataset.neg_stories),
         candidates=list(dataset.candidates),
-        train_embeddings=dataset.train_embeddings,
+        train_embeddings=train_embeddings,
         neg_embeddings=neg_embeddings,
         pos_weights=None if dataset.pos_weights is None else dataset.pos_weights.copy(),
         test_ids=set(dataset.test_ids),
@@ -237,6 +266,7 @@ def build_output_payload(
 ) -> dict[str, Any]:
     return {
         "username": args.username,
+        "snapshot": None if args.snapshot is None else str(args.snapshot),
         "classifier": args.classifier,
         "recency": args.recency,
         "cv_folds": args.cv_folds,
@@ -244,6 +274,8 @@ def build_output_payload(
         "holdout": args.holdout,
         "cache_only": args.cache_only,
         "seeds": args.seeds,
+        "final_list": args.final_list,
+        "count": args.count,
         "dataset": {
             "train_stories": len(dataset.train_stories),
             "test_stories": len(dataset.test_stories),
@@ -287,17 +319,20 @@ async def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
 
     first_spec = args.models[0]
     with override_rerank_model(rerank, first_spec, cache_root):
-        evaluator = eq.RankingEvaluator(args.username)
-        success = await evaluator.load_data(
-            holdout=args.holdout,
-            limit_pos=10_000,
-            limit_neg=10_000,
-            candidate_count=args.candidates,
-            use_classifier=args.classifier,
-            use_recency=args.recency,
-            cache_only=args.cache_only,
-            allow_stale=args.cache_only,
-        )
+        evaluator = eq.RankingEvaluator(args.username or "snapshot")
+        if args.snapshot is not None:
+            success = evaluator.load_snapshot(args.snapshot)
+        else:
+            success = await evaluator.load_data(
+                holdout=args.holdout,
+                limit_pos=10_000,
+                limit_neg=10_000,
+                candidate_count=args.candidates,
+                use_classifier=args.classifier,
+                use_recency=args.recency,
+                cache_only=args.cache_only,
+                allow_stale=args.cache_only,
+            )
         if not success or evaluator.dataset is None:
             raise SystemExit(1)
         shared_dataset = evaluator.dataset
@@ -307,8 +342,12 @@ async def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
     for spec in args.models:
         with override_rerank_model(rerank, spec, cache_root) as runtime:
-            evaluator = eq.RankingEvaluator(args.username)
-            evaluator.dataset = clone_dataset_for_model(eq, rerank, shared_dataset)
+            evaluator = eq.RankingEvaluator(args.username or "snapshot")
+            if args.snapshot is not None:
+                if not evaluator.load_snapshot(args.snapshot):
+                    raise SystemExit(1)
+            else:
+                evaluator.dataset = clone_dataset_for_model(eq, rerank, shared_dataset)
 
             per_seed: list[dict[str, Any]] = []
             for seed in args.seeds:
@@ -318,6 +357,7 @@ async def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                     use_classifier=args.classifier,
                     report_each=False,
                     parallel=False,
+                    final_list_count=args.count if args.final_list else None,
                 )
                 per_seed.append({"seed": seed, "metrics": metrics})
 
@@ -326,6 +366,7 @@ async def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 "label": spec.label,
                 "path": str(spec.path),
                 "model_sha256": runtime.fingerprint,
+                "model_spec": asdict(load_model_spec(spec.path)),
                 "cache_dir": str(runtime.cache_dir),
                 "cache_version": runtime.cache_version,
                 "summary": summary,

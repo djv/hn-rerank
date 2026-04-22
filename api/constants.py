@@ -92,8 +92,8 @@ DEFAULT_EMBEDDING_BATCH_SIZE = 8
 EMBEDDING_MIN_CLIP = 1e-9
 # Current live ONNX artifact timestamped 2026-01-31. Exact checkpoint label is
 # not confirmed, so keep a neutral version id for cache invalidation/provenance.
-EMBEDDING_MODEL_VERSION = "prod-2026-01-31"
-CLUSTER_EMBEDDING_MODEL_VERSION = "prod-2026-01-31"
+EMBEDDING_MODEL_VERSION = "prod-e5-2026-04-22"
+CLUSTER_EMBEDDING_MODEL_VERSION = "prod-e5-2026-04-22"
 CLUSTER_EMBEDDING_MODEL_DIR = "onnx_model"
 
 # Similarity Bounds

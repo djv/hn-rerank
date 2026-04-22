@@ -1,6 +1,8 @@
 from pathlib import Path
 import subprocess
 
+from api.model_metadata import BGE_BASE_OFFICIAL_SPEC, write_model_spec
+
 MODEL_EXPORT_EXTRA_HINT = (
     "setup_model.py requires the 'model-export' extra. "
     "Run: uv sync --extra model-export"
@@ -11,6 +13,7 @@ def setup():
     model_dir = Path("onnx_model")
     if (model_dir / "model.onnx").exists():
         print("Model already exists.")
+        write_model_spec(model_dir, BGE_BASE_OFFICIAL_SPEC)
         return
 
     print("Setting up model (requires internet and ~450MB space)...")
@@ -36,6 +39,7 @@ def setup():
     except FileNotFoundError as exc:
         raise SystemExit(MODEL_EXPORT_EXTRA_HINT) from exc
 
+    write_model_spec(model_dir, BGE_BASE_OFFICIAL_SPEC)
     print("Setup complete.")
 
 

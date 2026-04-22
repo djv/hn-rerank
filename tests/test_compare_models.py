@@ -90,6 +90,32 @@ def test_parse_args_defaults_recency_to_project_setting(tmp_path) -> None:
     assert args.recency is False
 
 
+def test_parse_args_supports_snapshot_and_final_list(tmp_path) -> None:
+    prod_dir = make_model_dir(tmp_path, "prod")
+    base_dir = make_model_dir(tmp_path, "base")
+    snapshot = tmp_path / "snapshot.json"
+    snapshot.write_text("{}")
+
+    args = parse_args(
+        [
+            "--snapshot",
+            str(snapshot),
+            "--model",
+            f"prod={prod_dir}",
+            "--model",
+            f"base={base_dir}",
+            "--final-list",
+            "--count",
+            "40",
+        ]
+    )
+
+    assert args.username is None
+    assert args.snapshot == snapshot
+    assert args.final_list is True
+    assert args.count == 40
+
+
 def test_normalize_seeds_defaults_and_dedupes() -> None:
     assert normalize_seeds(None) == [0]
     assert normalize_seeds([3, 3, 1, 3, 1]) == [3, 1]
