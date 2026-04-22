@@ -215,3 +215,63 @@ def test_rank_stories_applies_freshness_boost_to_external_stories():
     assert results[0].index == 0
     assert results[0].freshness_boost > results[1].freshness_boost
     assert results[0].hybrid_score > results[1].hybrid_score
+
+
+def test_rank_stories_penalizes_external_stories():
+    """
+    Ensure external stories (source != 'hn') do not receive an unfair
+    mathematical advantage by bypassing the HN weight dilution.
+    """
+    import time
+
+    now = int(time.time())
+    # Two stories with identical content, age, and 0 points.
+    # One is HN, one is external (e.g., Lobsters).
+    stories = [
+        Story(
+            id=1,
+            title="HN Story",
+            url="https://news.ycombinator.com/item?id=1",
+            score=0,
+            time=now - 3600,
+            text_content="Same semantic content",
+            source="hn",
+        ),
+        Story(
+            id=2,
+            title="External Story",
+            url="https://lobste.rs/s/abc",
+            score=0,
+            time=now - 3600,
+            text_content="Same semantic content",
+            source="lobsters",
+        ),
+    ]
+
+    # Equal semantic embeddings
+    pos_emb = np.array([[1.0] * 768])
+    cand_emb = np.array([[0.8] * 768, [0.8] * 768])
+
+    with patch("api.rerank.get_embeddings", return_value=cand_emb):
+        # We need to ensure RANKING_HN_WEIGHT > 0 for the test to be meaningful
+        with patch("api.rerank.RANKING_HN_WEIGHT", 0.05):
+            results = rank_stories(stories, pos_emb)
+
+    assert len(results) == 2
+    hn_res = next(r for r in results if r.index == 0)
+    ext_res = next(r for r in results if r.index == 1)
+
+    # With the fix, they should have identical scores because both are 0-point stories
+    # subject to the same (1-w)*sem + w*0 formula.
+    # Previously, ext_res.hybrid_score would be ~0.8 and hn_res.hybrid_score ~0.76.
+    assert pytest.approx(hn_res.hybrid_score) == ext_res.hybrid_score
+
+    # Now test that an HN story with points beats the external story
+    stories[0].score = 100
+    with patch("api.rerank.get_embeddings", return_value=cand_emb):
+        with patch("api.rerank.RANKING_HN_WEIGHT", 0.05):
+            results = rank_stories(stories, pos_emb)
+
+    hn_res = next(r for r in results if r.index == 0)
+    ext_res = next(r for r in results if r.index == 1)
+    assert hn_res.hybrid_score > ext_res.hybrid_score

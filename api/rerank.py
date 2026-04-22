@@ -2198,7 +2198,6 @@ def rank_stories(
     ages_hours: NDArray[np.float64] = np.array(
         [(now - s.time) / 3600.0 for s in stories]
     )
-    external_mask: NDArray[np.bool_] = np.array([s.source != "hn" for s in stories], dtype=bool)
 
     # 5. Adaptive HN weight based on age (only if hn_weight > 0)
     # hn_weight=0 means pure semantic mode (for testing invariants)
@@ -2232,12 +2231,6 @@ def rank_stories(
             freshness = np.clip(freshness, 0.0, 1.0)
             freshness_boost = (FRESHNESS_MAX_BOOST * freshness).astype(np.float32)
             hybrid_scores = hybrid_scores + freshness_boost
-
-        # External-feed stories stay semantic-only, but still get freshness.
-        if np.any(external_mask):
-            hybrid_scores[external_mask] = (
-                semantic_scores[external_mask] + freshness_boost[external_mask]
-            )
     else:
         # Pure semantic mode (hn_weight=0): no HN score, no freshness
         hybrid_scores = semantic_scores.astype(np.float32)
