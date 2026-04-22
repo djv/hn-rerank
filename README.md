@@ -21,6 +21,8 @@ Requires Python 3.12+.
   embeddings, clustering, reranking, caching, and HTML generation.
 - External services:
   Hacker News, Algolia, RSS feeds, and optionally Groq for cluster names and TL;DRs.
+- Built-in extra feeds:
+  `jack-clark.net`, `lobste.rs`, and `tildes.net` are appended to the OPML feed set.
 - Browser dependency:
   the generated HTML currently loads Tailwind from `https://cdn.tailwindcss.com` at render time.
 
@@ -30,8 +32,9 @@ Requires Python 3.12+.
    ```bash
    uv sync
    ```
-2. Download/export the ONNX model.
+2. Download/export the ONNX model if `onnx_model/model.onnx` is not already present.
    ```bash
+   uv sync --extra model-export
    uv run setup_model.py
    ```
 3. Configure `GROQ_API_KEY` only if you want cluster naming and/or TL;DR generation.
@@ -46,6 +49,14 @@ Requires Python 3.12+.
 Outputs:
 - `index.html`: ranked recommendations
 - `clusters.html`: your clustered positive signals
+
+## Optional Extras
+
+- Default `uv sync` keeps the runtime env lean and avoids installing the PyTorch/CUDA stack.
+- `uv sync --extra model-export` installs the ONNX export toolchain for `setup_model.py` and `export_tuned.py`.
+- `uv sync --extra train` installs the training/tuning toolchain for `tune_embeddings.py`, `optimize_hyperparameters.py`, and `finetune_runpod.py`.
+- On Linux, the `train` extra is large because it pulls PyTorch and CUDA wheels transitively.
+- After a one-off export or training session, run `uv sync` again to return to the lean runtime env.
 
 ## Login Behavior
 

@@ -12,7 +12,7 @@ from datetime import datetime
 from email.utils import parsedate_to_datetime
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 def _ensure_joblib_settings() -> None:
     # Disable joblib multiprocessing in this environment to avoid SemLock
@@ -34,7 +34,6 @@ import onnxruntime as ort  # noqa: E402
 from numpy.typing import NDArray  # noqa: E402
 from sklearn.linear_model import LogisticRegressionCV  # noqa: E402
 from sklearn.metrics.pairwise import cosine_similarity  # noqa: E402
-from transformers import AutoTokenizer, BatchEncoding, PreTrainedTokenizerBase  # noqa: E402
 from aiolimiter import AsyncLimiter  # noqa: E402
 from tenacity import (  # noqa: E402
     AsyncRetrying,
@@ -43,6 +42,9 @@ from tenacity import (  # noqa: E402
     stop_after_attempt,
     wait_random_exponential,
 )
+
+if TYPE_CHECKING:
+    from transformers import BatchEncoding, PreTrainedTokenizerBase
 
 from api.cache_utils import atomic_write_json  # noqa: E402
 from api.constants import (  # noqa: E402
@@ -98,8 +100,6 @@ from api.constants import (  # noqa: E402
     MIN_CLUSTERS,
     MIN_SAMPLES_PER_CLUSTER,
     POSITIVE_RECENCY_HALF_LIFE_DAYS,
-    RANKING_DIVERSITY_LAMBDA,
-    RANKING_DIVERSITY_LAMBDA_CLASSIFIER,
     RANKING_HN_WEIGHT,
     RANKING_MAX_RESULTS,
     RANKING_NEGATIVE_WEIGHT,
@@ -217,6 +217,8 @@ class ONNXEmbeddingModel:
             raise FileNotFoundError(
                 f"Model not found in {model_dir}. Please run setup_model.py."
             )
+
+        from transformers import AutoTokenizer
 
         self.tokenizer: PreTrainedTokenizerBase = AutoTokenizer.from_pretrained(
             model_dir
@@ -1952,7 +1954,7 @@ def rank_stories(
     positive_weights: NDArray[np.float32] | None = None,
     hn_weight: float = RANKING_HN_WEIGHT,
     neg_weight: float = RANKING_NEGATIVE_WEIGHT,
-    diversity_lambda: float = RANKING_DIVERSITY_LAMBDA,
+    diversity_lambda: float = 0.0,
     use_classifier: bool = False,
     use_contrastive: bool = False,
     knn_k: int = KNN_NEIGHBORS,
@@ -1961,8 +1963,8 @@ def rank_stories(
     """
     Rank candidate stories by relevance to user interests.
 
-    Uses multi-interest clustering and MMR diversity reranking.
-    Optionally uses a Logistic Regression classifier if sufficient data exists.
+    Uses semantic ranking with optional classifier scoring when sufficient
+    positive and hidden history is available.
     """
     if not stories:
         return []
@@ -2110,14 +2112,6 @@ def rank_stories(
             probs = clf.predict_proba(cand_features)[:, 1]
             semantic_scores = probs.astype(np.float32)
 
-            # Post-classifier negative penalty: classifier doesn't see hidden stories
-            # after training, so apply explicit penalty for similarity to hidden items
-            if negative_embeddings is not None and len(negative_embeddings) > 0:
-                sim_neg = cosine_similarity(negative_embeddings, cand_emb)
-                k_neg = min(len(negative_embeddings), knn_k)
-                knn_neg = np.median(np.partition(sim_neg, -k_neg, axis=0)[-k_neg:, :], axis=0)
-                semantic_scores = semantic_scores - neg_weight * knn_neg
-
             # We still need max_sim_scores for the UI "Similar to..."
             sim_pos_ui = cosine_similarity(positive_embeddings, cand_emb)
             max_sim_scores = np.max(sim_pos_ui, axis=0)
@@ -2132,11 +2126,6 @@ def rank_stories(
                 raw_knn_scores = np.zeros(len(stories), dtype=np.float32)
 
             classifier_success = True
-            # Classifier probabilities are sharp (often >0.9 for dominant clusters).
-            # We increase diversity penalty to ensure we skip to the next cluster.
-            diversity_lambda = max(
-                diversity_lambda, RANKING_DIVERSITY_LAMBDA_CLASSIFIER
-            )
         except Exception as e:
             # Fallback to heuristic on error
             logger.warning(f"Classifier training failed, using heuristic: {e}")
@@ -2195,27 +2184,7 @@ def rank_stories(
             semantic_scores = 1.0 / (1.0 + np.exp(-KNN_SIGMOID_K * z))
             semantic_scores = semantic_scores.astype(np.float32)
 
-        # 3. Negative Signal (Penalty) - Only applies in heuristic mode
-        # Use k-NN for negatives: penalize consistent "not interested" patterns
-        if negative_embeddings is not None and len(negative_embeddings) > 0:
-            sim_neg_matrix: NDArray[np.float32] = cosine_similarity(
-                negative_embeddings, cand_emb
-            )
-            # k-NN for negative signals (same k as positive)
-            k_neg = min(len(negative_embeddings), knn_k)
-            if k_neg > 0:
-                top_k_neg = np.partition(sim_neg_matrix, -k_neg, axis=0)[-k_neg:, :]
-                knn_neg: NDArray[np.float32] = np.median(top_k_neg, axis=0)
-            else:
-                knn_neg = np.zeros(len(stories), dtype=np.float32)
-            # Apply penalty: contrastive (only when neg > pos) or always
-            if use_contrastive:
-                should_penalize = knn_neg > raw_knn_scores
-                semantic_scores -= neg_weight * knn_neg * should_penalize
-            else:
-                semantic_scores -= neg_weight * knn_neg
-
-    # 4. HN Gravity Score (Log-scaled)
+    # 3. HN Gravity Score (Log-scaled)
     # We use a log scale so that high-point stories punch through without dominating
     points: NDArray[np.float32] = np.array(
         [float(s.score) for s in stories], dtype=np.float32
@@ -2224,14 +2193,14 @@ def rank_stories(
         max(points.max(), HN_SCORE_NORMALIZATION_CAP)
     )
 
-    # 5. Compute story ages for adaptive weighting
+    # 4. Compute story ages for adaptive weighting
     now = time.time()
     ages_hours: NDArray[np.float64] = np.array(
         [(now - s.time) / 3600.0 for s in stories]
     )
-    rss_mask: NDArray[np.bool_] = np.array([s.id < 0 for s in stories], dtype=bool)
+    external_mask: NDArray[np.bool_] = np.array([s.source != "hn" for s in stories], dtype=bool)
 
-    # 6. Adaptive HN weight based on age (only if hn_weight > 0)
+    # 5. Adaptive HN weight based on age (only if hn_weight > 0)
     # hn_weight=0 means pure semantic mode (for testing invariants)
     freshness_boost: NDArray[np.float32] = np.zeros(len(stories), dtype=np.float32)
     if hn_weight > 0:
@@ -2249,12 +2218,12 @@ def rank_stories(
             young_hn_weight + adaptive_t * (old_hn_weight - young_hn_weight)
         )
 
-        # 7. Hybrid Score (per-story adaptive weighting)
+        # 6. Hybrid Score (per-story adaptive weighting)
         hybrid_scores: NDArray[np.float32] = (
             (1 - hn_weights) * semantic_scores + hn_weights * hn_scores
         ).astype(np.float32)
 
-        # 8. Freshness boost (exponential decay)
+        # 7. Freshness boost (exponential decay)
         # Newer stories get a boost; score halves every FRESHNESS_HALF_LIFE_HOURS
         if FRESHNESS_ENABLED and FRESHNESS_MAX_BOOST > 0:
             freshness: NDArray[np.float64] = np.power(
@@ -2264,47 +2233,26 @@ def rank_stories(
             freshness_boost = (FRESHNESS_MAX_BOOST * freshness).astype(np.float32)
             hybrid_scores = hybrid_scores + freshness_boost
 
-        # RSS stories use semantic score only (no HN score or freshness)
-        if np.any(rss_mask):
-            hybrid_scores[rss_mask] = semantic_scores[rss_mask]
-            freshness_boost[rss_mask] = 0.0
+        # External-feed stories stay semantic-only, but still get freshness.
+        if np.any(external_mask):
+            hybrid_scores[external_mask] = (
+                semantic_scores[external_mask] + freshness_boost[external_mask]
+            )
     else:
         # Pure semantic mode (hn_weight=0): no HN score, no freshness
         hybrid_scores = semantic_scores.astype(np.float32)
 
-    # 9. Diversity (MMR)
-    results: list[RankResult] = []
-    selected_mask: NDArray[np.bool_] = np.zeros(len(cand_emb), dtype=bool)
-    cand_sim: NDArray[np.float32] = cosine_similarity(cand_emb, cand_emb)
-
-    for _ in range(min(len(stories), RANKING_MAX_RESULTS)):
-        unselected: NDArray[np.int64] = np.where(~selected_mask)[0]
-        if not len(unselected):
-            break
-
-        mmr_scores: NDArray[np.float32]
-        if np.any(selected_mask):
-            redundancy: NDArray[np.float32] = np.max(
-                cand_sim[unselected][:, selected_mask], axis=1
-            )
-            mmr_scores = hybrid_scores[unselected] - diversity_lambda * redundancy
-        else:
-            mmr_scores = hybrid_scores[unselected]
-
-        best_idx: int = int(unselected[np.argmax(mmr_scores)])
-
-        results.append(
-            RankResult(
-                index=best_idx,
-                hybrid_score=float(hybrid_scores[best_idx]),
-                best_fav_index=int(best_fav_indices[best_idx]),
-                max_sim_score=float(max_sim_scores[best_idx]),
-                knn_score=float(raw_knn_scores[best_idx]),
-                semantic_score=float(semantic_scores[best_idx]),
-                hn_score=float(hn_scores[best_idx]),
-                freshness_boost=float(freshness_boost[best_idx]),
-            )
+    ranked_indices = np.argsort(-hybrid_scores, kind="stable")[: min(len(stories), RANKING_MAX_RESULTS)]
+    return [
+        RankResult(
+            index=int(best_idx),
+            hybrid_score=float(hybrid_scores[best_idx]),
+            best_fav_index=int(best_fav_indices[best_idx]),
+            max_sim_score=float(max_sim_scores[best_idx]),
+            knn_score=float(raw_knn_scores[best_idx]),
+            semantic_score=float(semantic_scores[best_idx]),
+            hn_score=float(hn_scores[best_idx]),
+            freshness_boost=float(freshness_boost[best_idx]),
         )
-        selected_mask[best_idx] = True
-
-    return results
+        for best_idx in ranked_indices
+    ]

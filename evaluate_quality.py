@@ -174,7 +174,7 @@ def _finalize_ranked_results(
         story = candidates[result.index]
         url = story.url
         title = story.title
-        norm_url = normalize_url(url) if url else f"hn:{story.id}"
+        norm_url = normalize_url(url) if url else f"{story.source}:{story.id}"
         norm_title = title.lower().strip() if title else ""
         if norm_url in seen_urls or norm_title in seen_titles:
             continue

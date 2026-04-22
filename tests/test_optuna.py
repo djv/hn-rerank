@@ -7,6 +7,8 @@ import pytest
 from hypothesis import given, assume
 from hypothesis import strategies as st
 
+pytest.importorskip("optuna")
+
 from optimize_hyperparameters import (
     HN_THRESHOLD_GAP,
     ADAPTIVE_HN_DELTA,

@@ -270,8 +270,10 @@ async def fetch_story(
                 url=url or None,
                 score=score,
                 time=created_at,
+                discussion_url=f"https://news.ycombinator.com/item?id={sid}",
                 comments=ui_comments,
                 text_content=text_content,
+                source="hn",
             )
             cache_payload: CachedStory = {
                 "ts": time.time(),

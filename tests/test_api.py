@@ -175,3 +175,43 @@ def test_rank_stories_disables_freshness_boost_when_configured():
 
     assert len(results) == 2
     assert all(result.freshness_boost == 0.0 for result in results)
+
+
+def test_rank_stories_applies_freshness_boost_to_external_stories():
+    import time
+
+    now = int(time.time())
+    stories = [
+        Story(
+            id=1,
+            title="New external",
+            url="https://example.com/new",
+            score=0,
+            time=now - 3600,
+            text_content="Same",
+            source="lobsters",
+        ),
+        Story(
+            id=2,
+            title="Old external",
+            url="https://example.com/old",
+            score=0,
+            time=now - 48 * 3600,
+            text_content="Same",
+            source="rss",
+        ),
+    ]
+    pos_emb = np.array([[1.0] * 768])
+    cand_emb = np.array([[1.0] * 768, [1.0] * 768])
+
+    with (
+        patch("api.rerank.get_embeddings", return_value=cand_emb),
+        patch("api.rerank.FRESHNESS_ENABLED", True),
+        patch("api.rerank.FRESHNESS_MAX_BOOST", 0.5),
+    ):
+        results = rank_stories(stories, pos_emb)
+
+    assert len(results) == 2
+    assert results[0].index == 0
+    assert results[0].freshness_boost > results[1].freshness_boost
+    assert results[0].hybrid_score > results[1].hybrid_score

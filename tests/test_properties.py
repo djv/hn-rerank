@@ -196,7 +196,7 @@ def test_negative_signal_impact(num_candidates, neg_multiplier):
 
         # Rank without negative signal
         res_no_neg = rank_stories(stories, pos_emb, hn_weight=0.0, diversity_lambda=0.0)
-        # Rank with negative signal
+        # Rank with negative signal in heuristic mode
         res_with_neg = rank_stories(
             stories,
             pos_emb,
@@ -206,7 +206,9 @@ def test_negative_signal_impact(num_candidates, neg_multiplier):
             diversity_lambda=0.0,
         )
 
-        assert res_with_neg[0].hybrid_score < res_no_neg[0].hybrid_score
+        assert res_with_neg[0].hybrid_score == pytest.approx(
+            res_no_neg[0].hybrid_score
+        )
 
 
 @given(st.lists(st.integers(min_value=1, max_value=1000), min_size=2, max_size=10))
@@ -296,61 +298,36 @@ def test_rank_stories_empty_signals():
         assert results[0].hybrid_score > results[1].hybrid_score
 
 
-def test_rank_stories_diversity_impact():
+def test_rank_stories_diversity_param_does_not_change_ranking():
     """
-    Invariant: High diversity (MMR) should penalize redundant (similar) stories.
+    Invariant: rank_stories now orders by score directly; diversity_lambda is ignored.
     """
-    # pos interest: [1, 0]
     pos_emb = np.array([[1.0, 0.0]], dtype=np.float32)
-    # two identical stories matching pos: [1, 0]
-    cand_emb = np.array([[1.0, 0.0], [1.0, 0.0]], dtype=np.float32)
+    embs = np.array(
+        [[1.0, 0.01], [1.0, 0.02], [0.7, 0.7]],
+        dtype=np.float32,
+    )
+    embs /= np.linalg.norm(embs, axis=1, keepdims=True)
 
     stories = [
-        Story(id=1, title="A", url=None, score=100, time=1000, text_content="A"),
-        Story(id=2, title="B", url=None, score=100, time=1000, text_content="B"),
+        Story(id=0, title="A", url=None, score=100, time=1000, text_content="A"),
+        Story(id=1, title="B", url=None, score=100, time=1000, text_content="B"),
+        Story(id=2, title="C", url=None, score=100, time=1000, text_content="C"),
     ]
 
     import api.rerank
 
     with pytest.MonkeyPatch().context() as mp:
-        mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: cand_emb)
-
-        # 1. No diversity: both should have high scores
-        res_no_div = rank_stories(stories, pos_emb, diversity_lambda=0.0, hn_weight=0.0)
-        assert res_no_div[0].hybrid_score == res_no_div[1].hybrid_score
-
-        # 2. High diversity: the second story should be significantly penalized
-        # We use orthogonal vectors to test reordering.
-        target_v = np.array([1.0, 0.0], dtype=np.float32)
-        a_v = np.array([1.0, 0.01], dtype=np.float32)  # Very close to target
-        b_v = np.array([1.0, 0.02], dtype=np.float32)  # Very close to target
-        c_v = np.array(
-            [0.7, 0.7], dtype=np.float32
-        )  # Further from target, but different from A
-
-        embs = np.array([a_v, b_v, c_v], dtype=np.float32)
-        embs /= np.linalg.norm(embs, axis=1, keepdims=True)
-
-        stories_3 = [
-            Story(id=0, title="A", url=None, score=100, time=1000, text_content="A"),
-            Story(id=1, title="B", url=None, score=100, time=1000, text_content="B"),
-            Story(id=2, title="C", url=None, score=100, time=1000, text_content="C"),
-        ]
-
         mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: embs)
-
-        # No diversity
         res_low = rank_stories(
-            stories_3, target_v.reshape(1, -1), diversity_lambda=0.0, hn_weight=0.0
+            stories, pos_emb, diversity_lambda=0.0, hn_weight=0.0
         )
-        # Order should be A, B, C
-        assert [r.index for r in res_low] == [0, 1, 2]
-
-        # High diversity
         res_high = rank_stories(
-            stories_3, target_v.reshape(1, -1), diversity_lambda=0.5, hn_weight=0.0
+            stories, pos_emb, diversity_lambda=0.5, hn_weight=0.0
         )
-        assert len(res_high) == 3
+
+        assert [r.index for r in res_low] == [0, 1, 2]
+        assert [r.index for r in res_high] == [0, 1, 2]
 
 
 def test_rank_stories_upvote_boost():
@@ -403,21 +380,12 @@ def test_rank_stories_upvote_boost():
         assert results[1].hybrid_score < 0.1
 
 
-def test_rank_stories_hidden_penalty():
+def test_rank_stories_hidden_only_affects_classifier_mode():
     """
-    Invariant: A candidate similar to a hidden story (negative signal)
-    MUST have a lower score than if the negative signal didn't exist.
+    Invariant: hidden stories do not affect heuristic scoring outside classifier mode.
     """
-    # 1. Setup a neutral candidate
-    # Candidate: [1, 0]
     cand_emb = np.array([[1.0, 0.0]], dtype=np.float32)
-
-    # 2. Setup a negative signal that MATCHES the candidate
-    # Negative: [1, 0]
     neg_emb = np.array([[1.0, 0.0]], dtype=np.float32)
-
-    # 3. Setup a positive signal (just to enable semantic ranking)
-    # Positive: [0, 1] (Orthogonal, doesn't boost this candidate)
     pos_emb = np.array([[0.0, 1.0]], dtype=np.float32)
 
     stories = [Story(id=1, title="A", url=None, score=100, time=1000, text_content="A")]
@@ -439,13 +407,7 @@ def test_rank_stories_hidden_penalty():
         )
         score_penalized = res_penalized[0].hybrid_score
 
-        # The penalized score must be lower
-        assert score_penalized < score_baseline
-        # Specifically, it should be reduced by neg_weight * similarity
-        # Baseline (sim with pos [0,1]) = 0.0
-        # Penalty (sim with neg [1,0]) = 1.0 * 0.5 = 0.5
-        # Final score should be roughly -0.5
-        assert score_penalized == pytest.approx(score_baseline - 0.5)
+        assert score_penalized == pytest.approx(score_baseline)
 
 
 # =============================================================================
@@ -516,9 +478,9 @@ def test_hn_normalization_extreme_values(scores):
     assert np.all(np.isfinite(hn_scores))
 
 
-def test_mmr_with_identical_candidates():
+def test_rank_stories_returns_all_identical_candidates():
     """
-    Invariant: With identical candidates, MMR still returns all items.
+    Invariant: score-only sorting still returns all items for identical candidates.
     """
     # All candidates have identical embeddings
     cand_emb = np.ones((5, 384), dtype=np.float32)
@@ -654,6 +616,7 @@ def test_freshness_boost_ordering():
         # Isolate freshness effect from adaptive HN weighting
         mp.setattr(api.rerank, "ADAPTIVE_HN_WEIGHT_MIN", 0.0)
         mp.setattr(api.rerank, "ADAPTIVE_HN_WEIGHT_MAX", 0.0)
+        mp.setattr(api.rerank, "FRESHNESS_ENABLED", True)
         mp.setattr(api.rerank, "FRESHNESS_MAX_BOOST", 0.1)
 
         # Use default hn_weight (triggers adaptive + freshness)

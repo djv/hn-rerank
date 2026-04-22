@@ -16,7 +16,15 @@ import time
 import subprocess
 from pathlib import Path
 
-import runpod
+TRAIN_EXTRA_HINT = (
+    "finetune_runpod.py requires the 'train' extra. "
+    "Run: uv sync --extra train"
+)
+
+try:
+    import runpod
+except ModuleNotFoundError as exc:
+    raise SystemExit(TRAIN_EXTRA_HINT) from exc
 
 # Config
 GPU_TYPE = "NVIDIA GeForce RTX 3090"

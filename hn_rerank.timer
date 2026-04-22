@@ -1,9 +1,9 @@
 [Unit]
-Description=Run HN Rerank Update every 4 hours
+Description=Run HN Rerank Update every 2 hours
 
 [Timer]
 OnBootSec=15min
-OnUnitActiveSec=4h
+OnUnitActiveSec=2h
 RandomizedDelaySec=5min
 
 [Install]

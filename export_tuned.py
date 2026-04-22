@@ -2,6 +2,12 @@ from pathlib import Path
 import subprocess
 import shutil
 
+MODEL_EXPORT_EXTRA_HINT = (
+    "export_tuned.py requires the 'model-export' extra. "
+    "Run: uv sync --extra model-export"
+)
+
+
 def export_tuned():
     tuned_dir = Path("tuned_model")
     if not tuned_dir.exists():
@@ -33,6 +39,8 @@ def export_tuned():
         )
         print("Export complete! The app will now use the fine-tuned model.")
         
+    except FileNotFoundError as exc:
+        raise SystemExit(MODEL_EXPORT_EXTRA_HINT) from exc
     except subprocess.CalledProcessError as e:
         print(f"Export failed: {e}")
         if Path("onnx_model_backup").exists():

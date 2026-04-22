@@ -328,7 +328,7 @@ async def test_filter_top_ranked_hn_dupes_skips_known_duplicate(monkeypatch):
     assert [result.index for result in filtered] == [1, 2]
 
 
-def test_select_ranked_results_enforces_two_to_one_hn_to_rss_mix():
+def test_select_ranked_results_caps_external_results_at_quota():
     cands = [
         Story(
             id=-(i + 1),
@@ -357,8 +357,8 @@ def test_select_ranked_results_enforces_two_to_one_hn_to_rss_mix():
     external_count = sum(1 for r in selected if cands[r.index].is_external)
     hn_count = len(selected) - external_count
     assert len(selected) == 6
-    assert external_count == 2
-    assert hn_count == 4
+    assert external_count == 5
+    assert hn_count == 1
 
 
 def test_select_ranked_results_no_longer_prioritizes_cluster_coverage():
@@ -381,7 +381,7 @@ def test_select_ranked_results_no_longer_prioritizes_cluster_coverage():
     assert [result.index for result in selected] == [0, 1]
 
 
-def test_select_ranked_results_allows_more_rss_when_hn_insufficient():
+def test_select_ranked_results_preserves_external_floor_when_hn_is_available():
     cands = [
         Story(
             id=-(i + 1),
@@ -410,11 +410,11 @@ def test_select_ranked_results_allows_more_rss_when_hn_insufficient():
     external_count = sum(1 for r in selected if cands[r.index].is_external)
     hn_count = len(selected) - external_count
     assert len(selected) == 6
-    assert hn_count == 2
-    assert external_count == 4
+    assert hn_count == 1
+    assert external_count == 5
 
 
-def test_select_ranked_results_allows_more_hn_when_rss_insufficient():
+def test_select_ranked_results_preserves_existing_hn_heavy_top_slice():
     cands = [
         Story(id=-1, title="RSS 0", url=None, score=0, time=1, text_content="", source="rss")
         if i == 0

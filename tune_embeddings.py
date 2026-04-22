@@ -7,9 +7,17 @@ from pathlib import Path
 import logging
 from typing import cast
 
-from sentence_transformers import SentenceTransformer, losses, InputExample
-from sentence_transformers.evaluation import TripletEvaluator
-from torch.utils.data import DataLoader, Dataset
+TRAIN_EXTRA_HINT = (
+    "tune_embeddings.py requires the 'train' extra. "
+    "Run: uv sync --extra train"
+)
+
+try:
+    from sentence_transformers import SentenceTransformer, losses, InputExample
+    from sentence_transformers.evaluation import TripletEvaluator
+    from torch.utils.data import DataLoader, Dataset
+except ModuleNotFoundError as exc:
+    raise SystemExit(TRAIN_EXTRA_HINT) from exc
 
 # Configure logging
 logging.basicConfig(

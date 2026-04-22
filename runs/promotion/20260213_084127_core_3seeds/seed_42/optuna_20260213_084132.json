@@ -1,0 +1,41 @@
+{
+  "best_score": 0.08529660432610062,
+  "best_params": {
+    "diversity_lambda": 0.3830533095430089,
+    "neg_weight": 0.34450649760366575,
+    "knn_k": 2,
+    "adaptive_hn_min": 0.05707726373383463,
+    "freshness_half_life": 98.07339187819274,
+    "hn_threshold_young": 7.911991353681638,
+    "hn_score_cap": 1462.106981035529,
+    "classifier_k_feat": 7,
+    "classifier_neg_sample_weight": 1.4439413290617715
+  },
+  "final_metrics": {
+    "mrr": 0.045454545454545456,
+    "mean_rank": 193.82857142857142,
+    "median_rank": 169.0,
+    "ndcg@10": 0.0,
+    "recall@10": 0.0,
+    "precision@10": 0.0,
+    "map@10": 0.0,
+    "hit@10": 0.0,
+    "ndcg@20": 0.0,
+    "recall@20": 0.0,
+    "precision@20": 0.0,
+    "map@20": 0.0,
+    "hit@20": 0.0,
+    "ndcg@30": 0.09267316436149148,
+    "recall@30": 0.10810810810810811,
+    "precision@30": 0.13333333333333333,
+    "map@30": 0.012561850387937343,
+    "hit@30": 1.0,
+    "ndcg@50": 0.11714253921684788,
+    "recall@50": 0.16216216216216217,
+    "precision@50": 0.12,
+    "map@50": 0.018427272216476685,
+    "hit@50": 1.0
+  },
+  "n_trials": 120,
+  "cv_folds": 5
+}

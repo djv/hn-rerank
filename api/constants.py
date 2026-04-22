@@ -60,6 +60,7 @@ STORY_CACHE_MAX_FILES = 25000  # LRU eviction threshold
 RSS_CACHE_DIR = ".cache/rss"
 RSS_OPML_CACHE_TTL = 86400  # 1 day
 RSS_FEED_CACHE_TTL = 3600  # 1 hour
+RSS_FEED_CACHE_VERSION = 2
 RSS_ARTICLE_CACHE_TTL = 86400  # 1 day
 RSS_CACHE_MAX_FILES = 5000
 
@@ -78,9 +79,13 @@ RSS_OPML_URL = (
 )
 RSS_EXTRA_FEEDS = [
     "https://jack-clark.net/feed/",
+    "https://lobste.rs/rss",
+    "https://tildes.net/topics.rss",
 ]  # Additional feeds not in OPML
 RSS_MAX_FEEDS = 0  # 0 = no max feed limit
 RSS_PER_FEED_LIMIT = 5
+RSS_CURATED_NEWS_PER_FEED_LIMIT = 50
+RSS_ALLOWED_SOURCE_LANGUAGES = ("en", "fr", "es")
 
 # Inference
 DEFAULT_EMBEDDING_BATCH_SIZE = 8

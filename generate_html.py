@@ -44,6 +44,9 @@ from api.constants import (
 console: Console = Console()
 
 DEFAULT_CONFIG_PATH = Path("hn_rerank.toml")
+HN_DUPE_CACHE_DIR = Path(".cache/hn_dupes")
+HN_DUPE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+HN_DUPE_CACHE_TTL = 30 * 24 * 60 * 60
 
 
 def _find_config_path(argv: list[str]) -> Path | None:
@@ -125,20 +128,55 @@ def _extract_hn_dupe_target(page_html: str, sid: int) -> tuple[bool, int | None]
     return True, None
 
 
+def _load_cached_hn_dupe_target(sid: int) -> tuple[bool, int | None] | None:
+    path = HN_DUPE_CACHE_DIR / f"{sid}.json"
+    if not path.exists():
+        return None
+    if time.time() - path.stat().st_mtime >= HN_DUPE_CACHE_TTL:
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except Exception:
+        return None
+    is_dupe = data.get("is_dupe")
+    target_id = data.get("target_id")
+    if not isinstance(is_dupe, bool):
+        return None
+    if target_id is not None and not isinstance(target_id, int):
+        return None
+    return is_dupe, target_id
+
+
+def _save_cached_hn_dupe_target(sid: int, result: tuple[bool, int | None]) -> None:
+    path = HN_DUPE_CACHE_DIR / f"{sid}.json"
+    path.write_text(json.dumps({"is_dupe": result[0], "target_id": result[1]}))
+
+
 async def _fetch_hn_dupe_target(
     client: httpx.AsyncClient, sid: int
 ) -> tuple[bool, int | None]:
+    cached = _load_cached_hn_dupe_target(sid)
+    if cached is not None:
+        return cached
+
     try:
-        resp = await client.get(
-            "https://news.ycombinator.com/item",
-            params={"id": sid},
-        )
-        if resp.status_code != 200 or not resp.text:
-            return False, None
-        return _extract_hn_dupe_target(resp.text, sid)
+        for attempt in range(2):
+            resp = await client.get(
+                "https://news.ycombinator.com/item",
+                params={"id": sid},
+            )
+            if resp.status_code == 429 and attempt == 0:
+                await asyncio.sleep(1.0)
+                continue
+            if resp.status_code != 200 or not resp.text:
+                return False, None
+            result = _extract_hn_dupe_target(resp.text, sid)
+            _save_cached_hn_dupe_target(sid, result)
+            return result
     except Exception as exc:
         logging.debug("Failed to fetch HN dupe marker for %s: %s", sid, exc)
         return False, None
+    return False, None
 
 
 async def filter_top_ranked_hn_dupes(
@@ -147,11 +185,12 @@ async def filter_top_ranked_hn_dupes(
     exclude_ids: set[int],
     count: int,
 ) -> list[RankResult]:
-    """Drop top-ranked HN duplicate submissions when the primary thread is already known."""
+    """Drop [dupe]-marked HN submissions from the final page results."""
     if not ranked:
         return ranked
 
-    check_limit = min(len(ranked), max(20, count * 3))
+    _ = exclude_ids
+    check_limit = min(len(ranked), count)
     checked_positions = [
         pos
         for pos, result in enumerate(ranked[:check_limit])
@@ -160,32 +199,28 @@ async def filter_top_ranked_hn_dupes(
     if not checked_positions:
         return ranked
 
+    checked_by_index: dict[int, tuple[bool, int | None]] = {}
     async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-        dupe_info = await asyncio.gather(
-            *[
-                _fetch_hn_dupe_target(client, cands[ranked[pos].index].id)
-                for pos in checked_positions
-            ]
-        )
-
-    candidate_ids = {story.id for story in cands if story.id > 0}
-    checked_by_index = {
-        ranked[pos].index: info for pos, info in zip(checked_positions, dupe_info)
-    }
+        for idx, pos in enumerate(checked_positions):
+            if idx:
+                await asyncio.sleep(0.2)
+            checked_by_index[ranked[pos].index] = await _fetch_hn_dupe_target(
+                client, cands[ranked[pos].index].id
+            )
 
     filtered: list[RankResult] = []
     skipped = 0
     for result in ranked:
         info = checked_by_index.get(result.index)
         if info is not None:
-            is_dupe, target_id = info
-            if is_dupe and (target_id is None or target_id in exclude_ids or target_id in candidate_ids):
+            is_dupe, _target_id = info
+            if is_dupe:
                 skipped += 1
                 continue
         filtered.append(result)
 
     if skipped:
-        print(f"[+] Filtered {skipped} duplicate HN submissions from top-ranked results")
+        print(f"[+] Filtered {skipped} duplicate HN submissions from final results")
     return filtered
 
 
@@ -396,7 +431,12 @@ def select_ranked_results(
     cand_cluster_map: dict[int, int],
     count: int,
 ) -> list[RankResult]:
-    """Select a ranked subset of results with an external-source quota."""
+    """Select a ranked subset with a small fixed external quota.
+
+    The quota compensates for HN's site-score blend so external stories are not
+    crowded out purely by HN points.
+    """
+    _ = (cluster_labels, cluster_names, cand_cluster_map)
     if not ranked:
         return []
 
@@ -406,8 +446,7 @@ def select_ranked_results(
     def is_external_result(res: RankResult) -> bool:
         return cands[res.index].is_external
 
-    # Target 2:1 HN:external in the final list (best-effort under availability limits).
-    desired_external: int = count // 3
+    desired_external = 5
     available_external = sum(1 for r in ranked if is_external_result(r))
     available_hn = len(ranked) - available_external
     min_external = max(0, count - available_hn)
@@ -1017,12 +1056,6 @@ async def main() -> None:
             knn_k=args.knn,
             progress_callback=rank_cb,
         )
-        ranked = await filter_top_ranked_hn_dupes(
-            ranked,
-            cands,
-            exclude_ids=exclude_ids,
-            count=args.count,
-        )
         progress.update(
             r_task, completed=100, description="[green][+] Reranking complete."
         )
@@ -1098,6 +1131,12 @@ async def main() -> None:
         cluster_names,
         cand_cluster_map,
         args.count,
+    )
+    selected_results = await filter_top_ranked_hn_dupes(
+        selected_results,
+        cands,
+        exclude_ids=exclude_ids,
+        count=args.count,
     )
     source_counts = Counter(cands[r.index].source for r in selected_results)
     counts_summary = ", ".join(

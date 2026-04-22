@@ -1,36 +1,48 @@
 from __future__ import annotations
 
+import calendar
 import hashlib
 import json
 import logging
 import time
-import calendar
-from datetime import datetime, UTC
+from collections.abc import Sequence
+from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import cast
-from collections.abc import Sequence
+from typing import TypedDict, cast
 from xml.etree import ElementTree as ET
 
-import httpx
 import feedparser
+import httpx
+from langdetect import DetectorFactory, LangDetectException, detect
 
 from api.cache_utils import atomic_write_json, evict_old_cache_files
 from api.content import compose_story_text, enrich_stories_with_full_text, strip_html
-from api.url_utils import normalize_url
 from api.constants import (
-    RSS_EXTRA_FEEDS,
+    RSS_ALLOWED_SOURCE_LANGUAGES,
     RSS_CACHE_DIR,
     RSS_CACHE_MAX_FILES,
+    RSS_CURATED_NEWS_PER_FEED_LIMIT,
+    RSS_EXTRA_FEEDS,
     RSS_FEED_CACHE_TTL,
+    RSS_FEED_CACHE_VERSION,
     RSS_OPML_CACHE_TTL,
 )
-from api.models import Story, StoryDict
+from api.models import Story, StoryDict, StorySource
+from api.url_utils import normalize_url
 
 logger = logging.getLogger(__name__)
 
+DetectorFactory.seed = 0
+
 RSS_CACHE_PATH: Path = Path(RSS_CACHE_DIR)
 RSS_CACHE_PATH.mkdir(parents=True, exist_ok=True)
+
+
+class FeedCache(TypedDict):
+    version: int
+    language: str | None
+    stories: list[StoryDict]
 
 
 def _write_cache_json(path: Path, data: dict[str, object] | Sequence[object]) -> None:
@@ -80,16 +92,91 @@ def _make_story_id(feed_url: str, link: str, title: str) -> int:
     return -int(digest[:12], 16)
 
 
-def _parse_feed_entries(
+def _feed_source(feed_url: str, link: str) -> StorySource:
+    haystacks = (feed_url.lower(), link.lower())
+    if any("lobste.rs" in value for value in haystacks):
+        return "lobsters"
+    if any("tildes.net" in value for value in haystacks):
+        return "tildes"
+    return "rss"
+
+
+def _feed_item_limit(feed_url: str, default_limit: int) -> int:
+    source = _feed_source(feed_url, feed_url)
+    if source in {"lobsters", "tildes"}:
+        return max(default_limit, RSS_CURATED_NEWS_PER_FEED_LIMIT)
+    return default_limit
+
+
+def _normalize_language(value: str | None) -> str | None:
+    if not value:
+        return None
+    tag = value.strip().lower().replace("_", "-")
+    if not tag:
+        return None
+    base = tag.split("-", 1)[0]
+    if len(base) == 2 and base.isalpha():
+        return base
+    return None
+
+
+def _is_allowed_feed_language(language: str | None) -> bool:
+    return language in RSS_ALLOWED_SOURCE_LANGUAGES
+
+
+def _feed_language_sample(parsed: feedparser.FeedParserDict, max_entries: int = 5) -> str:
+    parts: list[str] = []
+    feed_meta = getattr(parsed, "feed", {})
+    for key in ("title", "subtitle", "description", "info"):
+        value = str(feed_meta.get(key, "") or "").strip()
+        if value:
+            parts.append(strip_html(value))
+
+    for entry in parsed.entries[:max_entries]:
+        for key in ("title", "summary", "description"):
+            value = str(entry.get(key, "") or "").strip()
+            if value:
+                parts.append(strip_html(value))
+
+    return " ".join(part for part in parts if part)
+
+
+def _detect_parsed_feed_language(parsed: feedparser.FeedParserDict) -> str | None:
+    feed_meta = getattr(parsed, "feed", {})
+    for key in ("language", "lang"):
+        language = _normalize_language(str(feed_meta.get(key, "") or ""))
+        if language is not None:
+            return language
+
+    sample = _feed_language_sample(parsed)
+    if sum(ch.isalpha() for ch in sample) < 40:
+        return None
+
+    try:
+        return _normalize_language(detect(sample))
+    except LangDetectException:
+        return None
+
+
+def _parse_feed(
     feed_xml: str,
     feed_url: str,
     max_items: int,
     min_ts: int,
-) -> list[Story]:
+) -> tuple[str | None, list[Story]]:
     parsed = feedparser.parse(feed_xml)
     if parsed.bozo and not parsed.entries:
         logger.warning(f"Failed to parse feed XML for {feed_url}: {parsed.bozo_exception}")
-        return []
+        return None, []
+
+    feed_language = _detect_parsed_feed_language(parsed)
+    if not _is_allowed_feed_language(feed_language):
+        logger.info(
+            "Skipping feed %s due to unsupported language %s",
+            feed_url,
+            feed_language or "unknown",
+        )
+        return feed_language, []
 
     now_ts = int(time.time())
     stories: list[Story] = []
@@ -105,11 +192,7 @@ def _parse_feed_entries(
             if isinstance(content_val, str):
                 summary = content_val
         if not summary:
-            summary = (
-                entry.get("summary")
-                or entry.get("description")
-                or ""
-            )
+            summary = entry.get("summary") or entry.get("description") or ""
 
         ts = None
         for key in ("published_parsed", "updated_parsed", "created_parsed"):
@@ -126,19 +209,32 @@ def _parse_feed_entries(
 
         text = strip_html(str(summary))
         text_content = compose_story_text(title=title, article_text=text)
+        discussion_url = str(entry.get("comments") or "").strip() or None
         story = Story(
             id=_make_story_id(feed_url, link, title),
             title=title,
             url=link or None,
             score=0,
             time=ts,
+            discussion_url=discussion_url,
             comments=[],
             text_content=text_content,
+            source=_feed_source(feed_url, link),
         )
         stories.append(story)
         if len(stories) >= max_items:
             break
 
+    return feed_language, stories
+
+
+def _parse_feed_entries(
+    feed_xml: str,
+    feed_url: str,
+    max_items: int,
+    min_ts: int,
+) -> list[Story]:
+    _, stories = _parse_feed(feed_xml, feed_url, max_items, min_ts)
     return stories
 
 
@@ -156,13 +252,20 @@ def _load_cached_urls(path: Path, ttl: int) -> list[str] | None:
     return None
 
 
-def _load_cached_stories(path: Path, ttl: int) -> list[Story] | None:
+def _load_cached_feed(path: Path, ttl: int) -> tuple[str | None, list[Story]] | None:
     if path.exists() and (time.time() - path.stat().st_mtime) < ttl:
         try:
             raw = json.loads(path.read_text())
-            return [Story.from_dict(cast(StoryDict, d)) for d in raw]
         except Exception:
             return None
+        if not isinstance(raw, dict) or raw.get("version") != RSS_FEED_CACHE_VERSION:
+            return None
+        raw_stories = raw.get("stories")
+        if not isinstance(raw_stories, list):
+            return None
+        language = _normalize_language(cast(str | None, raw.get("language")))
+        stories = [Story.from_dict(cast(StoryDict, d)) for d in raw_stories]
+        return language, stories
     return None
 
 
@@ -193,11 +296,11 @@ async def fetch_rss_stories(
                 logger.warning(f"Failed to fetch OPML: {e}")
                 feed_urls = []
 
+        feed_urls = list(feed_urls or [])
+        if RSS_EXTRA_FEEDS:
+            feed_urls.extend(RSS_EXTRA_FEEDS)
         if not feed_urls:
             return []
-
-        if RSS_EXTRA_FEEDS:
-            feed_urls = list(feed_urls) + list(RSS_EXTRA_FEEDS)
 
         unique_feeds: list[str] = []
         seen = set()
@@ -213,10 +316,14 @@ async def fetch_rss_stories(
         seen_titles: set[str] = set()
 
         for feed_url in unique_feeds:
+            item_limit = _feed_item_limit(feed_url, per_feed)
             feed_cache = _cache_path("feed", feed_url)
-            cached = _load_cached_stories(feed_cache, RSS_FEED_CACHE_TTL)
+            cached = _load_cached_feed(feed_cache, RSS_FEED_CACHE_TTL)
             if cached is not None:
-                candidates = [s for s in cached if s.time >= min_ts][:per_feed]
+                feed_language, cached_stories = cached
+                if not _is_allowed_feed_language(feed_language):
+                    continue
+                candidates = [s for s in cached_stories if s.time >= min_ts][:item_limit]
             else:
                 try:
                     resp = await client.get(feed_url)
@@ -225,8 +332,15 @@ async def fetch_rss_stories(
                     continue
                 if resp.status_code != 200 or not resp.text:
                     continue
-                candidates = _parse_feed_entries(resp.text, feed_url, per_feed, min_ts)
-                _write_cache_json(feed_cache, [s.to_dict() for s in candidates])
+                feed_language, candidates = _parse_feed(resp.text, feed_url, item_limit, min_ts)
+                cache_payload: dict[str, object] = {
+                    "version": RSS_FEED_CACHE_VERSION,
+                    "language": feed_language,
+                    "stories": [s.to_dict() for s in candidates],
+                }
+                _write_cache_json(feed_cache, cache_payload)
+                if not _is_allowed_feed_language(feed_language):
+                    continue
 
             for story in candidates:
                 if story.url:

@@ -113,6 +113,9 @@ def test_classifier_feature_augmentation_shape():
     cand_emb /= np.linalg.norm(cand_emb, axis=1, keepdims=True) + 1e-9
 
     with (
+        patch("api.rerank.CLASSIFIER_USE_CENTROID_FEATURE", True),
+        patch("api.rerank.CLASSIFIER_USE_POS_KNN_FEATURE", True),
+        patch("api.rerank.CLASSIFIER_USE_NEG_KNN_FEATURE", True),
         patch("api.rerank.get_embeddings", return_value=cand_emb),
         patch("api.rerank.cluster_interests_with_labels") as mock_cluster,
         patch("api.rerank.LogisticRegressionCV") as mock_lr_class,
@@ -281,6 +284,44 @@ def test_classifier_feature_ablation_disables_all_derived_columns():
         cand_arg = mock_clf.predict_proba.call_args[0][0]
         assert X_train.shape == (10, 8)
         assert cand_arg.shape == (10, 8)
+
+
+def test_classifier_scores_are_not_post_penalized_by_hidden_similarity():
+    stories = _make_stories(10)
+
+    rng = np.random.default_rng(11)
+    pos_emb = rng.normal(size=(5, 8)).astype(np.float32)
+    pos_emb /= np.linalg.norm(pos_emb, axis=1, keepdims=True) + 1e-9
+    neg_emb = rng.normal(size=(5, 8)).astype(np.float32)
+    neg_emb /= np.linalg.norm(neg_emb, axis=1, keepdims=True) + 1e-9
+    cand_emb = rng.normal(size=(10, 8)).astype(np.float32)
+    cand_emb /= np.linalg.norm(cand_emb, axis=1, keepdims=True) + 1e-9
+
+    probs = np.linspace(0.1, 0.9, 10, dtype=np.float32)
+
+    with (
+        patch("api.rerank.get_embeddings", return_value=cand_emb),
+        patch("api.rerank.cluster_interests_with_labels") as mock_cluster,
+        patch("api.rerank.LogisticRegressionCV") as mock_lr_class,
+    ):
+        mock_cluster.return_value = (
+            np.zeros((2, 8)),
+            np.array([0, 0, 0, 1, 1]),
+        )
+        mock_clf = MagicMock()
+        mock_lr_class.return_value = mock_clf
+        mock_clf.predict_proba.return_value = np.column_stack([1.0 - probs, probs])
+
+        results = rank_stories(
+            stories,
+            pos_emb,
+            neg_emb,
+            use_classifier=True,
+            hn_weight=0.0,
+        )
+
+        actual_scores = np.array([r.semantic_score for r in results])
+        np.testing.assert_allclose(actual_scores, probs[::-1], atol=1e-6)
 
 
 def test_evaluate_cv_parallel_matches_serial():

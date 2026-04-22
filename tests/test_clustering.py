@@ -28,15 +28,16 @@ from api.constants import (
 
 
 def make_story(story_id: int, title: str) -> StoryDict:
-    return {
-        "id": story_id,
-        "title": title,
-        "url": None,
-        "score": 0,
-        "time": 0,
-        "comments": [],
-        "text_content": title,
-    }
+    return StoryDict(
+        id=story_id,
+        title=title,
+        url=None,
+        score=0,
+        time=0,
+        comments=[],
+        text_content=title,
+        source="hn",
+    )
 
 
 # Strategy for generating valid embeddings (L2-normalized vectors)

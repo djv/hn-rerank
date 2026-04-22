@@ -1,0 +1,41 @@
+{
+  "best_score": 0.07752433207299896,
+  "best_params": {
+    "diversity_lambda": 0.5075057751083878,
+    "neg_weight": 0.36249677433691224,
+    "knn_k": 2,
+    "adaptive_hn_min": 0.0699194794942492,
+    "freshness_half_life": 94.69883011406756,
+    "hn_threshold_young": 9.364656671789952,
+    "hn_score_cap": 1404.1760564039778,
+    "classifier_k_feat": 4,
+    "classifier_neg_sample_weight": 0.7454907533099986
+  },
+  "final_metrics": {
+    "mrr": 0.05,
+    "mean_rank": 193.45714285714286,
+    "median_rank": 141.0,
+    "ndcg@10": 0.0,
+    "recall@10": 0.0,
+    "precision@10": 0.0,
+    "map@10": 0.0,
+    "hit@10": 0.0,
+    "ndcg@20": 0.03233829114831982,
+    "recall@20": 0.02702702702702703,
+    "precision@20": 0.05,
+    "map@20": 0.0025,
+    "hit@20": 1.0,
+    "ndcg@30": 0.07278648380607425,
+    "recall@30": 0.08108108108108109,
+    "precision@30": 0.1,
+    "map@30": 0.009044795783926219,
+    "hit@30": 1.0,
+    "ndcg@50": 0.11896234649989121,
+    "recall@50": 0.16216216216216217,
+    "precision@50": 0.12,
+    "map@50": 0.01917830046686153,
+    "hit@50": 1.0
+  },
+  "n_trials": 120,
+  "cv_folds": 8
+}

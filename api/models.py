@@ -3,7 +3,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TypedDict
+from typing import Literal, TypedDict
+
+StorySource = Literal["hn", "rss", "lobsters", "tildes"]
+
+_SOURCE_BADGE_LABELS: dict[StorySource, str | None] = {
+    "hn": None,
+    "rss": "RSS",
+    "lobsters": "Lobsters",
+    "tildes": "Tildes",
+}
+
+
+def source_badge_label(source: StorySource) -> str | None:
+    return _SOURCE_BADGE_LABELS[source]
 
 
 class StoryDict(TypedDict):
@@ -14,8 +27,10 @@ class StoryDict(TypedDict):
     url: str | None
     score: int
     time: int
+    discussion_url: str | None
     comments: list[str]
     text_content: str
+    source: StorySource
 
 
 class StoryForTldr(TypedDict):
@@ -38,6 +53,7 @@ class StoryDisplayDict(StoryForTldr):
     reason: str
     reason_url: str
     tldr: str
+    source: StorySource
 
 
 @dataclass
@@ -49,8 +65,10 @@ class Story:
     url: str | None
     score: int
     time: int
+    discussion_url: str | None = None
     comments: list[str] = field(default_factory=list)
     text_content: str = ""
+    source: StorySource = "hn"
 
     @classmethod
     def from_dict(cls, d: StoryDict) -> Story:
@@ -61,8 +79,10 @@ class Story:
             url=d.get("url"),
             score=int(d.get("score", 0)),
             time=int(d.get("time", 0)),
+            discussion_url=d.get("discussion_url"),
             comments=list(d.get("comments", [])),
             text_content=str(d.get("text_content", "")),
+            source=d.get("source", "hn"),
         )
 
     def to_dict(self) -> StoryDict:
@@ -73,9 +93,23 @@ class Story:
             "url": self.url,
             "score": self.score,
             "time": self.time,
+            "discussion_url": self.discussion_url,
             "comments": self.comments,
             "text_content": self.text_content,
+            "source": self.source,
         }
+
+    @property
+    def is_hn(self) -> bool:
+        return self.source == "hn"
+
+    @property
+    def is_external(self) -> bool:
+        return not self.is_hn
+
+    @property
+    def badge_label(self) -> str | None:
+        return source_badge_label(self.source)
 
 
 @dataclass
@@ -107,6 +141,7 @@ class StoryDisplay:
     reason: str  # Title of matched positive signal
     reason_url: str  # URL to matched positive signal
     comments: list[str]
+    source: StorySource = "hn"
     tldr: str = ""
 
     def to_dict(self) -> StoryDisplayDict:
@@ -123,5 +158,18 @@ class StoryDisplay:
             "reason": self.reason,
             "reason_url": self.reason_url,
             "comments": self.comments,
+            "source": self.source,
             "tldr": self.tldr,
         }
+
+    @property
+    def is_hn(self) -> bool:
+        return self.source == "hn"
+
+    @property
+    def is_external(self) -> bool:
+        return not self.is_hn
+
+    @property
+    def badge_label(self) -> str | None:
+        return source_badge_label(self.source)

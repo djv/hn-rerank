@@ -15,11 +15,19 @@ from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 
-import optuna
-from optuna.trial import Trial
-from optuna.trial import TrialState
-from optuna.samplers import TPESampler
-from optuna.pruners import MedianPruner, NopPruner
+TRAIN_EXTRA_HINT = (
+    "optimize_hyperparameters.py requires the 'train' extra. "
+    "Run: uv sync --extra train"
+)
+
+try:
+    import optuna
+    from optuna.trial import Trial
+    from optuna.trial import TrialState
+    from optuna.samplers import TPESampler
+    from optuna.pruners import MedianPruner, NopPruner
+except ModuleNotFoundError as exc:
+    raise SystemExit(TRAIN_EXTRA_HINT) from exc
 
 
 def _ensure_joblib_settings() -> None:
