@@ -17,6 +17,7 @@ from promote_stable_params import (
     _score_metrics,
     SeedRun,
 )
+from tuning_common import validate_candidate_metrics
 
 
 def test_parse_seed_list_dedups_preserves_order():
@@ -40,14 +41,12 @@ def test_score_metrics_penalizes_variance():
     stable = {
         "mrr": 0.5,
         "ndcg@10": 0.4,
-        "ndcg@30": 0.3,
-        "recall@50": 0.2,
+        "ndcg@20": 0.3,
         "mrr_std": 0.01,
         "ndcg@10_std": 0.01,
-        "ndcg@30_std": 0.01,
-        "recall@50_std": 0.01,
+        "ndcg@20_std": 0.01,
     }
-    noisy = {**stable, "mrr_std": 0.20, "ndcg@10_std": 0.20, "ndcg@30_std": 0.20, "recall@50_std": 0.20}
+    noisy = {**stable, "mrr_std": 0.20, "ndcg@10_std": 0.20, "ndcg@20_std": 0.20}
     assert _score_metrics(stable, std_penalty=0.5) > _score_metrics(
         noisy, std_penalty=0.5
     )
@@ -140,3 +139,48 @@ def test_render_promoted_toml_contains_expected_sections():
     assert "[hn_rerank.freshness]" in text
     assert "[hn_rerank.semantic]" in text
     assert "[hn_rerank.classifier]" in text
+
+
+def test_validate_candidate_metrics_requires_score_gain_and_no_guard_regressions():
+    current = {
+        "mrr": 0.20,
+        "ndcg@10": 0.15,
+        "ndcg@20": 0.22,
+        "ndcg@30": 0.24,
+        "precision@20": 0.28,
+        "recall@30": 0.18,
+    }
+    candidate = {
+        "mrr": 0.22,
+        "ndcg@10": 0.18,
+        "ndcg@20": 0.24,
+        "ndcg@30": 0.24,
+        "precision@20": 0.28,
+        "recall@30": 0.19,
+    }
+    result = validate_candidate_metrics(candidate, current, std_penalty=0.5)
+    assert result["promotable"] is True
+    assert result["primary_failures"] == []
+    assert result["guard_failures"] == []
+
+
+def test_validate_candidate_metrics_rejects_guard_regression():
+    current = {
+        "mrr": 0.20,
+        "ndcg@10": 0.15,
+        "ndcg@20": 0.22,
+        "ndcg@30": 0.24,
+        "precision@20": 0.28,
+        "recall@30": 0.18,
+    }
+    candidate = {
+        "mrr": 0.22,
+        "ndcg@10": 0.18,
+        "ndcg@20": 0.24,
+        "ndcg@30": 0.20,
+        "precision@20": 0.25,
+        "recall@30": 0.17,
+    }
+    result = validate_candidate_metrics(candidate, current, std_penalty=0.5)
+    assert result["promotable"] is False
+    assert result["guard_failures"] == ["ndcg@30", "precision@20", "recall@30"]

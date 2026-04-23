@@ -151,6 +151,142 @@ def _average_metrics(all_metrics: list[dict[str, float]]) -> dict[str, float]:
     return avg_metrics
 
 
+def _as_float(value: object, default: float = 0.0) -> float:
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float)):
+        return float(value)
+    return default
+
+
+def _as_int(value: object, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    return default
+
+
+def _summarize_rank_diagnostics(records: list[dict[str, object]]) -> dict[str, object]:
+    if not records:
+        return {}
+
+    rank_calls = len(records)
+    classifier_requested_count = sum(
+        1 for record in records if bool(record.get("classifier_requested", False))
+    )
+    classifier_used_count = sum(
+        1 for record in records if bool(record.get("classifier_used", False))
+    )
+    local_hidden_penalty_applied_count = sum(
+        1
+        for record in records
+        if bool(record.get("local_hidden_penalty_applied", False))
+    )
+
+    def _avg(key: str) -> float:
+        return float(np.mean([_as_float(record.get(key, 0.0)) for record in records]))
+
+    failure_reasons: dict[str, int] = {}
+    for record in records:
+        reason = record.get("classifier_failure_reason")
+        if not reason:
+            continue
+        failure_reasons[str(reason)] = failure_reasons.get(str(reason), 0) + 1
+
+    return {
+        "rank_calls": rank_calls,
+        "classifier_requested_count": classifier_requested_count,
+        "classifier_used_count": classifier_used_count,
+        "classifier_fallback_count": classifier_requested_count - classifier_used_count,
+        "classifier_used_rate": (
+            float(classifier_used_count / classifier_requested_count)
+            if classifier_requested_count
+            else 0.0
+        ),
+        "local_hidden_penalty_applied_count": local_hidden_penalty_applied_count,
+        "avg_positive_count": _avg("positive_count"),
+        "avg_negative_count": _avg("negative_count"),
+        "avg_base_feature_dim": _avg("base_feature_dim"),
+        "avg_derived_feature_dim": _avg("derived_feature_dim"),
+        "avg_local_hidden_penalty_mean": _avg("local_hidden_penalty_mean"),
+        "avg_local_hidden_penalty_max": _avg("local_hidden_penalty_max"),
+        "max_local_hidden_penalty_max": float(
+            max(
+                _as_float(record.get("local_hidden_penalty_max", 0.0))
+                for record in records
+            )
+        ),
+        "classifier_failure_reasons": failure_reasons,
+    }
+
+
+def _merge_rank_diagnostic_summaries(
+    summaries: list[dict[str, object]],
+) -> dict[str, object]:
+    if not summaries:
+        return {}
+
+    total_rank_calls = sum(_as_int(summary.get("rank_calls", 0)) for summary in summaries)
+    classifier_requested_count = sum(
+        _as_int(summary.get("classifier_requested_count", 0)) for summary in summaries
+    )
+    classifier_used_count = sum(
+        _as_int(summary.get("classifier_used_count", 0)) for summary in summaries
+    )
+    local_hidden_penalty_applied_count = sum(
+        _as_int(summary.get("local_hidden_penalty_applied_count", 0))
+        for summary in summaries
+    )
+
+    def _weighted_avg(key: str) -> float:
+        if total_rank_calls == 0:
+            return 0.0
+        weighted_total = sum(
+            _as_float(summary.get(key, 0.0)) * _as_int(summary.get("rank_calls", 0))
+            for summary in summaries
+        )
+        return float(weighted_total / total_rank_calls)
+
+    failure_reasons: dict[str, int] = {}
+    for summary in summaries:
+        reasons = summary.get("classifier_failure_reasons", {})
+        if not isinstance(reasons, dict):
+            continue
+        for reason, count in reasons.items():
+            failure_reasons[str(reason)] = (
+                failure_reasons.get(str(reason), 0) + _as_int(count)
+            )
+
+    return {
+        "rank_calls": total_rank_calls,
+        "classifier_requested_count": classifier_requested_count,
+        "classifier_used_count": classifier_used_count,
+        "classifier_fallback_count": classifier_requested_count - classifier_used_count,
+        "classifier_used_rate": (
+            float(classifier_used_count / classifier_requested_count)
+            if classifier_requested_count
+            else 0.0
+        ),
+        "local_hidden_penalty_applied_count": local_hidden_penalty_applied_count,
+        "avg_positive_count": _weighted_avg("avg_positive_count"),
+        "avg_negative_count": _weighted_avg("avg_negative_count"),
+        "avg_base_feature_dim": _weighted_avg("avg_base_feature_dim"),
+        "avg_derived_feature_dim": _weighted_avg("avg_derived_feature_dim"),
+        "avg_local_hidden_penalty_mean": _weighted_avg("avg_local_hidden_penalty_mean"),
+        "avg_local_hidden_penalty_max": _weighted_avg("avg_local_hidden_penalty_max"),
+        "max_local_hidden_penalty_max": float(
+            max(
+                _as_float(summary.get("max_local_hidden_penalty_max", 0.0))
+                for summary in summaries
+            )
+        ),
+        "classifier_failure_reasons": failure_reasons,
+    }
+
+
 def _finalize_ranked_results(
     results: list[RankResult],
     candidates: list[Story],
@@ -339,6 +475,7 @@ class RankingEvaluator:
         self.username = username
         self.dataset: EvaluationDataset | None = None
         self.snapshot_metadata: dict[str, object] = {}
+        self.last_diagnostics_summary: dict[str, object] = {}
 
     async def load_data(
         self,
@@ -352,15 +489,15 @@ class RankingEvaluator:
         allow_stale: bool = False,
     ) -> bool:
         """Load and prepare data for evaluation. Returns True if successful."""
-        client = HNClient()
-        if cache_only:
-            print("Cache-only mode: using cached data (TTL ignored, RSS disabled).")
-        print(f"Fetching upvotes for {self.username}...")
-        user_data = await client.fetch_user_data(
-            self.username,
-            cache_only=cache_only,
-            allow_stale=allow_stale,
-        )
+        async with HNClient() as client:
+            if cache_only:
+                print("Cache-only mode: using cached data (TTL ignored, RSS disabled).")
+            print(f"Fetching upvotes for {self.username}...")
+            user_data = await client.fetch_user_data(
+                self.username,
+                cache_only=cache_only,
+                allow_stale=allow_stale,
+            )
 
         all_positives = user_data["pos"] | user_data["upvoted"]
         hidden_ids = user_data.get("hidden", set())
@@ -574,6 +711,7 @@ class RankingEvaluator:
         use_classifier: bool = True,
         k_metrics: list[int] | None = None,
         final_list_count: int | None = None,
+        diagnostics_summary: dict[str, object] | None = None,
     ) -> dict[str, float]:
         """Run ranking and return metrics."""
         if self.dataset is None:
@@ -583,6 +721,9 @@ class RankingEvaluator:
         if k_metrics is None:
             k_metrics = DEFAULT_K_METRICS
 
+        rank_diagnostics: dict[str, object] | None = (
+            {} if diagnostics_summary is not None else None
+        )
         results = rank_stories(
             dataset.candidates,
             positive_embeddings=dataset.train_embeddings,
@@ -592,7 +733,18 @@ class RankingEvaluator:
             diversity_lambda=diversity,
             knn_k=knn,
             neg_weight=neg_weight,
+            diagnostics=rank_diagnostics,
         )
+
+        summary = (
+            _summarize_rank_diagnostics([rank_diagnostics])
+            if rank_diagnostics is not None
+            else {}
+        )
+        self.last_diagnostics_summary = summary
+        if diagnostics_summary is not None:
+            diagnostics_summary.clear()
+            diagnostics_summary.update(summary)
 
         ranked_ids = (
             _finalize_ranked_ids(results, dataset.candidates, final_list_count)
@@ -613,6 +765,7 @@ class RankingEvaluator:
         report_callback: Callable[[int, dict[str, float]], None] | None = None,
         parallel: bool = True,
         final_list_count: int | None = None,
+        diagnostics_summary: dict[str, object] | None = None,
     ) -> dict[str, float]:
         """Run k-fold cross-validation and return averaged metrics."""
         from concurrent.futures import ThreadPoolExecutor
@@ -643,7 +796,9 @@ class RankingEvaluator:
         indices = np.random.permutation(n)
         fold_size = n // n_folds
 
-        def _run_fold(fold: int) -> dict[str, float]:
+        def _run_fold(
+            fold: int,
+        ) -> tuple[dict[str, float], dict[str, object] | None]:
             test_start = fold * fold_size
             test_end = test_start + fold_size if fold < n_folds - 1 else n
             test_idx = set(indices[test_start:test_end])
@@ -659,6 +814,9 @@ class RankingEvaluator:
                 if all_stories[i].id not in candidate_ids:
                     fold_candidates.append(all_stories[i])
 
+            rank_diagnostics: dict[str, object] | None = (
+                {} if diagnostics_summary is not None else None
+            )
             results = rank_stories(
                 fold_candidates,
                 positive_embeddings=train_emb,
@@ -668,6 +826,7 @@ class RankingEvaluator:
                 diversity_lambda=diversity,
                 knn_k=knn,
                 neg_weight=neg_weight,
+                diagnostics=rank_diagnostics,
             )
 
             ranked_ids = [fold_candidates[r.index].id for r in results]
@@ -686,15 +845,20 @@ class RankingEvaluator:
             else:
                 ranked_ids = [fold_candidates[r.index].id for r in results]
 
-            return _compute_metrics(ranked_ids, test_ids, k_metrics)
+            return _compute_metrics(ranked_ids, test_ids, k_metrics), rank_diagnostics
 
         # Run folds (parallel or serial)
         if parallel and n_folds > 1:
             with ThreadPoolExecutor(max_workers=n_folds) as pool:
                 futures = [pool.submit(_run_fold, fold) for fold in range(n_folds)]
-                all_metrics = [f.result() for f in futures]
+                fold_outputs = [f.result() for f in futures]
         else:
-            all_metrics = [_run_fold(fold) for fold in range(n_folds)]
+            fold_outputs = [_run_fold(fold) for fold in range(n_folds)]
+
+        all_metrics = [metrics for metrics, _ in fold_outputs]
+        diagnostics_records = [
+            diag for _, diag in fold_outputs if diag is not None
+        ]
 
         # Process results in fold order (reporting, callbacks, pruning)
         for fold, fold_metrics in enumerate(all_metrics):
@@ -713,6 +877,12 @@ class RankingEvaluator:
                     values = [all_metrics[i][key] for i in range(fold + 1)]
                     interim_metrics[key] = float(np.mean(values))
                 report_callback(fold, interim_metrics)
+
+        summary = _summarize_rank_diagnostics(diagnostics_records)
+        self.last_diagnostics_summary = summary
+        if diagnostics_summary is not None:
+            diagnostics_summary.clear()
+            diagnostics_summary.update(summary)
 
         return _average_metrics(all_metrics)
 

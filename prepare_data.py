@@ -21,8 +21,8 @@ async def prepare_data(username: str, limit: int = 300) -> None:
 
     console.print(f"[cyan]Fetching signals for @{username}...[/cyan]")
 
-    client = HNClient()
-    user_data = await client.fetch_user_data(username)
+    async with HNClient() as client:
+        user_data = await client.fetch_user_data(username)
 
     pos_ids = list(user_data.get("pos", set()) | user_data.get("upvoted", set()))
     neg_ids = list(user_data.get("hidden", set()))

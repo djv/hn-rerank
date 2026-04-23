@@ -1,5 +1,10 @@
+import logging
+from pathlib import Path
+
 import pytest
 from unittest.mock import patch, MagicMock
+
+import api.client as client_module
 from api.client import HNClient
 
 
@@ -89,3 +94,39 @@ async def test_scrape_ids_empty():
             )
             ids = await client._scrape_ids("/empty")
             assert ids == set()
+
+
+@pytest.mark.asyncio
+async def test_load_cookies_logs_warning_on_malformed_cookie_file(tmp_path, monkeypatch, caplog):
+    cookie_path = tmp_path / "cookies.json"
+    cookie_path.write_text("{not valid json")
+    monkeypatch.setattr(client_module, "COOKIES_FILE", Path(cookie_path))
+
+    with caplog.at_level(logging.WARNING):
+        client = HNClient()
+        try:
+            assert "Failed to load HN cookies" in caplog.text
+        finally:
+            await client.close()
+
+
+def test_load_cached_ids_logs_debug_on_malformed_cache(tmp_path, caplog):
+    cache_path = tmp_path / "user.json"
+    cache_path.write_text("{not valid json")
+
+    with caplog.at_level(logging.DEBUG):
+        cached = HNClient._load_cached_ids(cache_path, allow_stale=False)
+
+    assert cached is None
+    assert f"Failed to load user cache {cache_path}" in caplog.text
+
+
+def test_load_cached_ids_logs_debug_on_invalid_payload(tmp_path, caplog):
+    cache_path = tmp_path / "user.json"
+    cache_path.write_text('{"ts": 1, "ids": []}')
+
+    with caplog.at_level(logging.DEBUG):
+        cached = HNClient._load_cached_ids(cache_path, allow_stale=True)
+
+    assert cached is None
+    assert f"Ignoring malformed user cache payload in {cache_path}" in caplog.text

@@ -71,6 +71,112 @@ def test_rank_stories_classifier_fallback():
         assert len(results) == 1
 
 
+def test_rank_stories_populates_classifier_diagnostics():
+    stories = _make_stories(3)
+
+    pos_emb = np.random.rand(5, 8).astype(np.float32)
+    neg_emb = np.random.rand(5, 8).astype(np.float32)
+    cand_emb = np.random.rand(3, 8).astype(np.float32)
+    diagnostics: dict[str, object] = {}
+
+    with (
+        patch("api.rerank.CLASSIFIER_USE_CENTROID_FEATURE", True),
+        patch("api.rerank.CLASSIFIER_USE_POS_KNN_FEATURE", True),
+        patch("api.rerank.CLASSIFIER_USE_NEG_KNN_FEATURE", False),
+        patch("api.rerank.get_embeddings", return_value=cand_emb),
+        patch("api.rerank.cluster_interests_with_labels") as mock_cluster,
+        patch("api.rerank.LogisticRegressionCV") as mock_lr_class,
+    ):
+        mock_cluster.return_value = (np.zeros((2, 8)), np.array([0, 0, 0, 1, 1]))
+        mock_clf = MagicMock()
+        mock_lr_class.return_value = mock_clf
+        mock_clf.predict_proba.return_value = np.column_stack([
+            np.linspace(1, 0, 3),
+            np.linspace(0, 1, 3),
+        ])
+
+        rank_stories(
+            stories,
+            pos_emb,
+            neg_emb,
+            use_classifier=True,
+            diagnostics=diagnostics,
+        )
+
+    assert diagnostics["classifier_requested"] is True
+    assert diagnostics["classifier_used"] is True
+    assert diagnostics["classifier_failure_reason"] is None
+    assert diagnostics["positive_count"] == 5
+    assert diagnostics["negative_count"] == 5
+    assert diagnostics["base_feature_dim"] == 8
+    assert diagnostics["derived_feature_dim"] == 2
+    assert diagnostics["local_hidden_penalty_applied"] is False
+
+
+def test_rank_stories_reports_insufficient_examples_diagnostics():
+    stories = [Story(id=1, title="Test", url=None, score=0, time=0, text_content="A")]
+    pos_emb = np.random.rand(1, 8).astype(np.float32)
+    neg_emb = np.random.rand(1, 8).astype(np.float32)
+    cand_emb = np.random.rand(1, 8).astype(np.float32)
+    diagnostics: dict[str, object] = {}
+
+    with patch("api.rerank.get_embeddings", return_value=cand_emb):
+        rank_stories(
+            stories,
+            pos_emb,
+            neg_emb,
+            use_classifier=True,
+            diagnostics=diagnostics,
+        )
+
+    assert diagnostics["classifier_requested"] is True
+    assert diagnostics["classifier_used"] is False
+    assert diagnostics["classifier_failure_reason"] == "insufficient_examples"
+
+
+def test_classifier_local_hidden_penalty_reduces_semantic_scores():
+    stories = [Story(id=1, title="Test", url=None, score=0, time=0, text_content="A")]
+    rng = np.random.default_rng(123)
+    pos_emb = rng.normal(size=(5, 8)).astype(np.float32)
+    pos_emb /= np.linalg.norm(pos_emb, axis=1, keepdims=True) + 1e-9
+    neg_emb = rng.normal(size=(5, 8)).astype(np.float32)
+    neg_emb /= np.linalg.norm(neg_emb, axis=1, keepdims=True) + 1e-9
+    cand_emb = neg_emb[:1].copy()
+    diagnostics: dict[str, object] = {}
+
+    probs = np.array([0.8], dtype=np.float32)
+
+    with (
+        patch("api.rerank.get_embeddings", return_value=cand_emb),
+        patch("api.rerank.cluster_interests_with_labels") as mock_cluster,
+        patch("api.rerank.LogisticRegressionCV") as mock_lr_class,
+        patch("api.rerank.CLASSIFIER_USE_LOCAL_HIDDEN_PENALTY", True),
+        patch("api.rerank.CLASSIFIER_LOCAL_HIDDEN_PENALTY_WEIGHT", 0.5),
+        patch("api.rerank.CLASSIFIER_LOCAL_HIDDEN_PENALTY_K", 1),
+    ):
+        mock_cluster.return_value = (
+            np.zeros((2, 8)),
+            np.array([0, 0, 0, 1, 1]),
+        )
+        mock_clf = MagicMock()
+        mock_lr_class.return_value = mock_clf
+        mock_clf.predict_proba.return_value = np.column_stack([1.0 - probs, probs])
+
+        results = rank_stories(
+            stories,
+            pos_emb,
+            neg_emb,
+            use_classifier=True,
+            hn_weight=0.0,
+            diagnostics=diagnostics,
+        )
+
+    assert results[0].semantic_score == pytest.approx(0.3, abs=1e-6)
+    assert diagnostics["local_hidden_penalty_applied"] is True
+    assert diagnostics["local_hidden_penalty_mean"] == pytest.approx(0.5, abs=1e-6)
+    assert diagnostics["local_hidden_penalty_max"] == pytest.approx(0.5, abs=1e-6)
+
+
 def test_logistic_regression_cv_selects_C():
     """LogisticRegressionCV auto-selects best C from provided grid."""
     from sklearn.linear_model import LogisticRegressionCV

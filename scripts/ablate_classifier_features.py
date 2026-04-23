@@ -19,6 +19,8 @@ if str(ROOT) not in sys.path:
 
 import api.rerank  # noqa: E402
 from api.constants import (  # noqa: E402
+    CLASSIFIER_LOCAL_HIDDEN_PENALTY_K,
+    CLASSIFIER_LOCAL_HIDDEN_PENALTY_WEIGHT,
     CLASSIFIER_K_FEAT,
     CLASSIFIER_NEG_SAMPLE_WEIGHT,
     KNN_NEIGHBORS,
@@ -28,33 +30,9 @@ from api.constants import (  # noqa: E402
 from evaluate_quality import RankingEvaluator  # noqa: E402
 
 
-ABLATIONS: list[tuple[str, dict[str, bool]]] = [
+FEATURE_VARIANTS: list[tuple[str, dict[str, bool]]] = [
     (
-        "full",
-        {
-            "CLASSIFIER_USE_CENTROID_FEATURE": True,
-            "CLASSIFIER_USE_POS_KNN_FEATURE": True,
-            "CLASSIFIER_USE_NEG_KNN_FEATURE": True,
-        },
-    ),
-    (
-        "no_centroid",
-        {
-            "CLASSIFIER_USE_CENTROID_FEATURE": False,
-            "CLASSIFIER_USE_POS_KNN_FEATURE": True,
-            "CLASSIFIER_USE_NEG_KNN_FEATURE": True,
-        },
-    ),
-    (
-        "no_pos_knn",
-        {
-            "CLASSIFIER_USE_CENTROID_FEATURE": True,
-            "CLASSIFIER_USE_POS_KNN_FEATURE": False,
-            "CLASSIFIER_USE_NEG_KNN_FEATURE": True,
-        },
-    ),
-    (
-        "no_neg_knn",
+        "current_best",
         {
             "CLASSIFIER_USE_CENTROID_FEATURE": True,
             "CLASSIFIER_USE_POS_KNN_FEATURE": True,
@@ -69,17 +47,54 @@ ABLATIONS: list[tuple[str, dict[str, bool]]] = [
             "CLASSIFIER_USE_NEG_KNN_FEATURE": False,
         },
     ),
+    (
+        "centroid_only",
+        {
+            "CLASSIFIER_USE_CENTROID_FEATURE": True,
+            "CLASSIFIER_USE_POS_KNN_FEATURE": False,
+            "CLASSIFIER_USE_NEG_KNN_FEATURE": False,
+        },
+    ),
+    (
+        "pos_knn_only",
+        {
+            "CLASSIFIER_USE_CENTROID_FEATURE": False,
+            "CLASSIFIER_USE_POS_KNN_FEATURE": True,
+            "CLASSIFIER_USE_NEG_KNN_FEATURE": False,
+        },
+    ),
 ]
 
 IMPORTANT_METRICS = [
     "mrr",
     "ndcg@10",
+    "ndcg@20",
     "ndcg@30",
     "map@30",
     "precision@20",
     "recall@30",
     "recall@50",
 ]
+
+
+def _diag_float(summary: dict[str, object], key: str, default: float = 0.0) -> float:
+    value = summary.get(key, default)
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float)):
+        return float(value)
+    return default
+
+
+def _diag_int(summary: dict[str, object], key: str, default: int = 0) -> int:
+    value = summary.get(key, default)
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    return default
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -132,6 +147,29 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional JSON output path",
     )
+    parser.add_argument(
+        "--count",
+        type=int,
+        default=40,
+        help="Displayed story count for final-list evaluation",
+    )
+    parser.add_argument(
+        "--include-local-hidden-penalty",
+        action="store_true",
+        help="Include a current_best variant with local hidden penalty enabled.",
+    )
+    parser.add_argument(
+        "--local-hidden-penalty-weight",
+        type=float,
+        default=CLASSIFIER_LOCAL_HIDDEN_PENALTY_WEIGHT,
+        help="Local hidden penalty weight for the optional penalty variant.",
+    )
+    parser.add_argument(
+        "--local-hidden-penalty-k",
+        type=int,
+        default=CLASSIFIER_LOCAL_HIDDEN_PENALTY_K,
+        help="Local hidden penalty k for the optional penalty variant.",
+    )
     return parser
 
 
@@ -168,9 +206,23 @@ async def main() -> int:
     if not evaluator.load_snapshot(args.snapshot):
         raise SystemExit(f"Failed to load snapshot: {args.snapshot}")
 
+    variants = list(FEATURE_VARIANTS)
+    if args.include_local_hidden_penalty:
+        variants.append(
+            (
+                "current_best_plus_local_hidden_penalty",
+                {
+                    "CLASSIFIER_USE_CENTROID_FEATURE": True,
+                    "CLASSIFIER_USE_POS_KNN_FEATURE": True,
+                    "CLASSIFIER_USE_NEG_KNN_FEATURE": False,
+                },
+            )
+        )
+
     results: list[dict[str, object]] = []
-    for label, flags in ABLATIONS:
+    for label, flags in variants:
         per_seed: list[dict[str, float]] = []
+        per_seed_diagnostics: list[dict[str, object]] = []
         with ExitStack() as stack:
             stack.enter_context(
                 patch.object(api.rerank, "CLASSIFIER_K_FEAT", args.classifier_k_feat)
@@ -182,10 +234,36 @@ async def main() -> int:
                     args.classifier_neg_sample_weight,
                 )
             )
+            use_local_hidden_penalty = (
+                args.include_local_hidden_penalty
+                and label == "current_best_plus_local_hidden_penalty"
+            )
+            stack.enter_context(
+                patch.object(
+                    api.rerank,
+                    "CLASSIFIER_USE_LOCAL_HIDDEN_PENALTY",
+                    use_local_hidden_penalty,
+                )
+            )
+            stack.enter_context(
+                patch.object(
+                    api.rerank,
+                    "CLASSIFIER_LOCAL_HIDDEN_PENALTY_WEIGHT",
+                    args.local_hidden_penalty_weight,
+                )
+            )
+            stack.enter_context(
+                patch.object(
+                    api.rerank,
+                    "CLASSIFIER_LOCAL_HIDDEN_PENALTY_K",
+                    args.local_hidden_penalty_k,
+                )
+            )
             for attr, value in flags.items():
                 stack.enter_context(patch.object(api.rerank, attr, value))
             for seed in args.seeds:
                 np.random.seed(seed)
+                diagnostics_summary: dict[str, object] = {}
                 metrics = evaluator.evaluate_cv(
                     n_folds=args.cv_folds,
                     diversity=args.diversity,
@@ -194,31 +272,47 @@ async def main() -> int:
                     use_classifier=True,
                     report_each=False,
                     parallel=False,
+                    final_list_count=args.count,
+                    diagnostics_summary=diagnostics_summary,
                 )
                 per_seed.append(metrics)
+                per_seed_diagnostics.append(
+                    {
+                        "seed": seed,
+                        "diagnostics": diagnostics_summary,
+                    }
+                )
         summary = summarize(per_seed)
         results.append(
             {
                 "label": label,
                 "flags": flags,
+                "local_hidden_penalty": {
+                    "enabled": use_local_hidden_penalty,
+                    "weight": args.local_hidden_penalty_weight,
+                    "k": args.local_hidden_penalty_k,
+                },
                 "summary": summary,
                 "per_seed": [
                     {"seed": seed, "metrics": metrics}
                     for seed, metrics in zip(args.seeds, per_seed, strict=True)
                 ],
+                "diagnostics_per_seed": per_seed_diagnostics,
             }
         )
 
-    full_summary = next(
-        cast(dict[str, float], item["summary"]) for item in results if item["label"] == "full"
+    current_best_summary = next(
+        cast(dict[str, float], item["summary"])
+        for item in results
+        if item["label"] == "current_best"
     )
     for item in results:
         summary = cast(dict[str, float], item["summary"])
         deltas = {
-            metric: summary.get(metric, 0.0) - full_summary.get(metric, 0.0)
+            metric: summary.get(metric, 0.0) - current_best_summary.get(metric, 0.0)
             for metric in IMPORTANT_METRICS
         }
-        item["delta_vs_full"] = deltas
+        item["delta_vs_current_best"] = deltas
 
     payload = {
         "snapshot": str(args.snapshot),
@@ -230,6 +324,8 @@ async def main() -> int:
             "knn": args.knn,
             "classifier_k_feat": args.classifier_k_feat,
             "classifier_neg_sample_weight": args.classifier_neg_sample_weight,
+            "local_hidden_penalty_weight": args.local_hidden_penalty_weight,
+            "local_hidden_penalty_k": args.local_hidden_penalty_k,
         },
         "results": results,
     }
@@ -241,8 +337,22 @@ async def main() -> int:
             value = summary.get(metric)
             if value is not None:
                 print(f"  {metric}: {value:.4f}")
-        if item["label"] != "full":
-            delta = cast(dict[str, float], item["delta_vs_full"])
+        diagnostics = cast(list[dict[str, object]], item["diagnostics_per_seed"])
+        if diagnostics:
+            last_diag = cast(dict[str, object], diagnostics[-1]["diagnostics"])
+            classifier_used_rate = _diag_float(last_diag, "classifier_used_rate")
+            classifier_fallback_count = _diag_int(
+                last_diag, "classifier_fallback_count"
+            )
+            avg_derived_dim = _diag_float(last_diag, "avg_derived_feature_dim")
+            print(
+                "  diagnostics: "
+                f"classifier_used_rate={classifier_used_rate:.1%}, "
+                f"fallbacks={classifier_fallback_count}, "
+                f"avg_derived_dim={avg_derived_dim:.1f}"
+            )
+        if item["label"] != "current_best":
+            delta = cast(dict[str, float], item["delta_vs_current_best"])
             print(f"  delta ndcg@30: {delta['ndcg@30']:+.4f}")
             print(f"  delta recall@30: {delta['recall@30']:+.4f}")
 

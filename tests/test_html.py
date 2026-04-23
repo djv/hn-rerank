@@ -1,9 +1,18 @@
+import json
+import logging
+import os
 import time
-import pytest
+from unittest.mock import AsyncMock
+
+import httpx
 import numpy as np
+import pytest
 
 import generate_html
 from generate_html import (
+    _extract_hn_dupe_target,
+    _fetch_hn_dupe_target,
+    _load_cached_hn_dupe_target,
     build_candidate_cluster_map,
     filter_top_ranked_hn_dupes,
     generate_story_html,
@@ -300,6 +309,91 @@ def _mk_rank(idx: int, score: float) -> RankResult:
         max_sim_score=0.0,
         knn_score=0.0,
     )
+
+
+def test_extract_hn_dupe_target_parses_target_id():
+    html = """
+    <html>
+      <span class="titleline">[dupe] Example story</span>
+      <div class="comment">
+        <a href="https://news.ycombinator.com/item?id=12345">dupe target</a>
+      </div>
+    </html>
+    """
+
+    assert _extract_hn_dupe_target(html, 54321) == (True, 12345)
+
+
+def test_load_cached_hn_dupe_target_logs_debug_on_malformed_cache(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(generate_html, "HN_DUPE_CACHE_DIR", tmp_path)
+    sid = 47862608
+    cache_path = tmp_path / f"{sid}.json"
+    cache_path.write_text("{not valid json")
+
+    with caplog.at_level(logging.DEBUG):
+        cached = _load_cached_hn_dupe_target(sid)
+
+    assert cached is None
+    assert f"Failed to load HN dupe cache {cache_path}" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_fetch_hn_dupe_target_refetches_stale_negative_cache(tmp_path, monkeypatch):
+    monkeypatch.setattr(generate_html, "HN_DUPE_CACHE_DIR", tmp_path)
+    sid = 47862608
+    cache_path = tmp_path / f"{sid}.json"
+    cache_path.write_text(json.dumps({"is_dupe": False, "target_id": None}))
+    stale_negative_age = generate_html.HN_DUPE_FALSE_CACHE_TTL + 5
+    now = time.time()
+    os.utime(cache_path, (now - stale_negative_age, now - stale_negative_age))
+
+    response_html = """
+    <html>
+      <span class="titleline">[dupe] Example story</span>
+      <div class="comment">
+        <a href="https://news.ycombinator.com/item?id=47862497">dupe target</a>
+      </div>
+    </html>
+    """
+
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.get.return_value = httpx.Response(
+        200,
+        text=response_html,
+        request=httpx.Request(
+            "GET", f"https://news.ycombinator.com/item?id={sid}"
+        ),
+    )
+
+    result = await _fetch_hn_dupe_target(client, sid)
+
+    assert result == (True, 47862497)
+    client.get.assert_awaited_once_with(
+        "https://news.ycombinator.com/item",
+        params={"id": sid},
+    )
+    assert json.loads(cache_path.read_text()) == {
+        "is_dupe": True,
+        "target_id": 47862497,
+    }
+
+
+@pytest.mark.asyncio
+async def test_fetch_hn_dupe_target_uses_fresh_positive_cache(tmp_path, monkeypatch):
+    monkeypatch.setattr(generate_html, "HN_DUPE_CACHE_DIR", tmp_path)
+    sid = 47862608
+    cache_path = tmp_path / f"{sid}.json"
+    cache_path.write_text(json.dumps({"is_dupe": True, "target_id": 47862497}))
+    fresh_positive_age = generate_html.HN_DUPE_TRUE_CACHE_TTL - 5
+    now = time.time()
+    os.utime(cache_path, (now - fresh_positive_age, now - fresh_positive_age))
+
+    client = AsyncMock(spec=httpx.AsyncClient)
+
+    result = await _fetch_hn_dupe_target(client, sid)
+
+    assert result == (True, 47862497)
+    client.get.assert_not_awaited()
 
 
 @pytest.mark.asyncio

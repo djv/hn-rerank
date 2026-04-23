@@ -117,6 +117,44 @@ def test_finalize_ranked_results_applies_render_dedup_without_refill():
     assert [candidates[result.index].id for result in finalized] == [1, 3]
 
 
+def test_finalize_ranked_results_keeps_distinct_query_identified_urls():
+    candidates = [
+        Story(
+            id=1,
+            title="Query Story A",
+            url="https://example.com/post?id=1&utm_source=hn",
+            score=10,
+            time=1,
+            text_content="a",
+        ),
+        Story(
+            id=2,
+            title="Query Story B",
+            url="https://example.com/post?id=2",
+            score=9,
+            time=1,
+            text_content="b",
+        ),
+        Story(
+            id=3,
+            title="Unique",
+            url="https://example.com/unique",
+            score=8,
+            time=1,
+            text_content="c",
+        ),
+    ]
+    results = [
+        RankResult(index=0, hybrid_score=0.9, best_fav_index=-1, max_sim_score=0.0, knn_score=0.0),
+        RankResult(index=1, hybrid_score=0.8, best_fav_index=-1, max_sim_score=0.0, knn_score=0.0),
+        RankResult(index=2, hybrid_score=0.7, best_fav_index=-1, max_sim_score=0.0, knn_score=0.0),
+    ]
+
+    finalized = _finalize_ranked_results(results, candidates, count=3)
+
+    assert [candidates[result.index].id for result in finalized] == [1, 2, 3]
+
+
 def test_evaluate_can_score_final_displayed_list():
     train = [_story(1), _story(2)]
     test = [_story(3)]
@@ -149,3 +187,61 @@ def test_evaluate_can_score_final_displayed_list():
     assert metrics["mrr"] == 1.0
     assert metrics["precision@1"] == 1.0
     assert metrics["recall@2"] == 1.0
+
+
+def test_evaluate_cv_populates_diagnostics_summary():
+    train = [_story(1), _story(2), _story(3), _story(4)]
+    test = [_story(5), _story(6)]
+    candidates = [_story(10), _story(11), _story(12), _story(13)]
+    evaluator = RankingEvaluator("snapshot_user")
+    evaluator.dataset = EvaluationDataset(
+        train_stories=train,
+        test_stories=test,
+        neg_stories=[_story(20), _story(21)],
+        candidates=candidates,
+        train_embeddings=np.ones((4, 3), dtype=np.float32),
+        neg_embeddings=np.ones((2, 3), dtype=np.float32),
+        pos_weights=None,
+        test_ids={12},
+    )
+
+    def _fake_rank_stories(*args, **kwargs):
+        diagnostics = kwargs.get("diagnostics")
+        if diagnostics is not None:
+            diagnostics.update(
+                {
+                    "classifier_requested": True,
+                    "classifier_used": True,
+                    "classifier_failure_reason": None,
+                    "positive_count": 4,
+                    "negative_count": 2,
+                    "base_feature_dim": 3,
+                    "derived_feature_dim": 2,
+                    "local_hidden_penalty_applied": False,
+                    "local_hidden_penalty_mean": 0.0,
+                    "local_hidden_penalty_max": 0.0,
+                }
+            )
+        return [
+            RankResult(index=0, hybrid_score=0.9, best_fav_index=-1, max_sim_score=0.0, knn_score=0.0),
+            RankResult(index=1, hybrid_score=0.8, best_fav_index=-1, max_sim_score=0.0, knn_score=0.0),
+            RankResult(index=2, hybrid_score=0.7, best_fav_index=-1, max_sim_score=0.0, knn_score=0.0),
+            RankResult(index=3, hybrid_score=0.6, best_fav_index=-1, max_sim_score=0.0, knn_score=0.0),
+        ]
+
+    diagnostics_summary: dict[str, object] = {}
+    with patch("evaluate_quality.get_embeddings", return_value=np.ones((6, 3), dtype=np.float32)):
+        with patch("evaluate_quality.rank_stories", side_effect=_fake_rank_stories):
+            evaluator.evaluate_cv(
+                n_folds=2,
+                k_metrics=[10],
+                report_each=False,
+                parallel=False,
+                diagnostics_summary=diagnostics_summary,
+            )
+
+    assert diagnostics_summary["rank_calls"] == 2
+    assert diagnostics_summary["classifier_requested_count"] == 2
+    assert diagnostics_summary["classifier_used_count"] == 2
+    assert diagnostics_summary["classifier_used_rate"] == 1.0
+    assert diagnostics_summary["avg_derived_feature_dim"] == 2.0

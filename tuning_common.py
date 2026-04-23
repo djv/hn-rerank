@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from typing import Any, TypeAlias
 from unittest.mock import patch
@@ -9,8 +9,12 @@ import api.rerank
 from api.constants import (
     ADAPTIVE_HN_THRESHOLD_YOUNG,
     ADAPTIVE_HN_WEIGHT_MIN,
+    CLASSIFIER_LOCAL_HIDDEN_PENALTY_K,
+    CLASSIFIER_LOCAL_HIDDEN_PENALTY_WEIGHT,
     CLASSIFIER_K_FEAT,
     CLASSIFIER_NEG_SAMPLE_WEIGHT,
+    CLASSIFIER_USE_BALANCED_CLASS_WEIGHT,
+    CLASSIFIER_USE_LOCAL_HIDDEN_PENALTY,
     CLUSTER_OUTLIER_SIMILARITY_THRESHOLD,
     CLUSTER_SPECTRAL_NEIGHBORS,
     DEFAULT_CLUSTER_COUNT,
@@ -25,17 +29,19 @@ from api.constants import (
 )
 
 OBJECTIVE_WEIGHTS: dict[str, float] = {
-    "mrr": 0.30,
-    "ndcg@10": 0.35,
-    "ndcg@30": 0.20,
-    "recall@50": 0.15,
+    "mrr": 0.40,
+    "ndcg@10": 0.40,
+    "ndcg@20": 0.20,
 }
+VALIDATION_PRIMARY_METRICS: tuple[str, ...] = ("mrr", "ndcg@10", "ndcg@20")
+VALIDATION_GUARD_METRICS: tuple[str, ...] = ("ndcg@30", "precision@20", "recall@30")
 
 HN_THRESHOLD_GAP = 42.0
 ADAPTIVE_HN_DELTA = 0.035
 
 ResolvedSection: TypeAlias = dict[str, float | int]
 ResolvedParams: TypeAlias = dict[str, ResolvedSection]
+ValidationResult: TypeAlias = dict[str, Any]
 
 
 def derive_classifier_diversity_lambda(diversity_lambda: float) -> float:
@@ -63,9 +69,77 @@ def score_metrics(
     return float(mean - std_penalty * std)
 
 
+def average_seed_metrics(
+    metrics_per_seed: Sequence[Mapping[str, float | int]]
+) -> dict[str, float]:
+    if not metrics_per_seed:
+        return {}
+    keys = metrics_per_seed[0].keys()
+    return {
+        str(key): float(
+            sum(float(metrics[key]) for metrics in metrics_per_seed) / len(metrics_per_seed)
+        )
+        for key in keys
+    }
+
+
+def validate_candidate_metrics(
+    candidate_metrics: Mapping[str, float],
+    incumbent_metrics: Mapping[str, float],
+    *,
+    std_penalty: float,
+    score_tolerance: float = 0.0,
+    guard_tolerance: float = 0.0,
+    primary_metrics: tuple[str, ...] = VALIDATION_PRIMARY_METRICS,
+    guard_metrics: tuple[str, ...] = VALIDATION_GUARD_METRICS,
+) -> ValidationResult:
+    candidate_score = score_metrics(candidate_metrics, std_penalty=std_penalty)
+    incumbent_score = score_metrics(incumbent_metrics, std_penalty=std_penalty)
+    score_delta = float(candidate_score - incumbent_score)
+
+    primary_failures: list[str] = []
+    for metric in primary_metrics:
+        cand = float(candidate_metrics.get(metric, 0.0))
+        inc = float(incumbent_metrics.get(metric, 0.0))
+        if cand < inc - score_tolerance:
+            primary_failures.append(metric)
+
+    guard_failures: list[str] = []
+    for metric in guard_metrics:
+        cand = float(candidate_metrics.get(metric, 0.0))
+        inc = float(incumbent_metrics.get(metric, 0.0))
+        if cand < inc - guard_tolerance:
+            guard_failures.append(metric)
+
+    promotable = (
+        score_delta > score_tolerance
+        and not primary_failures
+        and not guard_failures
+    )
+
+    metric_deltas = {
+        metric: float(candidate_metrics.get(metric, 0.0) - incumbent_metrics.get(metric, 0.0))
+        for metric in sorted(set(primary_metrics) | set(guard_metrics))
+    }
+
+    return {
+        "promotable": promotable,
+        "candidate_score": candidate_score,
+        "incumbent_score": incumbent_score,
+        "score_delta": score_delta,
+        "primary_failures": primary_failures,
+        "guard_failures": guard_failures,
+        "metric_deltas": metric_deltas,
+    }
+
+
 def resolve_params(params: Mapping[str, float | int]) -> ResolvedParams:
     diversity_lambda = float(params.get("diversity_lambda", RANKING_DIVERSITY_LAMBDA))
     adaptive_hn_min = float(params.get("adaptive_hn_min", ADAPTIVE_HN_WEIGHT_MIN))
+    adaptive_hn_max = float(
+        params.get("adaptive_hn_max", derive_adaptive_hn_max(adaptive_hn_min))
+    )
+    adaptive_hn_max = max(adaptive_hn_min, adaptive_hn_max)
     threshold_young = float(
         params.get("hn_threshold_young", ADAPTIVE_HN_THRESHOLD_YOUNG)
     )
@@ -82,7 +156,7 @@ def resolve_params(params: Mapping[str, float | int]) -> ResolvedParams:
         },
         "adaptive_hn": {
             "weight_min": adaptive_hn_min,
-            "weight_max": derive_adaptive_hn_max(adaptive_hn_min),
+            "weight_max": adaptive_hn_max,
             "threshold_young": threshold_young,
             "threshold_old": derive_hn_threshold_old(threshold_young),
             "score_normalization_cap": float(
@@ -109,12 +183,39 @@ def resolve_params(params: Mapping[str, float | int]) -> ResolvedParams:
                     "classifier_neg_sample_weight", CLASSIFIER_NEG_SAMPLE_WEIGHT
                 )
             ),
+            "use_balanced_class_weight": bool(
+                params.get(
+                    "classifier_use_balanced_class_weight",
+                    CLASSIFIER_USE_BALANCED_CLASS_WEIGHT,
+                )
+            ),
+            "use_local_hidden_penalty": bool(
+                params.get(
+                    "classifier_use_local_hidden_penalty",
+                    CLASSIFIER_USE_LOCAL_HIDDEN_PENALTY,
+                )
+            ),
+            "local_hidden_penalty_weight": float(
+                params.get(
+                    "classifier_local_hidden_penalty_weight",
+                    CLASSIFIER_LOCAL_HIDDEN_PENALTY_WEIGHT,
+                )
+            ),
+            "local_hidden_penalty_k": int(
+                round(
+                    float(
+                        params.get(
+                            "classifier_local_hidden_penalty_k",
+                            CLASSIFIER_LOCAL_HIDDEN_PENALTY_K,
+                        )
+                    )
+                )
+            ),
         },
     }
 
 
 def build_patch_kwargs(resolved: ResolvedParams) -> dict[str, Any]:
-    ranking = resolved["ranking"]
     adaptive_hn = resolved["adaptive_hn"]
     freshness = resolved["freshness"]
     semantic = resolved["semantic"]
@@ -130,11 +231,12 @@ def build_patch_kwargs(resolved: ResolvedParams) -> dict[str, Any]:
         "KNN_SIGMOID_K": semantic["knn_sigmoid_k"],
         "KNN_MAXSIM_WEIGHT": semantic["knn_maxsim_weight"],
         "KNN_NEIGHBORS": semantic["knn_neighbors"],
-        "RANKING_DIVERSITY_LAMBDA_CLASSIFIER": ranking[
-            "diversity_lambda_classifier"
-        ],
         "CLASSIFIER_K_FEAT": classifier["k_feat"],
         "CLASSIFIER_NEG_SAMPLE_WEIGHT": classifier["neg_sample_weight"],
+        "CLASSIFIER_USE_BALANCED_CLASS_WEIGHT": classifier["use_balanced_class_weight"],
+        "CLASSIFIER_USE_LOCAL_HIDDEN_PENALTY": classifier["use_local_hidden_penalty"],
+        "CLASSIFIER_LOCAL_HIDDEN_PENALTY_WEIGHT": classifier["local_hidden_penalty_weight"],
+        "CLASSIFIER_LOCAL_HIDDEN_PENALTY_K": classifier["local_hidden_penalty_k"],
         "CLUSTER_OUTLIER_SIMILARITY_THRESHOLD": CLUSTER_OUTLIER_SIMILARITY_THRESHOLD,
         "DEFAULT_CLUSTER_COUNT": DEFAULT_CLUSTER_COUNT,
         "CLUSTER_SPECTRAL_NEIGHBORS": CLUSTER_SPECTRAL_NEIGHBORS,

@@ -147,6 +147,19 @@ HN_SCORE_NORMALIZATION_CAP = _get("adaptive_hn", "score_normalization_cap", 1392
 # Classifier Tuning
 CLASSIFIER_K_FEAT = _get("classifier", "k_feat", 5)
 CLASSIFIER_NEG_SAMPLE_WEIGHT = _get("classifier", "neg_sample_weight", 1.6984260758)
+CLASSIFIER_USE_BALANCED_CLASS_WEIGHT = _get(
+    "classifier", "use_balanced_class_weight", True
+)
+CLASSIFIER_CV_SCORING = _get("classifier", "cv_scoring", "f1")
+CLASSIFIER_USE_LOCAL_HIDDEN_PENALTY = _get(
+    "classifier", "use_local_hidden_penalty", False
+)
+CLASSIFIER_LOCAL_HIDDEN_PENALTY_WEIGHT = _get(
+    "classifier", "local_hidden_penalty_weight", 0.0
+)
+CLASSIFIER_LOCAL_HIDDEN_PENALTY_K = _get(
+    "classifier", "local_hidden_penalty_k", 3
+)
 CLASSIFIER_USE_CENTROID_FEATURE = _get("classifier", "use_centroid_feature", True)
 CLASSIFIER_USE_POS_KNN_FEATURE = _get("classifier", "use_pos_knn_feature", True)
 CLASSIFIER_USE_NEG_KNN_FEATURE = _get("classifier", "use_neg_knn_feature", True)

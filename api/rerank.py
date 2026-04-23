@@ -108,8 +108,13 @@ from api.constants import (  # noqa: E402
     KNN_SIGMOID_K,
     KNN_MAXSIM_WEIGHT,
     CLASSIFIER_K_FEAT,
+    CLASSIFIER_LOCAL_HIDDEN_PENALTY_K,
+    CLASSIFIER_LOCAL_HIDDEN_PENALTY_WEIGHT,
     CLASSIFIER_NEG_SAMPLE_WEIGHT,
+    CLASSIFIER_CV_SCORING,
+    CLASSIFIER_USE_BALANCED_CLASS_WEIGHT,
     CLASSIFIER_USE_CENTROID_FEATURE,
+    CLASSIFIER_USE_LOCAL_HIDDEN_PENALTY,
     CLASSIFIER_USE_POS_KNN_FEATURE,
     CLASSIFIER_USE_NEG_KNN_FEATURE,
     SIMILARITY_MIN,
@@ -119,6 +124,15 @@ from api.llm_utils import build_payload  # noqa: E402
 from api.models import RankResult, Story, StoryDict, StoryForTldr  # noqa: E402
 
 logger = logging.getLogger(__name__)
+
+
+def _set_rank_diagnostics(
+    diagnostics: dict[str, object] | None,
+    **kwargs: object,
+) -> None:
+    if diagnostics is None:
+        return
+    diagnostics.update(kwargs)
 
 
 def compute_recency_weights(
@@ -402,8 +416,8 @@ def _get_embeddings_with_model(
         vec: NDArray[np.float32] | None = None
         if cache_path_npz.exists():
             try:
-                data = np.load(cache_path_npz)
-                vec = data["embedding"]
+                with np.load(cache_path_npz) as data:
+                    vec = cast(NDArray[np.float32], data["embedding"])
             except Exception as e:
                 logger.debug(f"Failed to load embedding cache {cache_path_npz}: {e}")
         elif cache_path_npy.exists():
@@ -1959,6 +1973,7 @@ def rank_stories(
     use_contrastive: bool = False,
     knn_k: int = KNN_NEIGHBORS,
     progress_callback: Callable[[int, int], None] | None = None,
+    diagnostics: dict[str, object] | None = None,
 ) -> list[RankResult]:
     """
     Rank candidate stories by relevance to user interests.
@@ -1973,6 +1988,21 @@ def rank_stories(
     cand_emb: NDArray[np.float32] = get_embeddings(
         cand_texts, progress_callback=progress_callback
     )
+    positive_count = 0 if positive_embeddings is None else len(positive_embeddings)
+    negative_count = 0 if negative_embeddings is None else len(negative_embeddings)
+    _set_rank_diagnostics(
+        diagnostics,
+        classifier_requested=bool(use_classifier),
+        classifier_used=False,
+        classifier_failure_reason=None,
+        positive_count=int(positive_count),
+        negative_count=int(negative_count),
+        base_feature_dim=int(cand_emb.shape[1]),
+        derived_feature_dim=0,
+        local_hidden_penalty_applied=False,
+        local_hidden_penalty_mean=0.0,
+        local_hidden_penalty_max=0.0,
+    )
 
     semantic_scores: NDArray[np.float32]
     max_sim_scores: NDArray[np.float32]
@@ -1981,17 +2011,18 @@ def rank_stories(
 
     # Check if we can/should use classifier
     classifier_success = False
-    if (
+    classifier_requested_and_eligible = (
         use_classifier
         and positive_embeddings is not None
         and negative_embeddings is not None
         and len(positive_embeddings) >= 5
         and len(negative_embeddings) >= 5
-    ):
+    )
+    if classifier_requested_and_eligible:
         try:
             # Prepare training data
-            X_pos = positive_embeddings
-            X_neg = negative_embeddings
+            X_pos = cast(NDArray[np.float32], positive_embeddings)
+            X_neg = cast(NDArray[np.float32], negative_embeddings)
             y_pos = np.ones(len(X_pos))
             y_neg = np.zeros(len(X_neg))
 
@@ -2096,14 +2127,20 @@ def rank_stories(
                 if cand_derived.shape[1] > 0
                 else cand_emb
             )
+            _set_rank_diagnostics(
+                diagnostics,
+                derived_feature_dim=int(cand_derived.shape[1]),
+            )
 
             clf = LogisticRegressionCV(
                 Cs=[0.01, 0.1, 1.0, 10.0],
                 cv=3,
-                class_weight="balanced",
+                class_weight=(
+                    "balanced" if CLASSIFIER_USE_BALANCED_CLASS_WEIGHT else None
+                ),
                 l1_ratios=(0.0,),
                 solver="liblinear",
-                scoring="f1",
+                scoring=CLASSIFIER_CV_SCORING,
                 use_legacy_attributes=False,
             )
             clf.fit(X_train, y_train, sample_weight=sample_weights)
@@ -2112,13 +2149,38 @@ def rank_stories(
             probs = clf.predict_proba(cand_features)[:, 1]
             semantic_scores = probs.astype(np.float32)
 
+            local_hidden_penalty = np.zeros(len(stories), dtype=np.float32)
+            if (
+                CLASSIFIER_USE_LOCAL_HIDDEN_PENALTY
+                and CLASSIFIER_LOCAL_HIDDEN_PENALTY_WEIGHT > 0
+                and len(X_neg) > 0
+            ):
+                penalty_k = min(len(X_neg), CLASSIFIER_LOCAL_HIDDEN_PENALTY_K)
+                if penalty_k > 0:
+                    hidden_sim = cosine_similarity(cand_emb, X_neg)
+                    local_hidden_penalty = np.median(
+                        np.partition(hidden_sim, -penalty_k, axis=1)[:, -penalty_k:],
+                        axis=1,
+                    ).astype(np.float32)
+                    local_hidden_penalty = np.clip(local_hidden_penalty, 0.0, None)
+                    local_hidden_penalty *= CLASSIFIER_LOCAL_HIDDEN_PENALTY_WEIGHT
+                    semantic_scores = np.clip(
+                        semantic_scores - local_hidden_penalty, 0.0, 1.0
+                    ).astype(np.float32)
+                    _set_rank_diagnostics(
+                        diagnostics,
+                        local_hidden_penalty_applied=True,
+                        local_hidden_penalty_mean=float(np.mean(local_hidden_penalty)),
+                        local_hidden_penalty_max=float(np.max(local_hidden_penalty)),
+                    )
+
             # We still need max_sim_scores for the UI "Similar to..."
-            sim_pos_ui = cosine_similarity(positive_embeddings, cand_emb)
+            sim_pos_ui = cosine_similarity(X_pos, cand_emb)
             max_sim_scores = np.max(sim_pos_ui, axis=0)
             best_fav_indices = np.argmax(sim_pos_ui, axis=0)
 
             # Compute k-NN scores for display
-            k = min(len(positive_embeddings), knn_k)
+            k = min(len(X_pos), knn_k)
             if k > 0:
                 top_k_sims = np.partition(sim_pos_ui, -k, axis=0)[-k:, :]
                 raw_knn_scores = np.median(top_k_sims, axis=0).astype(np.float32)
@@ -2126,9 +2188,23 @@ def rank_stories(
                 raw_knn_scores = np.zeros(len(stories), dtype=np.float32)
 
             classifier_success = True
+            _set_rank_diagnostics(
+                diagnostics,
+                classifier_used=True,
+                classifier_failure_reason=None,
+            )
         except Exception as e:
             # Fallback to heuristic on error
             logger.warning(f"Classifier training failed, using heuristic: {e}")
+            _set_rank_diagnostics(
+                diagnostics,
+                classifier_failure_reason=f"{type(e).__name__}: {e}",
+            )
+    elif use_classifier:
+        _set_rank_diagnostics(
+            diagnostics,
+            classifier_failure_reason="insufficient_examples",
+        )
 
     if not classifier_success:
         if positive_embeddings is None or len(positive_embeddings) == 0:

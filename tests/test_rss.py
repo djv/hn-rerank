@@ -1,10 +1,11 @@
+import logging
 import pytest
 import respx
 from httpx import Response
 from pathlib import Path
 
 from api import rss
-from api.rss import _extract_opml_feed_urls, _parse_feed_entries, fetch_rss_stories
+from api.rss import _extract_opml_feed_urls, _parse_date, _parse_feed_entries, fetch_rss_stories
 
 
 @pytest.fixture(autouse=True)
@@ -27,6 +28,14 @@ def test_extract_opml_feed_urls():
     """
     urls = _extract_opml_feed_urls(opml)
     assert urls == ["https://example.com/feed.xml", "https://other.com/rss"]
+
+
+def test_parse_date_logs_debug_on_unparseable_input(caplog):
+    with caplog.at_level(logging.DEBUG):
+        parsed = _parse_date("definitely not a date")
+
+    assert parsed is None
+    assert "Failed to parse RSS date" in caplog.text
 
 
 def test_parse_rss_entries():

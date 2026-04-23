@@ -41,6 +41,11 @@ knn_neighbors = 3
 [hn_rerank.classifier]
 k_feat = 1
 neg_sample_weight = 1.67
+use_balanced_class_weight = true
+cv_scoring = "f1"
+use_local_hidden_penalty = false
+local_hidden_penalty_weight = 0.0
+local_hidden_penalty_k = 3
 use_neg_knn_feature = false
 
 [hn_rerank.clustering]

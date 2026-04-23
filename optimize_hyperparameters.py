@@ -15,6 +15,8 @@ from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
+
 TRAIN_EXTRA_HINT = (
     "optimize_hyperparameters.py requires the 'train' extra. "
     "Run: uv sync --extra train"
@@ -43,7 +45,13 @@ def _ensure_joblib_settings() -> None:
 
 _ensure_joblib_settings()
 
-from evaluate_quality import RankingEvaluator, DEFAULT_GUARD_METRICS, _guard_metrics, _load_baseline  # noqa: E402
+from evaluate_quality import (  # noqa: E402
+    RankingEvaluator,
+    DEFAULT_GUARD_METRICS,
+    _guard_metrics,
+    _load_baseline,
+    _merge_rank_diagnostic_summaries,
+)
 from api.constants import (  # noqa: E402
     ADAPTIVE_HN_THRESHOLD_YOUNG,
     ADAPTIVE_HN_WEIGHT_MIN,
@@ -56,8 +64,6 @@ from api.constants import (  # noqa: E402
     KNN_SIGMOID_K,
     KNN_MAXSIM_WEIGHT,
     POSITIVE_RECENCY_ENABLED,
-    RANKING_DIVERSITY_LAMBDA,
-    RANKING_NEGATIVE_WEIGHT,
 )
 import tuning_common as _tuning_common  # noqa: E402
 
@@ -68,10 +74,32 @@ _derive_classifier_diversity_lambda = _tuning_common.derive_classifier_diversity
 _derive_hn_threshold_old = _tuning_common.derive_hn_threshold_old
 patched_rerank_params = _tuning_common.patched_rerank_params
 _score_metrics = _tuning_common.score_metrics
+_average_seed_metrics = _tuning_common.average_seed_metrics
+_validate_candidate_metrics = _tuning_common.validate_candidate_metrics
 
 # Configure logging to suppress verbose output during optimization
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("optuna").setLevel(logging.INFO)
+
+
+def _diag_float(summary: dict[str, object], key: str, default: float = 0.0) -> float:
+    value = summary.get(key, default)
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float)):
+        return float(value)
+    return default
+
+
+def _diag_int(summary: dict[str, object], key: str, default: int = 0) -> int:
+    value = summary.get(key, default)
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    return default
 
 
 def _parse_last_log(log_dir: Path) -> dict[str, float] | None:
@@ -134,10 +162,9 @@ def _build_ranges(
     - Tight where top-10 converged.
     """
     full_defaults: dict[str, tuple[float, float]] = {
-        "diversity_lambda": (0.20, 0.60),
-        "neg_weight": (0.30, 0.80),
         "knn_k": (1, 4),
         "adaptive_hn_min": (0.0, 0.07),
+        "adaptive_hn_max": (0.02, 0.12),
         "freshness_boost": (0.04, 0.15),
         "freshness_half_life": (45.0, 100.0),
         "knn_sigmoid_k": (4.0, 8.0),
@@ -151,8 +178,6 @@ def _build_ranges(
         "full": set(full_defaults.keys()),
         "core": set(full_defaults.keys()) - {"freshness_boost", "knn_sigmoid_k", "knn_maxsim_weight"},
         "cat_relevance": {
-            "diversity_lambda",
-            "neg_weight",
             "knn_k",
             "classifier_k_feat",
             "classifier_neg_sample_weight",
@@ -160,6 +185,12 @@ def _build_ranges(
         "cat_freshness": {"freshness_boost", "freshness_half_life"},
         "cat_semantic": {"knn_sigmoid_k", "knn_maxsim_weight"},
         "cat_hn": {"adaptive_hn_min", "hn_threshold_young", "hn_score_cap"},
+        "cat_hn_decoupled": {
+            "adaptive_hn_min",
+            "adaptive_hn_max",
+            "hn_threshold_young",
+            "hn_score_cap",
+        },
     }
     tuned_keys = spaces.get(space)
     if tuned_keys is None:
@@ -216,9 +247,29 @@ def _load_enqueued_params(path: str | None) -> list[dict[str, float]]:
     return out
 
 
+def _parse_seed_list(raw: str) -> list[int]:
+    seeds: list[int] = []
+    for part in raw.split(","):
+        item = part.strip()
+        if not item:
+            continue
+        seed = int(item)
+        if seed not in seeds:
+            seeds.append(seed)
+    if not seeds:
+        raise ValueError("No valid seeds parsed")
+    return seeds
+
+
 async def main():
     parser = argparse.ArgumentParser(description="Optimize hyperparameters")
     parser.add_argument("username", help="HN username")
+    parser.add_argument(
+        "--snapshot",
+        type=Path,
+        default=None,
+        help="Frozen benchmark snapshot to optimize against instead of loading live data.",
+    )
     parser.add_argument("--trials", type=int, default=50, help="Number of trials")
     parser.add_argument("--candidates", type=int, default=200, help="Candidate pool size")
     parser.add_argument("--baseline", default=".cache/metrics_baseline.json", help="Path to metrics baseline JSON")
@@ -250,7 +301,15 @@ async def main():
     )
     parser.add_argument(
         "--space",
-        choices=["core", "full", "cat_relevance", "cat_freshness", "cat_semantic", "cat_hn"],
+        choices=[
+            "core",
+            "full",
+            "cat_relevance",
+            "cat_freshness",
+            "cat_semantic",
+            "cat_hn",
+            "cat_hn_decoupled",
+        ],
         default="core",
         help="Search-space size: core tunes fewer high-impact knobs; full tunes all non-cluster knobs.",
     )
@@ -260,9 +319,41 @@ async def main():
         default=50,
         help="How many top completed trials to include in output JSON",
     )
+    parser.add_argument(
+        "--final-list",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Optimize the final displayed list instead of raw rank_stories output.",
+    )
+    parser.add_argument(
+        "--count",
+        type=int,
+        default=40,
+        help="Displayed story count when final-list mode is enabled.",
+    )
+    parser.add_argument(
+        "--validation-seeds",
+        default="0,1,2",
+        help="Comma-separated seeds for incumbent-vs-candidate validation.",
+    )
+    parser.add_argument(
+        "--validation-guard-tolerance",
+        type=float,
+        default=0.0,
+        help="Allowed drop on validation guard metrics versus current config.",
+    )
+    parser.add_argument(
+        "--validation-score-tolerance",
+        type=float,
+        default=0.0,
+        help="Minimum score delta required for a candidate to be promotable.",
+    )
     args = parser.parse_args()
     if args.top_trials_json_limit < 1:
         raise SystemExit("--top-trials-json-limit must be >= 1")
+    if args.count < 1:
+        raise SystemExit("--count must be >= 1")
+    validation_seeds = _parse_seed_list(args.validation_seeds)
 
     # Timestamped log filename
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -283,14 +374,17 @@ async def main():
     # 1. Load Data (Once)
     evaluator = RankingEvaluator(args.username)
     print("Loading data...")
-    success = await evaluator.load_data(
-        holdout=0.2,
-        candidate_count=args.candidates,
-        use_classifier=True,
-        use_recency=POSITIVE_RECENCY_ENABLED,
-        cache_only=args.cache_only,
-        allow_stale=args.cache_only,
-    )
+    if args.snapshot is not None:
+        success = evaluator.load_snapshot(args.snapshot)
+    else:
+        success = await evaluator.load_data(
+            holdout=0.2,
+            candidate_count=args.candidates,
+            use_classifier=True,
+            use_recency=POSITIVE_RECENCY_ENABLED,
+            cache_only=args.cache_only,
+            allow_stale=args.cache_only,
+        )
     if not success:
         print("Failed to load data.")
         sys.exit(1)
@@ -304,17 +398,6 @@ async def main():
     def objective(trial: Trial) -> float:
         r = ranges  # alias
 
-        diversity_lambda = (
-            trial.suggest_float("diversity_lambda", *r["diversity_lambda"])
-            if "diversity_lambda" in r
-            else RANKING_DIVERSITY_LAMBDA
-        )
-        neg_weight = (
-            trial.suggest_float("neg_weight", *r["neg_weight"])
-            if "neg_weight" in r
-            else RANKING_NEGATIVE_WEIGHT
-        )
-
         # k-NN
         if "knn_k" in r:
             knn_lo, knn_hi = int(r["knn_k"][0]), int(r["knn_k"][1])
@@ -326,6 +409,15 @@ async def main():
             trial.suggest_float("adaptive_hn_min", *r["adaptive_hn_min"])
             if "adaptive_hn_min" in r
             else ADAPTIVE_HN_WEIGHT_MIN
+        )
+        adaptive_hn_max = (
+            trial.suggest_float(
+                "adaptive_hn_max",
+                max(adaptive_hn_min, r["adaptive_hn_max"][0]),
+                r["adaptive_hn_max"][1],
+            )
+            if "adaptive_hn_max" in r
+            else _derive_adaptive_hn_max(adaptive_hn_min)
         )
         freshness_boost = (
             trial.suggest_float("freshness_boost", *r["freshness_boost"])
@@ -372,10 +464,9 @@ async def main():
         )
 
         trial_params = {
-            "diversity_lambda": diversity_lambda,
-            "neg_weight": neg_weight,
             "knn_k": knn_k,
             "adaptive_hn_min": adaptive_hn_min,
+            "adaptive_hn_max": adaptive_hn_max,
             "freshness_boost": freshness_boost,
             "freshness_half_life": freshness_half_life,
             "knn_sigmoid_k": knn_sigmoid_k,
@@ -387,6 +478,9 @@ async def main():
         }
 
         with patched_rerank_params(trial_params):
+            resolved = _tuning_common.resolve_params(trial_params)
+            ranking = resolved["ranking"]
+            semantic = resolved["semantic"]
             def report_callback(step: int, interim_metrics: dict[str, float]) -> None:
                 score = _score_metrics(interim_metrics, std_penalty=args.std_penalty)
                 trial.report(score, step)
@@ -395,13 +489,14 @@ async def main():
 
             metrics = evaluator.evaluate_cv(
                 n_folds=args.cv_folds,
-                diversity=diversity_lambda,
-                knn=knn_k,
-                neg_weight=neg_weight,
+                diversity=float(ranking["diversity_lambda"]),
+                knn=int(semantic["knn_neighbors"]),
+                neg_weight=float(ranking["negative_weight"]),
                 use_classifier=True,
-                k_metrics=[10, 30, 50],
+                k_metrics=[10, 20, 30, 40],
                 report_each=False,
                 report_callback=report_callback,
+                final_list_count=args.count if args.final_list else None,
             )
             trial.set_user_attr(
                 "cv_metrics",
@@ -414,8 +509,8 @@ async def main():
 
         line = (
             f"Trial {trial.number}: mrr={metrics['mrr']:.3f} "
-            f"ndcg@10={metrics['ndcg@10']:.3f} ndcg@30={metrics['ndcg@30']:.3f} "
-            f"recall@50={metrics.get('recall@50', 0):.3f}"
+            f"ndcg@10={metrics['ndcg@10']:.3f} ndcg@20={metrics['ndcg@20']:.3f} "
+            f"precision@20={metrics.get('precision@20', 0):.3f}"
         )
         print(line)
 
@@ -500,40 +595,141 @@ async def main():
     for key, value in study.best_params.items():
         rprint(f"  {key}: {value}")
 
-    # Run final evaluation with best params to show all metrics
-    best = study.best_params
-    with patched_rerank_params(best) as resolved:
-        ranking = resolved["ranking"]
-        semantic = resolved["semantic"]
-        final_metrics = evaluator.evaluate(
-            diversity=float(ranking["diversity_lambda"]),
-            knn=int(semantic["knn_neighbors"]),
-            neg_weight=float(ranking["negative_weight"]),
-            use_classifier=True,
-            k_metrics=[10, 20, 30, 50]
+    def _evaluate_seeded_metrics(
+        params: dict[str, float],
+    ) -> tuple[dict[str, float], dict[str, object]]:
+        per_seed: list[dict[str, float]] = []
+        per_seed_diagnostics: list[dict[str, object]] = []
+        with patched_rerank_params(params) as resolved:
+            ranking = resolved["ranking"]
+            semantic = resolved["semantic"]
+            for validation_seed in validation_seeds:
+                np.random.seed(validation_seed)
+                diagnostics_summary: dict[str, object] = {}
+                per_seed.append(
+                    evaluator.evaluate_cv(
+                        n_folds=args.cv_folds,
+                        diversity=float(ranking["diversity_lambda"]),
+                        knn=int(semantic["knn_neighbors"]),
+                        neg_weight=float(ranking["negative_weight"]),
+                        use_classifier=True,
+                        k_metrics=[10, 20, 30, 40],
+                        report_each=False,
+                        parallel=False,
+                        final_list_count=args.count if args.final_list else None,
+                        diagnostics_summary=diagnostics_summary,
+                    )
+                )
+                per_seed_diagnostics.append(diagnostics_summary)
+        return (
+            _average_seed_metrics(per_seed),
+            _merge_rank_diagnostic_summaries(per_seed_diagnostics),
         )
 
-    rprint("\nFinal Metrics:")
-    rprint(f"  MRR: {final_metrics.get('mrr', 0):.3f}")
-    for k in [10, 20, 30, 50]:
+    best = study.best_params
+    candidate_metrics, candidate_diagnostics = _evaluate_seeded_metrics(best)
+    current_metrics, current_diagnostics = _evaluate_seeded_metrics({})
+    validation = _validate_candidate_metrics(
+        candidate_metrics,
+        current_metrics,
+        std_penalty=args.std_penalty,
+        score_tolerance=args.validation_score_tolerance,
+        guard_tolerance=args.validation_guard_tolerance,
+    )
+
+    rprint("\nCandidate Validation:")
+    rprint(f"  Promotable: {validation['promotable']}")
+    rprint(
+        f"  Score Delta: {validation['score_delta']:.4f} "
+        f"(candidate={validation['candidate_score']:.4f}, current={validation['incumbent_score']:.4f})"
+    )
+    if validation["primary_failures"]:
+        rprint(f"  Primary metric regressions: {', '.join(validation['primary_failures'])}")
+    if validation["guard_failures"]:
+        rprint(f"  Guard metric regressions: {', '.join(validation['guard_failures'])}")
+
+    rprint("\nCandidate Metrics:")
+    rprint(f"  MRR: {candidate_metrics.get('mrr', 0):.3f}")
+    for k in [10, 20, 30, 40]:
         rprint(
-            f"  @{k}: NDCG={final_metrics.get(f'ndcg@{k}', 0):.3f}, "
-            f"MAP={final_metrics.get(f'map@{k}', 0):.3f}, "
-            f"P={final_metrics.get(f'precision@{k}', 0):.1%}, "
-            f"R={final_metrics.get(f'recall@{k}', 0):.1%}"
+            f"  @{k}: NDCG={candidate_metrics.get(f'ndcg@{k}', 0):.3f}, "
+            f"MAP={candidate_metrics.get(f'map@{k}', 0):.3f}, "
+            f"P={candidate_metrics.get(f'precision@{k}', 0):.1%}, "
+            f"R={candidate_metrics.get(f'recall@{k}', 0):.1%}"
+        )
+    if candidate_diagnostics:
+        candidate_classifier_used_rate = _diag_float(
+            candidate_diagnostics, "classifier_used_rate"
+        )
+        candidate_classifier_fallback_count = _diag_int(
+            candidate_diagnostics, "classifier_fallback_count"
+        )
+        candidate_avg_derived_dim = _diag_float(
+            candidate_diagnostics, "avg_derived_feature_dim"
+        )
+        candidate_rank_calls = max(_diag_int(candidate_diagnostics, "rank_calls", 1), 1)
+        candidate_penalty_applied_count = _diag_float(
+            candidate_diagnostics, "local_hidden_penalty_applied_count"
+        )
+        candidate_local_hidden_penalty_rate = (
+            candidate_penalty_applied_count / candidate_rank_calls
+        )
+        rprint(
+            "  Diagnostics: "
+            f"classifier_used_rate={candidate_classifier_used_rate:.1%}, "
+            f"fallbacks={candidate_classifier_fallback_count}, "
+            f"avg_derived_dim={candidate_avg_derived_dim:.1f}, "
+            f"local_hidden_penalty_rate={candidate_local_hidden_penalty_rate:.1%}"
+        )
+
+    rprint("\nCurrent Metrics:")
+    rprint(f"  MRR: {current_metrics.get('mrr', 0):.3f}")
+    for k in [10, 20, 30, 40]:
+        rprint(
+            f"  @{k}: NDCG={current_metrics.get(f'ndcg@{k}', 0):.3f}, "
+            f"MAP={current_metrics.get(f'map@{k}', 0):.3f}, "
+            f"P={current_metrics.get(f'precision@{k}', 0):.1%}, "
+            f"R={current_metrics.get(f'recall@{k}', 0):.1%}"
+        )
+    if current_diagnostics:
+        current_classifier_used_rate = _diag_float(
+            current_diagnostics, "classifier_used_rate"
+        )
+        current_classifier_fallback_count = _diag_int(
+            current_diagnostics, "classifier_fallback_count"
+        )
+        current_avg_derived_dim = _diag_float(
+            current_diagnostics, "avg_derived_feature_dim"
+        )
+        current_rank_calls = max(_diag_int(current_diagnostics, "rank_calls", 1), 1)
+        current_penalty_applied_count = _diag_float(
+            current_diagnostics, "local_hidden_penalty_applied_count"
+        )
+        current_local_hidden_penalty_rate = (
+            current_penalty_applied_count / current_rank_calls
+        )
+        rprint(
+            "  Diagnostics: "
+            f"classifier_used_rate={current_classifier_used_rate:.1%}, "
+            f"fallbacks={current_classifier_fallback_count}, "
+            f"avg_derived_dim={current_avg_derived_dim:.1f}, "
+            f"local_hidden_penalty_rate={current_local_hidden_penalty_rate:.1%}"
         )
 
     # Write log with timestamp
+    log_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.write_text("\n".join(report_lines) + "\n")
     print(f"\nLog saved: {log_path}")
 
     # Write best params to file for easy reference
     with open("optimized_params.txt", "w") as f:
         f.write(f"Best Combined Score: {study.best_value:.4f}\n")
-        f.write(f"MRR: {final_metrics.get('mrr', 0):.3f}\n")
-        f.write(f"NDCG@10: {final_metrics.get('ndcg@10', 0):.3f}\n")
-        f.write(f"NDCG@30: {final_metrics.get('ndcg@30', 0):.3f}\n")
-        f.write(f"Recall@50: {final_metrics.get('recall@50', 0):.3f}\n\n")
+        f.write(f"Promotable: {validation['promotable']}\n")
+        f.write(f"Validation Score Delta: {validation['score_delta']:.4f}\n")
+        f.write(f"MRR: {candidate_metrics.get('mrr', 0):.3f}\n")
+        f.write(f"NDCG@10: {candidate_metrics.get('ndcg@10', 0):.3f}\n")
+        f.write(f"NDCG@20: {candidate_metrics.get('ndcg@20', 0):.3f}\n")
+        f.write(f"Precision@20: {candidate_metrics.get('precision@20', 0):.3f}\n\n")
         for key, value in study.best_params.items():
             f.write(f"{key} = {value}\n")
 
@@ -560,10 +756,18 @@ async def main():
     json_path.write_text(json.dumps({
         "best_score": study.best_value,
         "best_params": study.best_params,
-        "final_metrics": final_metrics,
+        "candidate_metrics": candidate_metrics,
+        "candidate_diagnostics": candidate_diagnostics,
+        "current_metrics": current_metrics,
+        "current_diagnostics": current_diagnostics,
+        "validation": validation,
         "n_trials": args.trials,
         "cv_folds": args.cv_folds,
         "std_penalty": args.std_penalty,
+        "snapshot": None if args.snapshot is None else str(args.snapshot),
+        "final_list": args.final_list,
+        "count": args.count,
+        "validation_seeds": validation_seeds,
         "completed_trial_count": len(completed_trials),
         "top_trials_limit": args.top_trials_json_limit,
         "top_trials": top_trials,

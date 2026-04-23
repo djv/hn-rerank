@@ -59,13 +59,13 @@ _DEFAULTS_FULL = _build_ranges(None, "full")
 
 class TestBuildRangesDefaults:
     def test_no_collapsed_keys(self):
-        removed = {"classifier_diversity_lambda", "hn_threshold_old", "adaptive_hn_max"}
+        removed = {"classifier_diversity_lambda", "hn_threshold_old"}
         assert removed.isdisjoint(_DEFAULTS_CORE), f"Stale keys: {removed & _DEFAULTS_CORE.keys()}"
         assert removed.isdisjoint(_DEFAULTS_FULL), f"Stale keys: {removed & _DEFAULTS_FULL.keys()}"
 
     def test_param_counts(self):
-        assert len(_DEFAULTS_CORE) == 9, f"core got {len(_DEFAULTS_CORE)}: {sorted(_DEFAULTS_CORE)}"
-        assert len(_DEFAULTS_FULL) == 12, f"full got {len(_DEFAULTS_FULL)}: {sorted(_DEFAULTS_FULL)}"
+        assert len(_DEFAULTS_CORE) == 8, f"core got {len(_DEFAULTS_CORE)}: {sorted(_DEFAULTS_CORE)}"
+        assert len(_DEFAULTS_FULL) == 11, f"full got {len(_DEFAULTS_FULL)}: {sorted(_DEFAULTS_FULL)}"
 
     def test_core_is_subset_of_full(self):
         assert _DEFAULTS_CORE.keys() <= _DEFAULTS_FULL.keys()
@@ -155,14 +155,12 @@ class TestParseLastLog:
             "Optimization Complete! (50 trials, 3-fold CV)\n"
             "Best Combined Score: 0.4321\n"
             "Best Parameters:\n"
-            "  diversity_lambda: 0.350000\n"
-            "  neg_weight: 0.550000\n"
+            "  adaptive_hn_min: 0.035000\n"
             "  knn_k: 2\n"
         )
         result = _parse_last_log(tmp_path)
         assert result is not None
-        assert result["diversity_lambda"] == pytest.approx(0.35)
-        assert result["neg_weight"] == pytest.approx(0.55)
+        assert result["adaptive_hn_min"] == pytest.approx(0.035)
         assert result["knn_k"] == pytest.approx(2.0)
 
     def test_empty_dir(self, tmp_path):
@@ -204,11 +202,11 @@ class TestParseLastLog:
         log.write_text("Optimization in progress...\n")
         json_path = tmp_path / "optuna_20260205_120000.json"
         json_path.write_text(json.dumps({
-            "best_params": {"diversity_lambda": 0.42, "knn_k": 3},
+            "best_params": {"adaptive_hn_min": 0.042, "knn_k": 3},
         }))
         result = _parse_last_log(tmp_path)
         assert result is not None
-        assert result["diversity_lambda"] == pytest.approx(0.42)
+        assert result["adaptive_hn_min"] == pytest.approx(0.042)
         assert result["knn_k"] == pytest.approx(3.0)
 
     def test_json_malformed_skipped(self, tmp_path):
@@ -247,7 +245,7 @@ class TestParseLastLog:
 # score_metrics (replicated closure — formula must match main())
 # ---------------------------------------------------------------------------
 
-_WEIGHTS = {"mrr": 0.30, "ndcg@10": 0.35, "ndcg@30": 0.20, "recall@50": 0.15}
+_WEIGHTS = {"mrr": 0.40, "ndcg@10": 0.40, "ndcg@20": 0.20}
 
 
 def _score(metrics: dict[str, float]) -> float:
@@ -259,24 +257,24 @@ def _score(metrics: dict[str, float]) -> float:
 _metric_st = st.floats(min_value=0.0, max_value=1.0, allow_nan=False)
 _full_metrics_st = st.fixed_dictionaries({
     "mrr": _metric_st, "ndcg@10": _metric_st,
-    "ndcg@30": _metric_st, "recall@50": _metric_st,
+    "ndcg@20": _metric_st,
     "mrr_std": _metric_st, "ndcg@10_std": _metric_st,
-    "ndcg@30_std": _metric_st, "recall@50_std": _metric_st,
+    "ndcg@20_std": _metric_st,
 })
 
 
 class TestScoreMetrics:
     def test_variance_penalizes(self):
-        base = {"mrr": 0.5, "ndcg@10": 0.4, "ndcg@30": 0.3, "recall@50": 0.6}
+        base = {"mrr": 0.5, "ndcg@10": 0.4, "ndcg@20": 0.3}
         stable = {**base, "mrr_std": 0.01, "ndcg@10_std": 0.02,
-                  "ndcg@30_std": 0.01, "recall@50_std": 0.02}
+                  "ndcg@20_std": 0.01}
         noisy = {**base, "mrr_std": 0.15, "ndcg@10_std": 0.20,
-                 "ndcg@30_std": 0.15, "recall@50_std": 0.20}
+                 "ndcg@20_std": 0.15}
         assert _score(stable) > _score(noisy)
 
     def test_zero_std_no_penalty(self):
-        m = {"mrr": 0.5, "ndcg@10": 0.4, "ndcg@30": 0.3, "recall@50": 0.6}
-        expected = 0.30 * 0.5 + 0.35 * 0.4 + 0.20 * 0.3 + 0.15 * 0.6
+        m = {"mrr": 0.5, "ndcg@10": 0.4, "ndcg@20": 0.3}
+        expected = 0.40 * 0.5 + 0.40 * 0.4 + 0.20 * 0.3
         assert _score(m) == pytest.approx(expected)
 
     @given(_full_metrics_st)

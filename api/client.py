@@ -60,8 +60,8 @@ class HNClient:
             try:
                 cookies = cast(dict[str, str], json.loads(COOKIES_FILE.read_text()))
                 self.client.cookies.update(cookies)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Failed to load HN cookies from %s: %s", COOKIES_FILE, exc)
 
     @staticmethod
     def _load_cached_ids(
@@ -77,8 +77,9 @@ class HNClient:
             ids = data.get("ids", {})
             if isinstance(ids, dict):
                 return cast(UserCacheIds, ids)
-        except Exception:
-            pass
+            logger.debug("Ignoring malformed user cache payload in %s", cache_path)
+        except Exception as exc:
+            logger.debug("Failed to load user cache %s: %s", cache_path, exc)
         return None
 
     async def login(self, user: str, pw: str) -> tuple[bool, str]:

@@ -17,12 +17,15 @@ from typing import Any
 
 import numpy as np
 
-from evaluate_quality import RankingEvaluator
+from evaluate_quality import RankingEvaluator, _merge_rank_diagnostic_summaries
+from api.constants import POSITIVE_RECENCY_ENABLED
 from tuning_common import (
+    average_seed_metrics as _average_seed_metrics,
     patched_rerank_params,
     render_promoted_toml as _render_promoted_toml,
     resolve_params as _resolved_params,
     score_metrics as _score_metrics,
+    validate_candidate_metrics as _validate_candidate_metrics,
 )
 
 Z_95: float = 1.96
@@ -44,11 +47,14 @@ class CandidateSummary:
     params: dict[str, float]
     scores: list[float]
     deltas: list[float]
+    metrics: dict[str, float]
+    diagnostics: dict[str, object]
     mean_score: float
     mean_delta: float
     std_delta: float
     lcb_delta_95: float
     regressions: int
+    validation: dict[str, Any]
     stable: bool
 
 
@@ -148,25 +154,36 @@ def _eval_candidate_scores(
     eval_seeds: list[int],
     cv_folds: int,
     std_penalty: float,
-) -> list[float]:
+) -> tuple[list[float], dict[str, float], dict[str, object]]:
     scores: list[float] = []
+    metrics_per_seed: list[dict[str, float]] = []
+    diagnostics_per_seed: list[dict[str, object]] = []
     with patched_rerank_params(params) as resolved:
         ranking = resolved["ranking"]
         semantic = resolved["semantic"]
         for seed in eval_seeds:
             np.random.seed(seed)
+            diagnostics_summary: dict[str, object] = {}
             metrics = evaluator.evaluate_cv(
                 n_folds=cv_folds,
                 diversity=float(ranking["diversity_lambda"]),
                 knn=int(semantic["knn_neighbors"]),
                 neg_weight=float(ranking["negative_weight"]),
                 use_classifier=True,
-                k_metrics=[10, 30, 50],
+                k_metrics=[10, 20, 30, 40],
                 report_each=False,
                 parallel=False,
+                final_list_count=40,
+                diagnostics_summary=diagnostics_summary,
             )
+            metrics_per_seed.append(metrics)
+            diagnostics_per_seed.append(diagnostics_summary)
             scores.append(_score_metrics(metrics, std_penalty=std_penalty))
-    return scores
+    return (
+        scores,
+        _average_seed_metrics(metrics_per_seed),
+        _merge_rank_diagnostic_summaries(diagnostics_per_seed),
+    )
 
 
 def _is_stable(
@@ -205,6 +222,7 @@ def _run_optuna_seed(
     std_penalty: float,
     warm_start_log_dir: Path | None,
     top_k_per_seed: int,
+    snapshot: Path | None,
 ) -> SeedRun:
     cmd = [
         sys.executable,
@@ -233,6 +251,8 @@ def _run_optuna_seed(
     ]
     if warm_start_log_dir is not None:
         cmd.extend(["--warm-start-log-dir", str(warm_start_log_dir)])
+    if snapshot is not None:
+        cmd.extend(["--snapshot", str(snapshot)])
     if cache_only:
         cmd.append("--cache-only")
 
@@ -331,6 +351,12 @@ async def main() -> int:
         action="store_true",
         help="Use cached data only for all evaluation/loading",
     )
+    parser.add_argument(
+        "--snapshot",
+        type=Path,
+        default=None,
+        help="Frozen benchmark snapshot to use for optimization and validation.",
+    )
     args = parser.parse_args()
     if args.top_k_per_seed < 1:
         raise SystemExit("--top-k-per-seed must be >= 1")
@@ -384,6 +410,7 @@ async def main() -> int:
             std_penalty=args.std_penalty,
             warm_start_log_dir=warm_seed_dir,
             top_k_per_seed=args.top_k_per_seed,
+            snapshot=args.snapshot,
         )
         seed_runs.append(run)
         print(
@@ -393,18 +420,21 @@ async def main() -> int:
 
     evaluator = RankingEvaluator(args.username)
     print("[promotion] loading evaluation dataset once...")
-    success = await evaluator.load_data(
-        holdout=0.2,
-        candidate_count=args.candidates,
-        use_classifier=True,
-        use_recency=True,
-        cache_only=args.cache_only,
-        allow_stale=args.cache_only,
-    )
+    if args.snapshot is not None:
+        success = evaluator.load_snapshot(args.snapshot)
+    else:
+        success = await evaluator.load_data(
+            holdout=0.2,
+            candidate_count=args.candidates,
+            use_classifier=True,
+            use_recency=POSITIVE_RECENCY_ENABLED,
+            cache_only=args.cache_only,
+            allow_stale=args.cache_only,
+        )
     if not success:
         raise SystemExit("Failed to load evaluation data")
 
-    baseline_scores = _eval_candidate_scores(
+    baseline_scores, baseline_metrics, baseline_diagnostics = _eval_candidate_scores(
         evaluator,
         params={},
         eval_seeds=seeds,
@@ -421,7 +451,7 @@ async def main() -> int:
     print(f"[promotion] evaluating {len(candidates)} unique candidate param sets")
     summaries: list[CandidateSummary] = []
     for name, params in candidates:
-        scores = _eval_candidate_scores(
+        scores, mean_metrics, diagnostics = _eval_candidate_scores(
             evaluator,
             params=params,
             eval_seeds=seeds,
@@ -434,28 +464,38 @@ async def main() -> int:
             min_improvement=args.min_improvement,
             max_seed_regressions=args.max_seed_regressions,
         )
+        validation = _validate_candidate_metrics(
+            mean_metrics,
+            baseline_metrics,
+            std_penalty=args.std_penalty,
+        )
         summary = CandidateSummary(
             name=name,
             params=params,
             scores=scores,
             deltas=deltas,
+            metrics=mean_metrics,
+            diagnostics=diagnostics,
             mean_score=float(np.mean(scores)),
             mean_delta=mean_delta,
             std_delta=std_delta,
             lcb_delta_95=lcb_delta_95,
             regressions=regressions,
-            stable=stable,
+            validation=validation,
+            stable=stable and bool(validation["promotable"]),
         )
         summaries.append(summary)
         print(
             f"[promotion] candidate={name} mean={summary.mean_score:.6f} "
             f"mean_delta={summary.mean_delta:.6f} lcb95={summary.lcb_delta_95:.6f} "
-            f"regressions={summary.regressions} stable={summary.stable}"
+            f"regressions={summary.regressions} stable={summary.stable} "
+            f"promotable={summary.validation['promotable']}"
         )
 
     summaries.sort(key=lambda s: s.mean_score, reverse=True)
-    winner = summaries[0]
-    promoted = bool(winner.stable)
+    promotable_summaries = [summary for summary in summaries if summary.stable]
+    winner = promotable_summaries[0] if promotable_summaries else summaries[0]
+    promoted = bool(promotable_summaries)
 
     report: dict[str, Any] = {
         "timestamp": ts,
@@ -470,6 +510,9 @@ async def main() -> int:
         "candidate_count": len(candidates),
         "baseline_scores": baseline_scores,
         "baseline_mean": baseline_mean,
+        "baseline_metrics": baseline_metrics,
+        "baseline_diagnostics": baseline_diagnostics,
+        "snapshot": None if args.snapshot is None else str(args.snapshot),
         "seed_runs": [
             {
                 "seed": run.seed,
@@ -488,21 +531,28 @@ async def main() -> int:
                 "params": s.params,
                 "scores": s.scores,
                 "deltas": s.deltas,
+                "metrics": s.metrics,
+                "diagnostics": s.diagnostics,
                 "mean_score": s.mean_score,
                 "mean_delta": s.mean_delta,
                 "std_delta": s.std_delta,
                 "lcb_delta_95": s.lcb_delta_95,
                 "regressions": s.regressions,
+                "validation": s.validation,
                 "stable": s.stable,
             }
             for s in summaries
         ],
         "winner": {
             "name": winner.name,
+            "params": winner.params,
+            "metrics": winner.metrics,
+            "diagnostics": winner.diagnostics,
             "mean_score": winner.mean_score,
             "mean_delta": winner.mean_delta,
             "lcb_delta_95": winner.lcb_delta_95,
             "regressions": winner.regressions,
+            "validation": winner.validation,
             "stable": winner.stable,
         },
         "promotion": {

@@ -46,7 +46,8 @@ console: Console = Console()
 DEFAULT_CONFIG_PATH = Path("hn_rerank.toml")
 HN_DUPE_CACHE_DIR = Path(".cache/hn_dupes")
 HN_DUPE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-HN_DUPE_CACHE_TTL = 30 * 24 * 60 * 60
+HN_DUPE_TRUE_CACHE_TTL = 30 * 24 * 60 * 60
+HN_DUPE_FALSE_CACHE_TTL = 30 * 60
 
 
 def _find_config_path(argv: list[str]) -> Path | None:
@@ -132,17 +133,21 @@ def _load_cached_hn_dupe_target(sid: int) -> tuple[bool, int | None] | None:
     path = HN_DUPE_CACHE_DIR / f"{sid}.json"
     if not path.exists():
         return None
-    if time.time() - path.stat().st_mtime >= HN_DUPE_CACHE_TTL:
-        return None
     try:
         data = json.loads(path.read_text())
-    except Exception:
+    except Exception as exc:
+        logging.debug("Failed to load HN dupe cache %s: %s", path, exc)
         return None
     is_dupe = data.get("is_dupe")
     target_id = data.get("target_id")
     if not isinstance(is_dupe, bool):
+        logging.debug("Ignoring malformed HN dupe cache payload in %s", path)
         return None
     if target_id is not None and not isinstance(target_id, int):
+        logging.debug("Ignoring malformed HN dupe cache payload in %s", path)
+        return None
+    ttl = HN_DUPE_TRUE_CACHE_TTL if is_dupe else HN_DUPE_FALSE_CACHE_TTL
+    if time.time() - path.stat().st_mtime >= ttl:
         return None
     return is_dupe, target_id
 
