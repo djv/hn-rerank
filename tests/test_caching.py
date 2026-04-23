@@ -1,7 +1,7 @@
 import json
 from unittest.mock import AsyncMock, patch
 import pytest
-from api import rerank
+from api import llm_utils
 from api.models import StoryDict
 
 
@@ -12,6 +12,7 @@ def make_story(story_id: int, title: str) -> StoryDict:
         url=None,
         score=0,
         time=0,
+        discussion_url=None,
         comments=[],
         text_content=title,
         source="hn",
@@ -21,7 +22,7 @@ def make_story(story_id: int, title: str) -> StoryDict:
 @pytest.fixture
 def temp_cache_file(tmp_path):
     cache_file = tmp_path / "cluster_names.json"
-    with patch("api.rerank.CLUSTER_NAME_CACHE_PATH", cache_file):
+    with patch("api.llm_utils.CLUSTER_NAME_CACHE_PATH", cache_file):
         yield cache_file
 
 
@@ -33,8 +34,8 @@ async def test_cluster_name_cache_hit(temp_cache_file):
 
     # Calculate expected hash
     story_ids = sorted([str(s.get("id")) for s, _ in items])
-    cache_key = rerank._cluster_name_cache_key(
-        story_ids, rerank.LLM_CLUSTER_NAME_MODEL_PRIMARY
+    cache_key = llm_utils._cluster_name_cache_key(
+        story_ids, llm_utils.LLM_CLUSTER_NAME_MODEL_PRIMARY
     )
 
     # Seed cache
@@ -42,7 +43,7 @@ async def test_cluster_name_cache_hit(temp_cache_file):
     temp_cache_file.write_text(json.dumps(cache_content))
 
     # Call function
-    names = await rerank.generate_batch_cluster_names(clusters)
+    names = await llm_utils.generate_batch_cluster_names(clusters)
 
     assert names[0] == "Cached Cluster Name"
 
@@ -60,10 +61,10 @@ async def test_cluster_name_cache_miss_and_save(temp_cache_file):
     mock_gen = AsyncMock(return_value="New Cluster Name")
     with (
         patch.dict("os.environ", {"GROQ_API_KEY": "fake_key"}),
-        patch("api.rerank._generate_with_retry", new=mock_gen),
+        patch("api.llm_utils._generate_with_retry", new=mock_gen),
     ):
         # Call function
-        names = await rerank.generate_batch_cluster_names(clusters)
+        names = await llm_utils.generate_batch_cluster_names(clusters)
 
         assert names[0] == "New Cluster Name"
         assert mock_gen.await_count >= 1
@@ -72,8 +73,8 @@ async def test_cluster_name_cache_miss_and_save(temp_cache_file):
         cache_content = json.loads(temp_cache_file.read_text())
 
         story_ids = sorted([str(s.get("id")) for s, _ in items])
-        cache_key = rerank._cluster_name_cache_key(
-            story_ids, rerank.LLM_CLUSTER_NAME_MODEL_PRIMARY
+        cache_key = llm_utils._cluster_name_cache_key(
+            story_ids, llm_utils.LLM_CLUSTER_NAME_MODEL_PRIMARY
         )
 
         assert cache_key in cache_content
@@ -87,4 +88,4 @@ async def test_cluster_name_fallback_no_api_key(temp_cache_file):
     clusters: dict[int, list[tuple[StoryDict, float]]] = {0: items}
 
     with patch.dict("os.environ", {}, clear=True), pytest.raises(RuntimeError):
-        await rerank.generate_batch_cluster_names(clusters)
+        await llm_utils.generate_batch_cluster_names(clusters)

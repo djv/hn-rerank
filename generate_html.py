@@ -24,7 +24,7 @@ from rich.console import Console
 
 from sklearn.metrics.pairwise import cosine_similarity
 
-from api import rerank
+from api import rerank, llm_utils
 from api.client import HNClient, UserSignals
 from api.fetching import get_best_stories, fetch_story
 from api.models import RankResult, Story, StoryDict, StoryDisplay
@@ -986,7 +986,7 @@ async def main() -> None:
                             else Path(args.output).with_name("cluster_name_debug.json")
                         )
                     cluster_names.update(
-                        await rerank.generate_batch_cluster_names(
+                        await llm_utils.generate_batch_cluster_names(
                             clusters_for_naming,
                             progress_callback=name_cb,
                             debug_path=debug_path,
@@ -1192,7 +1192,7 @@ async def main() -> None:
 
             # Batch TL;DR generation (convert to dicts for API)
             stories_for_tldr = [sd.to_dict() for sd in stories_data]
-            tldrs = await rerank.generate_batch_tldrs(
+            tldrs = await llm_utils.generate_batch_tldrs(
                 stories_for_tldr,
                 progress_callback=lambda curr, tot: progress.update(
                     llm_task, completed=curr

@@ -38,10 +38,10 @@ async def test_generate_html_integration(tmp_path):
         patch("generate_html.rerank.rank_stories") as mock_rank,
         patch("generate_html.filter_top_ranked_hn_dupes", new_callable=AsyncMock) as mock_dupes,
         patch(
-            "generate_html.rerank.generate_batch_tldrs", new_callable=AsyncMock
+            "generate_html.llm_utils.generate_batch_tldrs", new_callable=AsyncMock
         ) as mock_batch_tldrs,
         patch(
-            "generate_html.rerank.generate_batch_cluster_names", new_callable=AsyncMock
+            "generate_html.llm_utils.generate_batch_cluster_names", new_callable=AsyncMock
         ) as mock_batch_names,
     ):
         # Mock LLM functions

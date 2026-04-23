@@ -10,10 +10,10 @@ from hypothesis import strategies as st
 from hypothesis.extra.numpy import arrays
 
 from api.models import StoryDict
+from api.llm_utils import generate_batch_cluster_names
 from api.rerank import (
     cluster_interests_with_labels,
     cluster_interests,
-    generate_batch_cluster_names,
     _normalize_embeddings,
     _refine_cluster_assignments,
     _merge_small_clusters,
@@ -34,6 +34,7 @@ def make_story(story_id: int, title: str) -> StoryDict:
         url=None,
         score=0,
         time=0,
+        discussion_url=None,
         comments=[],
         text_content=title,
         source="hn",
@@ -309,9 +310,9 @@ async def test_cluster_names_non_empty():
     mock_gen = AsyncMock(return_value="Software Engineering")
     with (
         patch.dict("os.environ", {"GROQ_API_KEY": "fake_key"}),
-        patch("api.rerank._load_cluster_name_cache", return_value={}),
-        patch("api.rerank._save_cluster_name_cache", lambda _cache: None),
-        patch("api.rerank._generate_with_retry", new=mock_gen),
+        patch("api.llm_utils._load_cluster_name_cache", return_value={}),
+        patch("api.llm_utils._save_cluster_name_cache", lambda _cache: None),
+        patch("api.llm_utils._generate_with_retry", new=mock_gen),
     ):
         names = await generate_batch_cluster_names(clusters)
 
@@ -333,7 +334,7 @@ async def test_fallback_group_name_on_empty_titles():
     with (
         patch.dict("os.environ", {"GROQ_API_KEY": "fake_key"}),
         patch(
-            "api.rerank._generate_with_retry",
+            "api.llm_utils._generate_with_retry",
             new=AsyncMock(return_value="Misc Topic"),
         ),
     ):
@@ -363,10 +364,10 @@ async def test_names_stripped_of_hn_prefixes():
 
     with (
         patch.dict("os.environ", {"GROQ_API_KEY": "fake_key"}),
-        patch("api.rerank._load_cluster_name_cache", return_value={}),
-        patch("api.rerank._save_cluster_name_cache", lambda _cache: None),
+        patch("api.llm_utils._load_cluster_name_cache", return_value={}),
+        patch("api.llm_utils._save_cluster_name_cache", lambda _cache: None),
         patch(
-            "api.rerank._generate_with_retry",
+            "api.llm_utils._generate_with_retry",
             new=AsyncMock(return_value="Project Tools"),
         ),
     ):
@@ -383,10 +384,10 @@ async def test_invalid_cluster_name_kept_as_label():
         ],
     }
 
-    with patch("api.rerank._load_cluster_name_cache", return_value={}), patch(
-        "api.rerank._save_cluster_name_cache", lambda _cache: None
+    with patch("api.llm_utils._load_cluster_name_cache", return_value={}), patch(
+        "api.llm_utils._save_cluster_name_cache", lambda _cache: None
     ), patch(
-        "api.rerank._generate_with_retry",
+        "api.llm_utils._generate_with_retry",
         new=AsyncMock(return_value="Not Provided"),
     ):
         names = await generate_batch_cluster_names(clusters)
@@ -403,10 +404,10 @@ async def test_llm_cluster_name_requires_title_overlap():
         ],
     }
 
-    with patch("api.rerank._load_cluster_name_cache", return_value={}), patch(
-        "api.rerank._save_cluster_name_cache", lambda _cache: None
+    with patch("api.llm_utils._load_cluster_name_cache", return_value={}), patch(
+        "api.llm_utils._save_cluster_name_cache", lambda _cache: None
     ), patch(
-        "api.rerank._generate_with_retry",
+        "api.llm_utils._generate_with_retry",
         new=AsyncMock(return_value="LLM Coding Agents"),
     ):
         names = await generate_batch_cluster_names(clusters)
@@ -423,10 +424,10 @@ async def test_llm_cluster_name_kept_without_keyword_overlap():
         ],
     }
 
-    with patch("api.rerank._load_cluster_name_cache", return_value={}), patch(
-        "api.rerank._save_cluster_name_cache", lambda _cache: None
+    with patch("api.llm_utils._load_cluster_name_cache", return_value={}), patch(
+        "api.llm_utils._save_cluster_name_cache", lambda _cache: None
     ), patch(
-        "api.rerank._generate_with_retry",
+        "api.llm_utils._generate_with_retry",
         new=AsyncMock(return_value="Transportation Systems"),
     ):
         names = await generate_batch_cluster_names(clusters)
@@ -443,10 +444,10 @@ async def test_llm_cluster_name_allows_six_words():
         ],
     }
 
-    with patch("api.rerank._load_cluster_name_cache", return_value={}), patch(
-        "api.rerank._save_cluster_name_cache", lambda _cache: None
+    with patch("api.llm_utils._load_cluster_name_cache", return_value={}), patch(
+        "api.llm_utils._save_cluster_name_cache", lambda _cache: None
     ), patch(
-        "api.rerank._generate_with_retry",
+        "api.llm_utils._generate_with_retry",
         new=AsyncMock(return_value="Deep Learning for Large Language Models"),
     ):
         names = await generate_batch_cluster_names(clusters)
@@ -463,10 +464,10 @@ async def test_llm_cluster_name_truncates_overlong_label():
         ],
     }
 
-    with patch("api.rerank._load_cluster_name_cache", return_value={}), patch(
-        "api.rerank._save_cluster_name_cache", lambda _cache: None
+    with patch("api.llm_utils._load_cluster_name_cache", return_value={}), patch(
+        "api.llm_utils._save_cluster_name_cache", lambda _cache: None
     ), patch(
-        "api.rerank._generate_with_retry",
+        "api.llm_utils._generate_with_retry",
         new=AsyncMock(
             return_value="Graph Neural Networks for Drug Discovery Pipelines"
         ),
