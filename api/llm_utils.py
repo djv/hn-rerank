@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import time
 from collections.abc import Callable, Sequence
 from datetime import datetime
@@ -32,7 +33,6 @@ from api.constants import (
     LLM_CLUSTER_NAME_MAX_WORDS,
     LLM_CLUSTER_NAME_PROMPT_VERSION,
     LLM_CLUSTER_TITLE_MAX_CHARS,
-    LLM_CLUSTER_TITLE_SAMPLES,
     LLM_429_COOLDOWN_BASE,
     LLM_429_COOLDOWN_MAX,
     LLM_HTTP_CONNECT_TIMEOUT,
@@ -207,6 +207,11 @@ def _finalize_cluster_name(raw_name: str) -> str | None:
     cleaned = cleaned.rstrip(" ,&/").rstrip()
     if cleaned.endswith(" and") or cleaned.endswith(" or"):
         cleaned = cleaned.rsplit(" ", 1)[0].rstrip()
+    
+    # Force technical acronym capitalization
+    cleaned = re.sub(r"\bAi\b", "AI", cleaned)
+    cleaned = re.sub(r"\bLlm\b", "LLM", cleaned)
+    
     return cleaned or None
 
 
@@ -436,19 +441,30 @@ async def generate_batch_cluster_names(
 
     payloads: dict[int, list[str]] = {}
     for cid, items in to_generate.items():
-        # Use top titles only to keep prompts compact and reduce latency.
-        sorted_items = sorted(items, key=lambda x: -x[1])[:LLM_CLUSTER_TITLE_SAMPLES]
-        cluster_titles: list[str] = []
-        for s, _ in sorted_items:
+        # Use top items only to keep prompts compact and reduce latency.
+        # We include context (text/comments) for the top 3 stories to help with vague titles.
+        sorted_items = sorted(items, key=lambda x: -x[1])
+        cluster_info: list[str] = []
+        for i, (s, _) in enumerate(sorted_items):
             title = str(s.get("title", "")).strip()
             if not title:
                 continue
             title = " ".join(title.split())
             if len(title) > LLM_CLUSTER_TITLE_MAX_CHARS:
                 title = title[:LLM_CLUSTER_TITLE_MAX_CHARS].rstrip()
-            cluster_titles.append(title)
+            
+            entry = f"Title: {title}"
+            # Add snippet for top 3 stories
+            if i < 3:
+                text = s.get("text_content") or ""
+                if not text and s.get("comments"):
+                    text = s["comments"][0]
+                if text:
+                    snippet = " ".join(text.split())[:200]
+                    entry += f"\n  Context: {snippet}..."
+            cluster_info.append(entry)
 
-        payloads[cid] = cluster_titles
+        payloads[cid] = cluster_info
 
     def _flush_debug() -> None:
         if debug_path is None:
@@ -527,22 +543,25 @@ async def generate_batch_cluster_names(
 
             batch_prompts: list[str] = []
             for cid in sorted(pending):
-                titles = payloads.get(cid, [])
-                title_lines = "\n".join(f"- {t}" for t in titles) if titles else "- (no titles)"
-                batch_prompts.append(f"Titles:\n{title_lines}")
+                info_entries = payloads.get(cid, [])
+                info_block = "\n\n".join(info_entries) if info_entries else "(no stories)"
+                batch_prompts.append(info_block)
+
+            used_names = sorted(set(n for n in results.values() if n))
+            already_used_str = f"Already Used Names (DO NOT REUSE): {', '.join(used_names)}" if used_names else ""
 
             full_prompt = f"""
-Provide a concise label between two and six words that describes the cluster stories.
+Provide a descriptive label (2-6 words) for this cluster of stories.
 
 Rules:
-- Prefer the most specific recurring technical topic in the titles.
-- Use 1-2 topics only if the cluster clearly spans two themes.
-- Avoid umbrella terms unless the titles are genuinely diverse.
-- Use key terms from the titles where possible.
-- Use normal spacing and Title Case (e.g., "Large Language Models", not "LargeLanguageModels" or "Large_Language_Models").
-- Return ONLY the label text. Do not return JSON, bullets, or extra commentary.
+- The cluster name MUST cover all stories in the cluster.
+- Ensure the label is DISTINCT from others in this report.
+- Use Title Case.
+- Return ONLY the label text.
 
-Group:
+{already_used_str}
+
+Cluster Stories:
 {chr(10).join(batch_prompts)}
 """
 
@@ -733,20 +752,25 @@ Group:
 
             rescue_prompts = []
             for cid in batch_missing:
-                titles = payloads.get(cid, [])
-                title_lines = "\n".join(f"- {t}" for t in titles) if titles else "- (no titles)"
-                rescue_prompts.append(f"Titles:\n{title_lines}")
+                info_entries = payloads.get(cid, [])
+                info_block = "\n\n".join(info_entries) if info_entries else "(no stories)"
+                rescue_prompts.append(info_block)
+
+            used_names = sorted(set(n for n in results.values() if n))
+            already_used_str = f"Already Used Names (DO NOT REUSE): {', '.join(used_names)}" if used_names else ""
 
             rescue_prompt = f"""
-Provide a concise label between two and six words that describes the cluster stories.
+Provide a descriptive label (2-6 words) for this cluster of stories.
 
 Rules:
-- Prefer specific technical topics from the titles.
-- Generic labels are allowed only if the titles are genuinely diverse.
-- Use normal spacing and Title Case (e.g., "Large Language Models", not "LargeLanguageModels" or "Large_Language_Models").
-- Return ONLY the label text. Do not return JSON, bullets, or extra commentary.
+- The cluster name MUST cover all stories in the cluster.
+- Ensure the label is DISTINCT from others in this report.
+- Use Title Case.
+- Return ONLY the label text.
 
-Group:
+{already_used_str}
+
+Cluster Stories:
 {chr(10).join(rescue_prompts)}
 """
 

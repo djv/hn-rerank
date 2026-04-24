@@ -183,13 +183,12 @@ MIN_COMMENT_LENGTH = 30  # Filter short low-value comments (relaxed)
 # LLM Configuration
 LLM_CLUSTER_NAME_MODEL_PRIMARY = "llama-3.3-70b-versatile"
 LLM_CLUSTER_NAME_MODEL_FALLBACK = "llama-3.1-8b-instant"
-LLM_CLUSTER_NAME_PROMPT_VERSION = "v3"
+LLM_CLUSTER_NAME_PROMPT_VERSION = "v9"
 LLM_TLDR_MODEL = "llama-3.1-8b-instant"
 LLM_TEMPERATURE = 0.2
 LLM_TLDR_MAX_TOKENS = 2000
 LLM_CLUSTER_MAX_TOKENS = 64
 LLM_TLDR_BATCH_SIZE = 5  # Stories per TLDR request
-LLM_CLUSTER_TITLE_SAMPLES = 20  # Titles per cluster for naming context
 LLM_CLUSTER_TITLE_MAX_CHARS = 140  # Max chars per title in naming payload
 LLM_CLUSTER_NAME_MAX_WORDS = 6  # Max words in cluster name
 LLM_CLUSTER_NAME_MIN_COVERAGE = 0.35  # Min title token overlap with label
