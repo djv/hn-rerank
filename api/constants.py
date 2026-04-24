@@ -106,12 +106,12 @@ KNN_NEIGHBORS = _get("semantic", "knn_neighbors", 1)
 DEFAULT_CLUSTER_COUNT = 30
 MIN_CLUSTERS = 2
 MAX_CLUSTERS = 40
-MIN_SAMPLES_PER_CLUSTER = _get("clustering", "min_samples_per_cluster", 2)
+MIN_SAMPLES_PER_CLUSTER = _get("clustering", "min_samples_per_cluster", 1)
 MAX_CLUSTER_FRACTION = _get("clustering", "max_cluster_fraction", 0.25)
 MAX_CLUSTER_SIZE = _get("clustering", "max_cluster_size", 40)
 CLUSTER_REFINE_ITERS = _get("clustering", "refine_iters", 2)
 CLUSTER_SIMILARITY_THRESHOLD = _get("clustering", "similarity_threshold", 0.91)
-CLUSTER_OUTLIER_SIMILARITY_THRESHOLD = _get("clustering", "outlier_similarity_threshold", 0.87)
+CLUSTER_OUTLIER_SIMILARITY_THRESHOLD = _get("clustering", "outlier_similarity_threshold", 0.0)
 
 # Ranking Weights
 RANKING_HN_WEIGHT = 0.05
@@ -165,10 +165,11 @@ CLASSIFIER_USE_POS_KNN_FEATURE = _get("classifier", "use_pos_knn_feature", True)
 CLASSIFIER_USE_NEG_KNN_FEATURE = _get("classifier", "use_neg_knn_feature", True)
 
 # Clustering
-CLUSTER_ALGORITHM = "spectral"  # "spectral", "agglomerative", or "kmeans"
-CLUSTER_AGGLOMERATIVE_LINKAGE = "complete"
-CLUSTER_AGGLOMERATIVE_METRIC = "cosine"
-CLUSTER_SPECTRAL_NEIGHBORS = 15
+CLUSTER_ALGORITHM = _get("clustering", "algorithm", "agglomerative")
+CLUSTER_AGGLOMERATIVE_LINKAGE = _get("clustering", "linkage", "ward")
+CLUSTER_AGGLOMERATIVE_METRIC = _get("clustering", "metric", "euclidean")
+CLUSTER_AGGLOMERATIVE_THRESHOLD = _get("clustering", "distance_threshold", 0.75)
+CLUSTER_SPECTRAL_NEIGHBORS = _get("clustering", "spectral_neighbors", 15)
 
 # Comment Pool
 MIN_STORY_COMMENTS = 20  # Historical threshold kept for tests/tuning context

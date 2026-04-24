@@ -49,9 +49,13 @@ local_hidden_penalty_k = 3
 use_neg_knn_feature = false
 
 [hn_rerank.clustering]
+algorithm = "agglomerative"
+linkage = "ward"
+metric = "euclidean"
+distance_threshold = 0.75
 similarity_threshold = 0.91
-outlier_similarity_threshold = 0.87
-min_samples_per_cluster = 2
+outlier_similarity_threshold = 0.0
+min_samples_per_cluster = 1
 max_cluster_fraction = 0.25
 max_cluster_size = 40
 refine_iters = 2

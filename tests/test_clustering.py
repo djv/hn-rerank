@@ -75,9 +75,12 @@ def test_single_sample_returns_single_cluster():
     assert labels[0] == 0
 
 
-@given(st.integers(min_value=2, max_value=5))
+@given(st.integers(min_value=1, max_value=5))
 def test_small_sample_fallback(n_samples: int):
     """n < MIN_SAMPLES*2 returns single cluster."""
+    if MIN_SAMPLES_PER_CLUSTER * 2 <= 1:
+        # If min samples is 0/1, this fallback might not trigger as intended for n=1
+        return
     assume(n_samples < MIN_SAMPLES_PER_CLUSTER * 2)
     embeddings = np.random.randn(n_samples, 384).astype(np.float32)
     centroids, labels = cluster_interests_with_labels(embeddings)

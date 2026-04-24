@@ -49,6 +49,7 @@ from api.constants import (  # noqa: E402
     CLUSTER_ALGORITHM,
     CLUSTER_AGGLOMERATIVE_LINKAGE,
     CLUSTER_AGGLOMERATIVE_METRIC,
+    CLUSTER_AGGLOMERATIVE_THRESHOLD,
     CLUSTER_REFINE_ITERS,
     CLUSTER_SPECTRAL_NEIGHBORS,
     FRESHNESS_ENABLED,
@@ -459,10 +460,10 @@ def cluster_interests_with_labels(
     embeddings: NDArray[np.float32],
     weights: NDArray[np.float32] | None = None,
     n_clusters: int = DEFAULT_CLUSTER_COUNT,
+    distance_threshold: float | None = CLUSTER_AGGLOMERATIVE_THRESHOLD,
 ) -> tuple[NDArray[np.float32], NDArray[np.int32]]:
     """
     Cluster user interest embeddings using a cosine-aware algorithm.
-    Uses fixed k (default 30); LLM naming handles semantic coherence.
     Returns (centroids, labels) where:
       - centroids: shape (n_clusters, embedding_dim)
       - labels: shape (n_samples,) cluster assignment per sample
@@ -482,12 +483,14 @@ def cluster_interests_with_labels(
             centroid = np.mean(embeddings, axis=0).reshape(1, -1)
         return centroid.astype(np.float32), labels
 
-    # Normalize embeddings for cosine-like behavior
-    normalized = _normalize_embeddings(embeddings)
+    # Normalize embeddings for cosine-like behavior (unless metric is euclidean)
+    if CLUSTER_AGGLOMERATIVE_METRIC == "euclidean" and CLUSTER_ALGORITHM == "agglomerative":
+        normalized = embeddings
+    else:
+        normalized = _normalize_embeddings(embeddings)
 
-    # Use fixed number of clusters as requested (max MAX_CLUSTERS)
-    # n_clusters is capped by n_samples / MIN_SAMPLES_PER_CLUSTER and MAX_CLUSTERS
-    effective_n_clusters = min(n_clusters, MAX_CLUSTERS, n_samples // MIN_SAMPLES_PER_CLUSTER)
+    # Use fixed number of clusters or distance threshold
+    effective_n_clusters = min(n_clusters, MAX_CLUSTERS, n_samples // max(1, MIN_SAMPLES_PER_CLUSTER))
     effective_n_clusters = max(effective_n_clusters, MIN_CLUSTERS)
 
     if CLUSTER_ALGORITHM == "spectral":
@@ -501,8 +504,11 @@ def cluster_interests_with_labels(
         )
         labels = clustering.fit_predict(normalized).astype(np.int32)
     elif CLUSTER_ALGORITHM == "agglomerative":
+        # If threshold is provided, use auto-k
+        use_n = effective_n_clusters if distance_threshold is None else None
         clustering = AgglomerativeClustering(
-            n_clusters=effective_n_clusters,
+            n_clusters=use_n,
+            distance_threshold=distance_threshold,
             metric=CLUSTER_AGGLOMERATIVE_METRIC,
             linkage=CLUSTER_AGGLOMERATIVE_LINKAGE,
         )
@@ -515,31 +521,36 @@ def cluster_interests_with_labels(
         )
         labels = kmeans.fit_predict(normalized).astype(np.int32)
 
-    labels = _refine_cluster_assignments(
-        normalized, labels, CLUSTER_REFINE_ITERS
-    )
-    labels = _merge_small_clusters(embeddings, labels, MIN_SAMPLES_PER_CLUSTER)
+    # Bypass heuristic post-processing if using threshold-based agglomerative
+    # (Ward linkage handles balance and coherence natively)
+    if not (CLUSTER_ALGORITHM == "agglomerative" and distance_threshold is not None):
+        labels = _refine_cluster_assignments(
+            normalized, labels, CLUSTER_REFINE_ITERS
+        )
+        labels = _merge_small_clusters(embeddings, labels, MIN_SAMPLES_PER_CLUSTER)
 
-    max_size = max(
-        MIN_SAMPLES_PER_CLUSTER,
-        min(
-            MAX_CLUSTER_SIZE,
-            int(math.ceil(n_samples * MAX_CLUSTER_FRACTION)),
-        ),
-    )
-    max_clusters = min(MAX_CLUSTERS, n_samples // MIN_SAMPLES_PER_CLUSTER)
-    labels = _split_large_clusters(
-        embeddings,
-        labels,
-        min_size=MIN_SAMPLES_PER_CLUSTER,
-        max_size=max_size,
-        max_clusters=max_clusters,
-    )
+        max_size = max(
+            MIN_SAMPLES_PER_CLUSTER,
+            min(
+                MAX_CLUSTER_SIZE,
+                int(math.ceil(n_samples * MAX_CLUSTER_FRACTION)),
+            ),
+        )
+        max_clusters = min(MAX_CLUSTERS, n_samples // max(1, MIN_SAMPLES_PER_CLUSTER))
+        labels = _split_large_clusters(
+            embeddings,
+            labels,
+            min_size=MIN_SAMPLES_PER_CLUSTER,
+            max_size=max_size,
+            max_clusters=max_clusters,
+        )
 
     centroids = _centroids_from_labels(embeddings, labels, weights)
-    centroids, labels, _ = split_outlier_clusters(
-        embeddings, labels, CLUSTER_OUTLIER_SIMILARITY_THRESHOLD, weights=weights
-    )
+    
+    if not (CLUSTER_ALGORITHM == "agglomerative" and distance_threshold is not None):
+        centroids, labels, _ = split_outlier_clusters(
+            embeddings, labels, CLUSTER_OUTLIER_SIMILARITY_THRESHOLD, weights=weights
+        )
     return centroids, labels
 
 
