@@ -93,7 +93,7 @@ EMBEDDING_MIN_CLIP = 1e-9
 # Current live ONNX artifact timestamped 2026-01-31. Exact checkpoint label is
 # not confirmed, so keep a neutral version id for cache invalidation/provenance.
 EMBEDDING_MODEL_VERSION = "prod-e5-2026-04-22"
-CLUSTER_EMBEDDING_MODEL_VERSION = "prod-e5-2026-04-22"
+CLUSTER_EMBEDDING_MODEL_VERSION = "prod-e5-2026-04-24"
 CLUSTER_EMBEDDING_MODEL_DIR = "onnx_model"
 
 # Similarity Bounds
@@ -183,7 +183,7 @@ MIN_COMMENT_LENGTH = 30  # Filter short low-value comments (relaxed)
 # LLM Configuration
 LLM_CLUSTER_NAME_MODEL_PRIMARY = "llama-3.3-70b-versatile"
 LLM_CLUSTER_NAME_MODEL_FALLBACK = "llama-3.1-8b-instant"
-LLM_CLUSTER_NAME_PROMPT_VERSION = "v9"
+LLM_CLUSTER_NAME_PROMPT_VERSION = "v11"
 LLM_TLDR_MODEL = "llama-3.1-8b-instant"
 LLM_TEMPERATURE = 0.2
 LLM_TLDR_MAX_TOKENS = 2000

@@ -4,7 +4,6 @@ import asyncio
 import hashlib
 import json
 import logging
-import re
 import time
 from collections.abc import Callable, Sequence
 from datetime import datetime
@@ -207,10 +206,6 @@ def _finalize_cluster_name(raw_name: str) -> str | None:
     cleaned = cleaned.rstrip(" ,&/").rstrip()
     if cleaned.endswith(" and") or cleaned.endswith(" or"):
         cleaned = cleaned.rsplit(" ", 1)[0].rstrip()
-    
-    # Force technical acronym capitalization
-    cleaned = re.sub(r"\bAi\b", "AI", cleaned)
-    cleaned = re.sub(r"\bLlm\b", "LLM", cleaned)
     
     return cleaned or None
 
@@ -551,19 +546,20 @@ async def generate_batch_cluster_names(
             already_used_str = f"Already Used Names (DO NOT REUSE): {', '.join(used_names)}" if used_names else ""
 
             full_prompt = f"""
-Provide a descriptive label (2-6 words) for this cluster of stories.
+            Provide a descriptive label (2-6 words) for this cluster of stories.
 
-Rules:
-- The cluster name MUST cover all stories in the cluster.
-- Ensure the label is DISTINCT from others in this report.
-- Use Title Case.
-- Return ONLY the label text.
+            Rules:
+            - The cluster name should capture the dominant theme of these stories. If the cluster is mixed, identify the primary topic(s).
+            - Favor precision over generality. If the cluster is a collection of diverse tech stories, use a term like 'Tech & Development Trends'.
+            - Ensure the label is DISTINCT from others in this report.
+            - Use Title Case.
+            - Return ONLY the label text.
 
-{already_used_str}
+            {already_used_str}
 
-Cluster Stories:
-{chr(10).join(batch_prompts)}
-"""
+            Cluster Stories:
+            {chr(10).join(batch_prompts)}
+            """
 
             try:
                 pending_before = sorted(pending)
@@ -759,20 +755,21 @@ Cluster Stories:
             used_names = sorted(set(n for n in results.values() if n))
             already_used_str = f"Already Used Names (DO NOT REUSE): {', '.join(used_names)}" if used_names else ""
 
-            rescue_prompt = f"""
-Provide a descriptive label (2-6 words) for this cluster of stories.
+            full_prompt = f"""
+            Provide a descriptive label (2-6 words) for this cluster of stories.
 
-Rules:
-- The cluster name MUST cover all stories in the cluster.
-- Ensure the label is DISTINCT from others in this report.
-- Use Title Case.
-- Return ONLY the label text.
+            Rules:
+            - The cluster name should capture the dominant theme of these stories. If the cluster is mixed, identify the primary topic(s).
+            - Favor precision over generality. If the cluster is a collection of diverse tech stories, use a term like 'Tech & Development Trends'.
+            - Ensure the label is DISTINCT from others in this report.
+            - Use Title Case.
+            - Return ONLY the label text.
 
-{already_used_str}
+            {already_used_str}
 
-Cluster Stories:
-{chr(10).join(rescue_prompts)}
-"""
+            Cluster Stories:
+            {chr(10).join(batch_prompts)}
+            """
 
             try:
                 rescue_model = active_model
