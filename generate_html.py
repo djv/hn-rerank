@@ -361,6 +361,19 @@ CLUSTER_STORY_TEMPLATE: str = """
 """
 
 
+# Progress Bar Weights (Total: 1000)
+PROGRESS_WEIGHTS = {
+    "profile": 150,
+    "emb_pref": 50,
+    "emb_clust": 50,
+    "cluster": 20,
+    "naming": 200,
+    "candidates": 100,
+    "rank": 50,
+    "tldr": 380,
+}
+
+
 def get_relative_time(timestamp: int) -> str:
     if not timestamp:
         return ""
@@ -808,6 +821,10 @@ async def main() -> None:
         TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
         console=console,
     ) as progress:
+        overall_task = progress.add_task(
+            "[bold]Overall Progress[/bold]", total=1000
+        )
+
         # 1. Profile Building
         p_task: TaskID = progress.add_task(
             f"[*] Building profile for @{args.username}...", total=100
@@ -832,23 +849,23 @@ async def main() -> None:
 
             data: UserSignals = await hn.fetch_user_data(args.username)
             progress.update(
-                p_task, completed=20, description="[*] Fetching signal details..."
+                p_task, description="[*] Fetching signal details..."
             )
 
             # Helper for progress-aware batch fetch
-            async def fetch_with_progress(ids: list[int], label: str) -> list[Story]:
+            async def fetch_with_progress(ids: list[int], label: str, weight_share: float) -> list[Story]:
                 results: list[Story] = []
-                # Don't create a new task, just update the main one's description
                 progress.update(
                     p_task, description=f"[*] Fetching {label} ({len(ids)} items)..."
                 )
 
                 if not ids:
+                    progress.update(overall_task, advance=weight_share)
                     return []
 
-                # Calculate step size to reach 100% (allocated 20-100 range = 80%)
-                # We have two batches (pos + neg), so each gets ~40%
-                step = 40.0 / len(ids)
+                # Calculate step sizes for both bars
+                step = 100.0 * (weight_share / PROGRESS_WEIGHTS["profile"]) / len(ids)
+                overall_step = weight_share / len(ids)
 
                 for res in asyncio.as_completed(
                     [fetch_story(hn.client, sid) for sid in ids]
@@ -857,6 +874,7 @@ async def main() -> None:
                     if s:
                         results.append(s)
                     progress.update(p_task, advance=step)
+                    progress.update(overall_task, advance=overall_step)
                 return results
 
             # Positive signals = Favorites + Upvoted (merged in fetch_user_data)
@@ -866,21 +884,40 @@ async def main() -> None:
             if args.use_hidden_signal:
                 neg_ids = list(data["hidden"])[: args.signals]
 
+            # Split profile weight between positive and negative fetches
+            pos_weight = PROGRESS_WEIGHTS["profile"] * 0.7
+            neg_weight = PROGRESS_WEIGHTS["profile"] * 0.3 if neg_ids else 0.0
+            if not neg_ids:
+                pos_weight = PROGRESS_WEIGHTS["profile"]
+
             pos_stories: list[Story] = await fetch_with_progress(
-                pos_ids, "Positive signals"
+                pos_ids, "Positive signals", pos_weight
             )
             neg_stories: list[Story] = []
             if neg_ids:
-                neg_stories = await fetch_with_progress(neg_ids, "Negative signals")
+                neg_stories = await fetch_with_progress(neg_ids, "Negative signals", neg_weight)
+            elif neg_weight > 0:
+                progress.update(overall_task, advance=neg_weight)
+            
             progress.update(
                 p_task, completed=100, description="[green][+] Profile built."
             )
 
         # 2. Embedding
         e_task: TaskID = progress.add_task("[*] Embedding preferences...", total=100)
+        
+        # Track overall advancement for embeddings to avoid double-counting
+        last_e_completed = 0
 
         def emb_cb(curr: int, total: int) -> None:
+            nonlocal last_e_completed
             progress.update(e_task, total=total, completed=curr)
+            # Advance overall bar proportionally to the weight of this phase
+            if total > 0:
+                delta = curr - last_e_completed
+                overall_advance = (delta / total) * PROGRESS_WEIGHTS["emb_pref"]
+                progress.update(overall_task, advance=overall_advance)
+                last_e_completed = curr
 
         p_emb: NDArray[np.float32] | None = (
             rerank.get_embeddings(
@@ -891,6 +928,10 @@ async def main() -> None:
             if pos_stories
             else None
         )
+        # If no stories to embed, advance overall bar anyway
+        if not pos_stories:
+            progress.update(overall_task, advance=PROGRESS_WEIGHTS["emb_pref"])
+
         n_emb: NDArray[np.float32] | None = (
             rerank.get_embeddings(
                 [s.text_content for s in neg_stories],
@@ -911,15 +952,24 @@ async def main() -> None:
             ce_task: TaskID = progress.add_task(
                 "[*] Embedding cluster content...", total=100
             )
+            last_ce_completed = 0
 
             def cluster_emb_cb(curr: int, total: int) -> None:
+                nonlocal last_ce_completed
                 progress.update(ce_task, total=total, completed=curr)
+                if total > 0:
+                    delta = curr - last_ce_completed
+                    overall_advance = (delta / total) * PROGRESS_WEIGHTS["emb_clust"]
+                    progress.update(overall_task, advance=overall_advance)
+                    last_ce_completed = curr
 
             cluster_emb = rerank.get_cluster_embeddings(
                 [s.text_content for s in pos_stories],
                 progress_callback=cluster_emb_cb,
             )
             progress.update(ce_task, description="[green][+] Cluster content embedded.")
+        else:
+            progress.update(overall_task, advance=PROGRESS_WEIGHTS["emb_clust"])
 
         # 2b. Clustering interests
         cluster_labels: NDArray[np.int32] | None = None
@@ -936,9 +986,9 @@ async def main() -> None:
             progress.update(
                 cl_task, completed=1, description="[green][+] Interests clustered."
             )
+            progress.update(overall_task, advance=PROGRESS_WEIGHTS["cluster"])
 
             # Build cluster names (LLM calls)
-            # Use story score as weight for LLM to see most popular stories first
             clusters_for_naming: dict[int, list[tuple[StoryDict, float]]] = (
                 defaultdict(list)
             )
@@ -948,7 +998,6 @@ async def main() -> None:
                     (story.to_dict(), float(story.score))
                 )
 
-            # Do not name singleton clusters (size == 1)
             singleton_clusters = {
                 cid for cid, items in clusters_for_naming.items() if len(items) == 1
             }
@@ -963,9 +1012,16 @@ async def main() -> None:
             name_task: TaskID = progress.add_task(
                 "[cyan]Naming clusters...", total=n_clusters
             )
+            last_n_completed = 0
 
             def name_cb(curr: int, total: int) -> None:
+                nonlocal last_n_completed
                 progress.update(name_task, completed=curr)
+                if total > 0:
+                    delta = curr - last_n_completed
+                    overall_advance = (delta / total) * PROGRESS_WEIGHTS["naming"]
+                    progress.update(overall_task, advance=overall_advance)
+                    last_n_completed = curr
 
             if args.no_naming:
                 cluster_names.update(
@@ -976,6 +1032,7 @@ async def main() -> None:
                     completed=n_clusters,
                     description="[yellow][!] Using generic cluster names.",
                 )
+                progress.update(overall_task, advance=PROGRESS_WEIGHTS["naming"])
             else:
                 try:
                     debug_path = None
@@ -999,31 +1056,25 @@ async def main() -> None:
                         f"[red][bold][-] Groq naming failed:[/bold] {exc}[/red]"
                     )
                     raise
-
-            if (
-                args.cluster_stats
-                and cluster_labels is not None
-                and cluster_centroids is not None
-                and cluster_source is not None
-            ):
-                stats_path = (
-                    Path(args.cluster_stats_path)
-                    if args.cluster_stats_path
-                    else Path(args.output).with_name("cluster_stats.json")
-                )
-                stats_payload = build_cluster_stats(
-                    cluster_source,
-                    cluster_labels,
-                    cluster_centroids,
-                    cluster_names,
-                )
-                stats_path.write_text(json.dumps(stats_payload, indent=2))
-                console.print(f"[green][+] Cluster stats saved to: {stats_path}[/green]")
+        else:
+            progress.update(overall_task, advance=PROGRESS_WEIGHTS["cluster"])
+            progress.update(overall_task, advance=PROGRESS_WEIGHTS["naming"])
 
         # 3. Candidates
         c_task: TaskID = progress.add_task(
             f"[*] Fetching {args.candidates} candidates...", total=args.candidates
         )
+        last_c_completed = 0
+
+        def cand_cb(curr: int, total: int) -> None:
+            nonlocal last_c_completed
+            progress.update(c_task, total=total, completed=curr)
+            if total > 0:
+                delta = curr - last_c_completed
+                overall_advance = (delta / total) * PROGRESS_WEIGHTS["candidates"]
+                progress.update(overall_task, advance=overall_advance)
+                last_c_completed = curr
+
         # Exclude everything we've already interacted with
         exclude_ids: set[int] = data["favorites"] | data["upvoted"] | data["hidden"]
         exclude_urls: set[str] = set()
@@ -1035,9 +1086,7 @@ async def main() -> None:
             args.candidates,
             exclude_ids=exclude_ids,
             exclude_urls=exclude_urls,
-            progress_callback=lambda curr, tot: progress.update(
-                c_task, total=tot, completed=curr
-            ),
+            progress_callback=cand_cb,
             days=args.days,
             include_rss=not args.no_rss,
         )
@@ -1047,9 +1096,16 @@ async def main() -> None:
 
         # 4. Reranking
         r_task: TaskID = progress.add_task("[*] Reranking stories...", total=100)
+        last_r_completed = 0
 
         def rank_cb(curr: int, total: int) -> None:
+            nonlocal last_r_completed
             progress.update(r_task, total=total, completed=curr)
+            if total > 0:
+                delta = curr - last_r_completed
+                overall_advance = (delta / total) * PROGRESS_WEIGHTS["rank"]
+                progress.update(overall_task, advance=overall_advance)
+                last_r_completed = curr
 
         ranked: list[RankResult] = rerank.rank_stories(
             cands,
@@ -1065,84 +1121,90 @@ async def main() -> None:
             r_task, completed=100, description="[green][+] Reranking complete."
         )
 
-    # Compute cluster assignments for candidates (only if above similarity threshold)
-    cand_cluster_map = build_candidate_cluster_map(
-        cands,
-        cluster_centroids,
-        CLUSTER_SIMILARITY_THRESHOLD,
-    )
+        # 5. TL;DR Generation
+        # Move TL;DR generation inside the progress context
+        stories_data: list[StoryDisplay] = []
+        # Temporary stories_data list for make_story_display logic
+        seen_urls: set[str] = set()
+        seen_titles: set[str] = set()
 
-    seen_urls: set[str] = set()
-    seen_titles: set[str] = set()
-
-    def make_story_display(result: RankResult) -> StoryDisplay | None:
-        """Create StoryDisplay from RankResult, handling dedup."""
-        s: Story = cands[result.index]
-
-        url: str | None = s.url
-        title: str = s.title
-
-        norm_url: str = normalize_url(url) if url else f"{s.source}:{s.id}"
-        norm_title: str = title.lower().strip() if title else ""
-
-        if norm_url in seen_urls or norm_title in seen_titles:
-            return None
-
-        if url:
-            seen_urls.add(norm_url)
-        if title:
-            seen_titles.add(norm_title)
-
-        reason: str = ""
-        reason_url: str = ""
-        if result.best_fav_index != -1 and result.best_fav_index < len(pos_stories):
-            fav_story = pos_stories[result.best_fav_index]
-            reason = fav_story.title
-            reason_url = f"https://news.ycombinator.com/item?id={fav_story.id}"
-
-        cid = get_cluster_id_for_result(
-            result, cluster_labels, cand_cluster_map
+        # Pre-build StoryDisplay items (without TL;DRs yet)
+        cand_cluster_map = build_candidate_cluster_map(
+            cands, cluster_centroids, CLUSTER_SIMILARITY_THRESHOLD
         )
-        cluster_name: str = resolve_cluster_name(
-            cluster_names,
-            cid,
-            allow_empty_fallback=s.is_external,
+        
+        selected_results = select_ranked_results(
+            ranked, cands, cluster_labels, cluster_names, cand_cluster_map, args.count
+        )
+        selected_results = await filter_top_ranked_hn_dupes(
+            selected_results, cands, exclude_ids=exclude_ids, count=args.count
         )
 
-        discussion_url = s.discussion_url
-        if discussion_url is None and s.is_hn and s.id > 0:
-            discussion_url = f"https://news.ycombinator.com/item?id={s.id}"
+        def make_story_display_local(result: RankResult) -> StoryDisplay | None:
+            s: Story = cands[result.index]
+            url: str | None = s.url
+            title: str = s.title
+            norm_url: str = normalize_url(url) if url else f"{s.source}:{s.id}"
+            norm_title: str = title.lower().strip() if title else ""
+            if norm_url in seen_urls or norm_title in seen_titles:
+                return None
+            if url: seen_urls.add(norm_url)
+            if title: seen_titles.add(norm_title)
+            reason, reason_url = "", ""
+            if result.best_fav_index != -1 and result.best_fav_index < len(pos_stories):
+                fav_story = pos_stories[result.best_fav_index]
+                reason = fav_story.title
+                reason_url = f"https://news.ycombinator.com/item?id={fav_story.id}"
+            cid = get_cluster_id_for_result(result, cluster_labels, cand_cluster_map)
+            cluster_name = resolve_cluster_name(cluster_names, cid, allow_empty_fallback=s.is_external)
+            discussion_url = s.discussion_url
+            if discussion_url is None and s.is_hn and s.id > 0:
+                discussion_url = f"https://news.ycombinator.com/item?id={s.id}"
+            return StoryDisplay(
+                id=s.id, match_percent=format_match_percent(result.knn_score),
+                cluster_name=cluster_name, points=s.score, time_ago=get_relative_time(s.time),
+                url=s.url, title=s.title or "Untitled", hn_url=discussion_url,
+                reason=reason, reason_url=reason_url, comments=list(s.comments),
+                source=s.source,
+            )
 
-        return StoryDisplay(
-            id=s.id,
-            # UI "match %" should reflect semantic similarity, not blended ranking utility.
-            match_percent=format_match_percent(result.knn_score),
-            cluster_name=cluster_name,
-            points=s.score,
-            time_ago=get_relative_time(s.time),
-            url=s.url,
-            title=s.title or "Untitled",
-            hn_url=discussion_url,
-            reason=reason,
-            reason_url=reason_url,
-            comments=list(s.comments),
-            source=s.source,
-        )
+        for result in selected_results:
+            sd = make_story_display_local(result)
+            if sd: stories_data.append(sd)
 
-    selected_results = select_ranked_results(
-        ranked,
-        cands,
-        cluster_labels,
-        cluster_names,
-        cand_cluster_map,
-        args.count,
-    )
-    selected_results = await filter_top_ranked_hn_dupes(
-        selected_results,
-        cands,
-        exclude_ids=exclude_ids,
-        count=args.count,
-    )
+        if not args.no_tldr and stories_data:
+            llm_task: TaskID = progress.add_task(
+                "[cyan]Generating TL;DRs...", total=len(stories_data)
+            )
+            last_t_completed = 0
+
+            def tldr_cb(curr: int, total: int) -> None:
+                nonlocal last_t_completed
+                progress.update(llm_task, completed=curr)
+                if total > 0:
+                    delta = curr - last_t_completed
+                    overall_advance = (delta / total) * PROGRESS_WEIGHTS["tldr"]
+                    progress.update(overall_task, advance=overall_advance)
+                    last_t_completed = curr
+
+            stories_for_tldr = [sd.to_dict() for sd in stories_data]
+            tldrs = await llm_utils.generate_batch_tldrs(
+                stories_for_tldr,
+                progress_callback=tldr_cb,
+            )
+            for sd in stories_data:
+                sd.tldr = tldrs.get(sd.id, "")
+            progress.update(
+                llm_task,
+                completed=len(stories_data),
+                description="[green][+] LLM content generated.",
+            )
+        else:
+            for sd in stories_data:
+                sd.tldr = ""
+            progress.update(overall_task, advance=PROGRESS_WEIGHTS["tldr"])
+
+    # --- HTML Generation starts here ---
     source_counts = Counter(cands[r.index].source for r in selected_results)
     counts_summary = ", ".join(
         f"{source}={count}" for source, count in sorted(source_counts.items())
@@ -1174,44 +1236,6 @@ async def main() -> None:
             )
         debug_path.write_text(json.dumps(debug_rows, indent=2))
         print(f"[+] Score breakdown saved to: {os.path.abspath(debug_path)}")
-
-    stories_data: list[StoryDisplay] = []
-
-    for result in selected_results:
-        sd = make_story_display(result)
-        if sd:
-            stories_data.append(sd)
-
-    if not args.no_tldr:
-        # Generate TL;DRs for stories
-        print("[*] Generating content via LLM...")
-        with progress:
-            llm_task: TaskID = progress.add_task(
-                "[cyan]Generating TL;DRs...", total=len(stories_data)
-            )
-
-            # Batch TL;DR generation (convert to dicts for API)
-            stories_for_tldr = [sd.to_dict() for sd in stories_data]
-            tldrs = await llm_utils.generate_batch_tldrs(
-                stories_for_tldr,
-                progress_callback=lambda curr, tot: progress.update(
-                    llm_task, completed=curr
-                ),
-            )
-
-            for sd in stories_data:
-                # Assign batched TL;DR
-                sd.tldr = tldrs.get(sd.id, "")
-
-            progress.update(
-                llm_task,
-                completed=len(stories_data),
-                description="[green][+] LLM content generated.",
-            )
-    else:
-        # Hard guard: never render TL;DR blocks when disabled.
-        for sd in stories_data:
-            sd.tldr = ""
 
     print("[*] Generating HTML...")
 
