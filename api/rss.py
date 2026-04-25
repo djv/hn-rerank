@@ -5,7 +5,7 @@ import hashlib
 import json
 import logging
 import time
-from collections.abc import Sequence
+from collections.abc import Sequence, Callable
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -285,6 +285,7 @@ async def fetch_rss_stories(
     per_feed: int,
     exclude_urls: set[str] | None = None,
     fetch_full_content: bool = True,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> list[Story]:
     exclude_urls = exclude_urls or set()
     min_ts = int(time.time()) - days * 86400
@@ -366,6 +367,6 @@ async def fetch_rss_stories(
                 stories.append(story)
 
         if fetch_full_content and stories:
-            await enrich_stories_with_full_text(client, stories)
+            await enrich_stories_with_full_text(client, stories, progress_callback=progress_callback)
 
         return stories

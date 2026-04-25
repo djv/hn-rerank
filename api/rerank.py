@@ -298,6 +298,7 @@ def init_model() -> ONNXEmbeddingModel:
     if _model is None:
         with _model_init_lock:
             if _model is None:
+                logger.info("Loading BERT embedding model (ONNX)...")
                 _model = ONNXEmbeddingModel()
     assert _model is not None
     return _model
@@ -311,6 +312,7 @@ def init_cluster_model() -> ONNXEmbeddingModel:
     if _cluster_model is None:
         with _cluster_model_init_lock:
             if _cluster_model is None:
+                logger.info("Loading cluster embedding model (ONNX)...")
                 _cluster_model = ONNXEmbeddingModel(model_dir=CLUSTER_EMBEDDING_MODEL_DIR)
     assert _cluster_model is not None
     return _cluster_model

@@ -470,6 +470,7 @@ async def get_best_stories(
         rss_stories: list[Story] = []
         if include_rss and not cache_only:
             try:
+                # Use progress callback for RSS fetching too
                 rss_stories = await fetch_rss_stories(
                     opml_url=RSS_OPML_URL,
                     days=days,
@@ -477,6 +478,7 @@ async def get_best_stories(
                     per_feed=RSS_PER_FEED_LIMIT,
                     exclude_urls=exclude_urls,
                     fetch_full_content=True,
+                    progress_callback=progress_callback,
                 )
             except Exception as e:
                 logger.warning(f"RSS fetch failed: {e}")

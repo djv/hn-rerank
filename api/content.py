@@ -8,7 +8,7 @@ import logging
 import re
 import time
 from pathlib import Path
-from collections.abc import Sequence
+from collections.abc import Sequence, Callable
 
 import httpx
 import trafilatura
@@ -148,6 +148,7 @@ async def fetch_full_text(client: httpx.AsyncClient, url: str) -> str:
 async def enrich_stories_with_full_text(
     client: httpx.AsyncClient,
     stories: list[Story],
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> None:
     if not stories:
         return
@@ -164,7 +165,7 @@ async def enrich_stories_with_full_text(
 
         tasks.append((story, asyncio.create_task(_wrapped_fetch(url))))
 
-    for story, task in tasks:
+    for i, (story, task) in enumerate(tasks):
         try:
             full_text = await task
         except Exception as e:
@@ -173,6 +174,9 @@ async def enrich_stories_with_full_text(
         if full_text:
             title = getattr(story, "title", "")
             story.text_content = compose_story_text(title=title, article_text=full_text)
+        
+        if progress_callback:
+            progress_callback(i + 1, len(tasks))
 
 
 def compose_story_text(
