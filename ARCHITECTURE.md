@@ -112,8 +112,8 @@ Optional Groq-backed stages:
 - Cluster naming via `generate_batch_cluster_names()`:
     - Uses "Rich Context": passes all cluster titles, plus the first 250 characters of `text_content` or top comments for the top 3 stories.
     - Ensures "Global Uniqueness": maintains a list of `already_used_names` to prevent duplicate labels within a single report.
-    - Applies a strict coverage rule: "The cluster name MUST cover all stories in the cluster."
-    - Automatically standardizes technical acronyms (e.g., "AI", "LLM") through post-processing.
+    - Applies a strict coverage rule: "The cluster name MUST reflect all stories in the cluster."
+    - Instructs the model to capture the dominant theme, favor precision, use Title Case, and return only the label text.
 - Story TL;DR generation via `generate_batch_tldrs()`:
     - Batches 5 stories per request to minimize API calls and latency.
     - Focuses on technical insights and trade-offs rather than summary-style descriptions.
@@ -121,7 +121,7 @@ Optional Groq-backed stages:
 Operational rules:
 - `GROQ_API_KEY` is required only when naming or TL;DRs are enabled.
 - Singleton clusters are left unnamed unless generic fallback naming is used.
-- Cluster naming and TL;DR results are cached under `.cache/` with versioning (e.g., `v9` for naming) to force refreshes when logic changes.
+- Cluster naming and TL;DR results are cached under `.cache/` with versioning (e.g., `v12` for naming) to force refreshes when logic changes.
 
 ## Rendered Artifacts
 

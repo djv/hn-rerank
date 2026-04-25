@@ -39,6 +39,7 @@ class StoryForTldr(TypedDict):
     id: int
     title: str
     comments: list[str]
+    text_content: str
 
 
 class StoryDisplayDict(StoryForTldr):
@@ -52,8 +53,8 @@ class StoryDisplayDict(StoryForTldr):
     hn_url: str | None
     reason: str
     reason_url: str
-    tldr: str
     source: StorySource
+    tldr: str
 
 
 @dataclass
@@ -143,6 +144,7 @@ class StoryDisplay:
     comments: list[str]
     source: StorySource = "hn"
     tldr: str = ""
+    text_content: str = ""
 
     def to_dict(self) -> StoryDisplayDict:
         """Convert to dict for template rendering."""
@@ -160,6 +162,7 @@ class StoryDisplay:
             "comments": self.comments,
             "source": self.source,
             "tldr": self.tldr,
+            "text_content": self.text_content,
         }
 
     @property
