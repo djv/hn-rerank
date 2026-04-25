@@ -1002,11 +1002,12 @@ async def generate_batch_tldrs(
             current_batch = list(pending_stories.values())
             stories_formatted = []
             for s in current_batch:
+                sid = s["id"]
                 title = s.get("title", "Untitled")
                 comments = s.get("comments", [])
                 text_content = s.get("text_content", "")
                 
-                context = f"ID: {s['id']}\nTitle: {title}"
+                context = f"### STORY ID: {sid} ###\nTitle: {title}"
                 if text_content:
                     # Include a significant portion of text content for better grounding
                     context += f"\nContent: {text_content[:1000]}"
@@ -1017,23 +1018,22 @@ async def generate_batch_tldrs(
                     )
                 stories_formatted.append(context)
 
-            batch_context = "\n\n---\n\n".join(stories_formatted)
+            batch_context = "\n\n".join(stories_formatted)
 
             prompt = f"""
-Synthesize the technical proposition ('Content') with the critical consensus ('Comments').
+Synthesize the core proposition ('Content') with the critical community consensus ('Comments').
 
 Rules:
-- Exactly 2 sentences per summary, max 40 words total.
-- Sentence 1: Technical thesis (what/how).
-- Sentence 2: Critical synthesis (but/so-what).
-- Use dense engineering terminology. No corporate PR or meta-commentary.
-- CRITICAL: Do NOT repeat the title.
+- Exactly 2 sentences per summary, max 45 words total.
+- Sentence 1: The primary thesis (technical 'how' for tools, industry 'why' for news/meta).
+- Sentence 2: The critical synthesis or trade-offs from the community discussion.
+- Use dense, professional terminology. Avoid conversational filler or repeating the title.
 - CRITICAL: Return a JSON object containing a summary for EVERY story ID requested below.
+- CRITICAL: Ensure summaries are GROUNDED only in the data provided for that specific ID.
 
 Example Response:
 {{
-  "12345": "Summary for story 12345.",
-  "67890": "Summary for story 67890."
+  "12345": "Tool X implements lock-free concurrency via atomic primitives to minimize context switching overhead. Community consensus highlights impressive benchmarks while cautioning against increased memory pressure in multi-tenant environments."
 }}
 
 Stories:
