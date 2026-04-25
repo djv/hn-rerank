@@ -77,7 +77,7 @@ def test_get_embeddings_with_model_closes_npz_cache_file(tmp_path, monkeypatch):
 
     result = _get_embeddings_with_model(
         [text],
-        model=_StubModel(),
+        model=_StubModel(),  # type: ignore[arg-type]
         cache_dir=tmp_path,
         cache_version=cache_version,
         is_query=False,

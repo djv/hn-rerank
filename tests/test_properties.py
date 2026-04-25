@@ -463,11 +463,9 @@ def test_hn_normalization_extreme_values(scores):
     """
     Invariant: HN score normalization handles extreme values without overflow.
     """
-    from api.constants import HN_SCORE_POINTS_EXP
-
     # Simulate the normalization: max(points-1, 0)^exp, then /max
     points = np.array(scores, dtype=np.float64)
-    hn_scores = np.power(np.maximum(points - 1, 0), HN_SCORE_POINTS_EXP)
+    hn_scores = np.power(np.maximum(points - 1, 0), 0.8)
     if hn_scores.max() > 0:
         hn_scores /= hn_scores.max()
 

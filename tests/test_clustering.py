@@ -478,3 +478,56 @@ async def test_llm_cluster_name_truncates_overlong_label():
         names = await generate_batch_cluster_names(clusters)
 
     assert names[0] == "Graph Neural Networks for Drug Discovery"
+
+@given(
+    seed=st.integers(min_value=0, max_value=2**32 - 1),
+    n_base_samples=st.integers(min_value=20, max_value=40),
+)
+@settings(deadline=None, max_examples=20)
+def test_clustering_stability_with_outlier(seed, n_base_samples):
+    """
+    Invariant: Adding a single outlier point should not drastically 
+    reorganize the existing clusters.
+    
+    We verify that at least 80% of the original points retain their 
+    relative cluster groupings (i.e., if A and B were together, 
+    they mostly stay together).
+    """
+    rng = np.random.default_rng(seed)
+    
+    # 1. Create base embeddings with some structure (2 distinct blobs)
+    blob1 = rng.normal(loc=1.0, scale=0.1, size=(n_base_samples // 2, 384))
+    blob2 = rng.normal(loc=-1.0, scale=0.1, size=(n_base_samples - n_base_samples // 2, 384))
+    base_embeddings = np.vstack([blob1, blob2]).astype(np.float32)
+    base_embeddings /= np.linalg.norm(base_embeddings, axis=1, keepdims=True) + 1e-9
+    
+    # 2. Cluster base points
+    _, labels_base = cluster_interests_with_labels(base_embeddings)
+    
+    # 3. Add an outlier point (orthogonal to blobs)
+    outlier = rng.normal(loc=0.0, scale=0.1, size=(1, 384)).astype(np.float32)
+    outlier[0, 2] = 10.0 # Force strong signal in a different dimension
+    outlier /= np.linalg.norm(outlier, axis=1, keepdims=True) + 1e-9
+    
+    extended_embeddings = np.vstack([base_embeddings, outlier])
+    
+    # 4. Cluster extended set
+    _, labels_ext = cluster_interests_with_labels(extended_embeddings)
+    
+    # 5. Compare base points' labels in both runs
+    # Since cluster IDs can change (e.g., 0 becomes 1), we check the Rand Index 
+    # or a simpler "same-cluster" adjacency matrix consistency.
+    labels_ext_original_points = labels_ext[:-1]
+    
+    def get_adjacency(labels):
+        return labels[:, None] == labels[None, :]
+    
+    adj_base = get_adjacency(labels_base)
+    adj_ext = get_adjacency(labels_ext_original_points)
+    
+    # Agreement: (A, B) are in same cluster in both OR different in both
+    agreement = (adj_base == adj_ext).mean()
+    
+    # We expect high agreement (e.g., > 80%) for a single outlier
+    assert agreement > 0.8, f"Clustering was too unstable! Agreement: {agreement:.2%}"
+

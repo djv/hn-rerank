@@ -194,6 +194,8 @@ def test_logistic_regression_cv_selects_C():
         class_weight="balanced",
         solver="liblinear",
         scoring="f1",
+        l1_ratios=(0.0,),
+        use_legacy_attributes=False,
     )
     clf.fit(X, y)
 
