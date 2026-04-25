@@ -44,6 +44,8 @@ from api.constants import (
     LLM_TLDR_BATCH_SIZE,
     LLM_TLDR_MAX_TOKENS,
     LLM_TLDR_MODEL,
+    LLM_PROVIDER,
+    LLM_MISTRAL_MODEL,
     RATE_LIMIT_ERROR_BACKOFF_BASE,
     RATE_LIMIT_ERROR_BACKOFF_MAX,
 )
@@ -104,12 +106,12 @@ def build_payload(
     return payload
 
 
-class GroqQuotaError(RuntimeError):
-    """Raised when Groq returns a non-retryable quota error (e.g., TPD)."""
+class LLMQuotaError(RuntimeError):
+    """Raised when LLM provider returns a non-retryable quota error (e.g., TPD)."""
 
 
-class GroqRetryableError(RuntimeError):
-    """Raised for retryable Groq errors."""
+class LLMRetryableError(RuntimeError):
+    """Raised for retryable LLM errors."""
 
     def __init__(
         self, message: str, cooldown: float | None = None, is_rate_limit: bool = False
@@ -151,20 +153,6 @@ def _retry_after_seconds(resp: httpx.Response) -> float | None:
     return _parse_retry_after(header)
 
 
-def _extract_groq_error_message(resp: httpx.Response) -> str:
-    try:
-        data = resp.json()
-    except Exception:
-        return resp.text.strip()
-    if isinstance(data, dict):
-        err = data.get("error")
-        if isinstance(err, dict):
-            msg = err.get("message")
-            if isinstance(msg, str):
-                return msg.strip()
-    return resp.text.strip()
-
-
 _RATE_LIMIT_WAIT = wait_random_exponential(
     min=RATE_LIMIT_ERROR_BACKOFF_BASE, max=RATE_LIMIT_ERROR_BACKOFF_MAX
 )
@@ -178,7 +166,7 @@ _RATE_LIMIT_429_WAIT = wait_random_exponential(
 def _retry_wait(retry_state: RetryCallState) -> float:
     outcome = retry_state.outcome
     exc = outcome.exception() if outcome is not None else None
-    if isinstance(exc, GroqRetryableError):
+    if isinstance(exc, LLMRetryableError):
         if exc.cooldown is not None:
             return exc.cooldown
         if exc.is_rate_limit:
@@ -312,14 +300,26 @@ async def _generate_with_retry(
     config: dict[str, object] | None = None,
     max_retries: int = 3,
 ) -> str | None:
-    """Call Groq API with exponential backoff retry logic using httpx."""
+    """Call LLM API (Groq or Mistral) with exponential backoff retry logic."""
     import os
 
-    api_key = os.environ.get("GROQ_API_KEY")
+    provider = os.environ.get("LLM_PROVIDER", LLM_PROVIDER).lower()
+    
+    if provider == "mistral":
+        api_key = os.environ.get("MISTRAL_API_KEY")
+        base_url = "https://api.mistral.ai/v1/chat/completions"
+        # Map default Groq models to Mistral if needed
+        if model in {"llama-3.3-70b-versatile", "llama-3.1-8b-instant"}:
+            model = LLM_MISTRAL_MODEL
+    else:
+        api_key = os.environ.get("GROQ_API_KEY")
+        base_url = "https://api.groq.com/openai/v1/chat/completions"
+
     if not api_key:
-        logger.warning("GROQ_API_KEY not set, skipping LLM call")
+        logger.warning(f"{provider.upper()}_API_KEY not set, skipping LLM call")
         return None
 
+    logger.info(f"Using {provider.upper()} provider with model {model}")
     payload = build_payload(model=model, contents=contents, config=config)
 
     timeout = httpx.Timeout(
@@ -333,7 +333,7 @@ async def _generate_with_retry(
         try:
             async for attempt in AsyncRetrying(
                 stop=stop_after_attempt(max_retries),
-                retry=retry_if_exception_type(GroqRetryableError),
+                retry=retry_if_exception_type(LLMRetryableError),
                 wait=_retry_wait,
                 reraise=True,
             ):
@@ -341,7 +341,7 @@ async def _generate_with_retry(
                     try:
                         async with _LLM_LIMITER:
                             resp = await client.post(
-                                "https://api.groq.com/openai/v1/chat/completions",
+                                base_url,
                                 headers={
                                     "Authorization": f"Bearer {api_key}",
                                     "Content-Type": "application/json",
@@ -350,43 +350,56 @@ async def _generate_with_retry(
                                 json=payload,
                             )
                     except httpx.HTTPError as e:
-                        raise GroqRetryableError(str(e)) from e
+                        raise LLMRetryableError(str(e)) from e
 
                     if resp.status_code == 200:
                         data = resp.json()
                         return data["choices"][0]["message"]["content"]
 
                     if resp.status_code == 429:
-                        error_msg = _extract_groq_error_message(resp)
+                        error_msg = _extract_llm_error_message(resp)
                         msg_lower = error_msg.lower()
-                        if "tokens per day" in msg_lower or " tpd" in msg_lower:
-                            raise GroqQuotaError(error_msg)
-                        if "requests per day" in msg_lower or " rpd" in msg_lower:
-                            raise GroqQuotaError(error_msg)
+                        if any(x in msg_lower for x in ["quota", "tokens per day", "requests per day"]):
+                            raise LLMQuotaError(error_msg)
+                        
                         retry_after = _retry_after_seconds(resp)
-                        raise GroqRetryableError(
+                        raise LLMRetryableError(
                             error_msg,
                             cooldown=retry_after,
                             is_rate_limit=True,
                         )
 
                     if resp.status_code in {408, 500, 502, 503, 504}:
-                        raise GroqRetryableError(
-                            f"Groq API error {resp.status_code}"
+                        raise LLMRetryableError(
+                            f"{provider.upper()} API error {resp.status_code}"
                         )
 
-                    error_msg = _extract_groq_error_message(resp)
+                    error_msg = _extract_llm_error_message(resp)
                     logger.error(
-                        "Groq API error %d: %s", resp.status_code, error_msg or resp.text
+                        "%s API error %d: %s", provider.upper(), resp.status_code, error_msg or resp.text
                     )
                     return None
-        except GroqQuotaError:
+        except LLMQuotaError:
             raise
-        except GroqRetryableError as e:
-            logger.error("Groq API call failed after %d retries: %s", max_retries, e)
+        except LLMRetryableError as e:
+            logger.error("%s API call failed after %d retries: %s", provider.upper(), max_retries, e)
             return None
 
     return None
+
+def _extract_llm_error_message(resp: httpx.Response) -> str:
+    """Extract error message from LLM provider response."""
+    try:
+        data = resp.json()
+        if isinstance(data, dict):
+            error = data.get("error")
+            if isinstance(error, dict):
+                return str(error.get("message", ""))
+            if isinstance(error, str):
+                return error
+    except Exception:
+        pass
+    return resp.text or "Unknown error"
 
 
 async def generate_batch_cluster_names(
@@ -546,14 +559,14 @@ async def generate_batch_cluster_names(
             already_used_str = f"Already Used Names (DO NOT REUSE): {', '.join(used_names)}" if used_names else ""
 
             full_prompt = f"""
-            Provide a descriptive label (2-6 words) for this cluster of stories.
+            Provide a concise, generic category name (2-4 words) for this cluster of stories.
 
             Rules:
-            - The cluster name should capture the dominant theme of these stories. If the cluster is mixed, identify the primary topic(s).
-            - Favor precision over generality. If the cluster is a collection of diverse tech stories, use a term like 'Tech & Development Trends'.
+            - Use broad, standard industry terms (e.g., 'Web Development', 'Cybersecurity', 'Machine Learning').
+            - Avoid flowery, narrative, or overly specific language.
             - Ensure the label is DISTINCT from others in this report.
             - Use Title Case.
-            - Return ONLY the label text.
+            - Return ONLY the category name.
 
             {already_used_str}
 
@@ -660,7 +673,7 @@ async def generate_batch_cluster_names(
 
                 if pending and attempt < max_rounds:
                     await asyncio.sleep(min(2**attempt, 8))
-            except GroqQuotaError as e:
+            except LLMQuotaError as e:
                 if (
                     not fallback_triggered
                     and fallback_model
@@ -756,14 +769,14 @@ async def generate_batch_cluster_names(
             already_used_str = f"Already Used Names (DO NOT REUSE): {', '.join(used_names)}" if used_names else ""
 
             full_prompt = f"""
-            Provide a descriptive label (2-6 words) for this cluster of stories.
+            Provide a concise, generic category name (2-4 words) for this cluster of stories.
 
             Rules:
-            - The cluster name should capture the dominant theme of these stories. If the cluster is mixed, identify the primary topic(s).
-            - Favor precision over generality. If the cluster is a collection of diverse tech stories, use a term like 'Tech & Development Trends'.
+            - Use broad, standard industry terms (e.g., 'Web Development', 'Cybersecurity', 'Machine Learning').
+            - Avoid flowery, narrative, or overly specific language.
             - Ensure the label is DISTINCT from others in this report.
             - Use Title Case.
-            - Return ONLY the label text.
+            - Return ONLY the category name.
 
             {already_used_str}
 
@@ -778,14 +791,14 @@ async def generate_batch_cluster_names(
                 try:
                     text = await _generate_with_retry(
                         model=rescue_model,
-                        contents=rescue_prompt,
+                        contents=full_prompt,
                         config={
                             "temperature": LLM_TEMPERATURE,
                             "max_output_tokens": LLM_CLUSTER_MAX_TOKENS,
                         },
                         max_retries=1,
                     )
-                except GroqQuotaError as e:
+                except LLMQuotaError as e:
                     if (
                         not fallback_triggered
                         and fallback_model
@@ -811,7 +824,7 @@ async def generate_batch_cluster_names(
                         t0 = time.time()
                         text = await _generate_with_retry(
                             model=rescue_model,
-                            contents=rescue_prompt,
+                            contents=full_prompt,
                             config={
                                 "temperature": LLM_TEMPERATURE,
                                 "max_output_tokens": LLM_CLUSTER_MAX_TOKENS,
@@ -846,7 +859,7 @@ async def generate_batch_cluster_names(
                     t0 = time.time()
                     text = await _generate_with_retry(
                         model=rescue_model,
-                        contents=rescue_prompt,
+                        contents=full_prompt,
                         config={
                             "temperature": LLM_TEMPERATURE,
                             "max_output_tokens": LLM_CLUSTER_MAX_TOKENS,
@@ -886,7 +899,7 @@ async def generate_batch_cluster_names(
                                 str(cid): payloads.get(cid, {})
                                 for cid in batch_missing
                             },
-                            "prompt": rescue_prompt,
+                            "prompt": full_prompt,
                             "response": text,
                             "parsed": batch_results if text else None,
                             "returned": returned,
@@ -894,7 +907,7 @@ async def generate_batch_cluster_names(
                         }
                     )
                     _flush_debug()
-            except GroqQuotaError as e:
+            except LLMQuotaError as e:
                 if debug_path is not None:
                     debug_records.append(
                         {
@@ -991,7 +1004,13 @@ async def generate_batch_tldrs(
             for s in current_batch:
                 title = s.get("title", "Untitled")
                 comments = s.get("comments", [])
+                text_content = s.get("text_content", "")
+                
                 context = f"ID: {s['id']}\nTitle: {title}"
+                if text_content:
+                    # Include a significant portion of text content for better grounding
+                    context += f"\nContent: {text_content[:1000]}"
+                
                 if comments:
                     context += "\nComments:\n" + "\n".join(
                         f"- {c[:300]}" for c in comments[:4]
@@ -1001,17 +1020,21 @@ async def generate_batch_tldrs(
             batch_context = "\n\n---\n\n".join(stories_formatted)
 
             prompt = f"""
-Summarize the discussion and technical insights in 2-3 sentences.
-CRITICAL: Do NOT repeat the title. The user sees it. Do NOT say "This story is about...".
+Synthesize the technical proposition ('Content') with the critical consensus ('Comments').
 
-Focus on:
-- Technical implementation details, trade-offs, or benchmarks mentioned in comments
-- Significant debates, criticisms, or comparisons to other tools
+Rules:
+- Exactly 2 sentences per summary, max 40 words total.
+- Sentence 1: Technical thesis (what/how).
+- Sentence 2: Critical synthesis (but/so-what).
+- Use dense engineering terminology. No corporate PR or meta-commentary.
+- CRITICAL: Do NOT repeat the title.
+- CRITICAL: Return a JSON object containing a summary for EVERY story ID requested below.
 
-BAD: "PostgreSQL 17 Released. It features..." (Repeats title)
-GOOD: "Praised for incremental backups and optimized vacuuming, though some users warn about update conflicts on legacy systems."
-
-Return JSON with story IDs as keys: {{ "12345": "Summary here." }}
+Example Response:
+{{
+  "12345": "Summary for story 12345.",
+  "67890": "Summary for story 67890."
+}}
 
 Stories:
 {batch_context}

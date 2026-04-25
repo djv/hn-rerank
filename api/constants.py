@@ -32,13 +32,7 @@ def _get(section: str, key: str, default: Any) -> Any:
     return _CONFIG.get(section, {}).get(key, default)
 
 
-# HN Score Calculation (Gravity Decay Formula)
-HN_SCORE_POINTS_EXP = 0.8
-HN_SCORE_TIME_EXP = 1.8
-HN_SCORE_TIME_OFFSET = 2
-
 # Content Limits
-ARTICLE_RANKING_LENGTH = 3000
 ARTICLE_SNIPPET_LENGTH = 1000
 TEXT_CONTENT_MAX_TOKENS = 512
 
@@ -98,8 +92,7 @@ CLUSTER_EMBEDDING_MODEL_DIR = "onnx_model"
 
 # Similarity Bounds
 SIMILARITY_MIN = -1.0
-SIMILARITY_MAX = 1.0
-SEMANTIC_MATCH_THRESHOLD = 0.82
+SEMANTIC_MATCH_THRESHOLD = 0.85
 KNN_NEIGHBORS = _get("semantic", "knn_neighbors", 1)
 
 # Multi-Interest Clustering
@@ -110,14 +103,13 @@ MIN_SAMPLES_PER_CLUSTER = _get("clustering", "min_samples_per_cluster", 1)
 MAX_CLUSTER_FRACTION = _get("clustering", "max_cluster_fraction", 0.25)
 MAX_CLUSTER_SIZE = _get("clustering", "max_cluster_size", 40)
 CLUSTER_REFINE_ITERS = _get("clustering", "refine_iters", 2)
-CLUSTER_SIMILARITY_THRESHOLD = _get("clustering", "similarity_threshold", 0.91)
+CLUSTER_SIMILARITY_THRESHOLD = _get("clustering", "similarity_threshold", 0.93)
 CLUSTER_OUTLIER_SIMILARITY_THRESHOLD = _get("clustering", "outlier_similarity_threshold", 0.0)
 
 # Ranking Weights
 RANKING_HN_WEIGHT = 0.05
 RANKING_NEGATIVE_WEIGHT = _get("ranking", "negative_weight", 0.5529047831)
 RANKING_DIVERSITY_LAMBDA = _get("ranking", "diversity_lambda", 0.2396634418)
-RANKING_DIVERSITY_LAMBDA_CLASSIFIER = _get("ranking", "diversity_lambda_classifier", 0.30)
 RANKING_MAX_RESULTS = _get("ranking", "max_results", 500)
 
 # Adaptive HN Weight (age-based)
@@ -177,13 +169,14 @@ MIN_CANDIDATE_COMMENTS = 0  # 0 = do not prefilter candidates by comment count
 MAX_COMMENTS_COLLECTED = 200  # Increased for richer signal
 TOP_COMMENTS_FOR_RANKING = 12  # Aligned with 512-token limit (Title + ~10-12 comments)
 TOP_COMMENTS_FOR_UI = 10
-RANKING_DEPTH_PENALTY = 10
 MIN_COMMENT_LENGTH = 30  # Filter short low-value comments (relaxed)
 
 # LLM Configuration
+LLM_PROVIDER = _get("llm", "provider", "groq")
 LLM_CLUSTER_NAME_MODEL_PRIMARY = "llama-3.3-70b-versatile"
 LLM_CLUSTER_NAME_MODEL_FALLBACK = "llama-3.1-8b-instant"
-LLM_CLUSTER_NAME_PROMPT_VERSION = "v11"
+LLM_MISTRAL_MODEL = "mistral-small-latest"
+LLM_CLUSTER_NAME_PROMPT_VERSION = "v13"
 LLM_TLDR_MODEL = "llama-3.1-8b-instant"
 LLM_TEMPERATURE = 0.2
 LLM_TLDR_MAX_TOKENS = 2000
@@ -195,7 +188,6 @@ LLM_CLUSTER_NAME_MIN_COVERAGE = 0.35  # Min title token overlap with label
 LLM_CLUSTER_MAX_RETRIES = 4
 LLM_CLUSTER_MAX_ROUNDS = 2
 LLM_CLUSTER_MAX_TOTAL_SECONDS = 600.0  # Fail fast if naming stalls too long
-LLM_CLUSTER_RESCUE_RETRIES = 2  # Extra retries for single-cluster rescue pass
 
 # Rate Limiting (Token Bucket)
 RATE_LIMIT_REFILL_RATE = 0.25  # Tokens per second (1 call per 4 seconds)

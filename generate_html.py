@@ -530,7 +530,7 @@ STORY_CARD_TEMPLATE: str = """
         {% endif %}
     </h2>
     {% if tldr %}
-    <div class="text-xs text-stone-600 bg-stone-50 p-2 rounded border border-stone-100 leading-relaxed whitespace-pre-line">{{ tldr }}</div>
+    <div class="text-sm text-stone-600 bg-stone-50 p-2 rounded border border-stone-100 leading-relaxed whitespace-pre-line">{{ tldr }}</div>
     {% endif %}
 </div>
 """
@@ -749,6 +749,11 @@ async def main() -> None:
         help="Optional path for score breakdown JSON (defaults next to output)",
     )
     parser.add_argument(
+        "--mistral",
+        action="store_true",
+        help="Use Mistral AI instead of Groq for LLM calls",
+    )
+    parser.add_argument(
         "--debug-clusters",
         action="store_true",
         help="Write cluster naming prompts/responses to JSON for debugging",
@@ -771,6 +776,9 @@ async def main() -> None:
     if config_defaults:
         parser.set_defaults(**config_defaults)
     args: argparse.Namespace = parser.parse_args()
+
+    if args.mistral:
+        os.environ["LLM_PROVIDER"] = "mistral"
 
     # Scheduled/automated runs may set this env var to hard-disable TL;DR generation.
     if os.environ.get("HN_RERANK_FORCE_NO_TLDR") == "1":
@@ -932,6 +940,7 @@ async def main() -> None:
         if not pos_stories:
             progress.update(overall_task, advance=PROGRESS_WEIGHTS["emb_pref"])
 
+        last_e_completed = 0
         n_emb: NDArray[np.float32] | None = (
             rerank.get_embeddings(
                 [s.text_content for s in neg_stories],
@@ -1148,8 +1157,10 @@ async def main() -> None:
             norm_title: str = title.lower().strip() if title else ""
             if norm_url in seen_urls or norm_title in seen_titles:
                 return None
-            if url: seen_urls.add(norm_url)
-            if title: seen_titles.add(norm_title)
+            if url:
+                seen_urls.add(norm_url)
+            if title:
+                seen_titles.add(norm_title)
             reason, reason_url = "", ""
             if result.best_fav_index != -1 and result.best_fav_index < len(pos_stories):
                 fav_story = pos_stories[result.best_fav_index]
@@ -1165,12 +1176,13 @@ async def main() -> None:
                 cluster_name=cluster_name, points=s.score, time_ago=get_relative_time(s.time),
                 url=s.url, title=s.title or "Untitled", hn_url=discussion_url,
                 reason=reason, reason_url=reason_url, comments=list(s.comments),
-                source=s.source,
+                source=s.source, text_content=s.text_content,
             )
 
         for result in selected_results:
             sd = make_story_display_local(result)
-            if sd: stories_data.append(sd)
+            if sd:
+                stories_data.append(sd)
 
         if not args.no_tldr and stories_data:
             llm_task: TaskID = progress.add_task(
