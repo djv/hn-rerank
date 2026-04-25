@@ -1014,7 +1014,7 @@ async def generate_batch_tldrs(
                 
                 if comments:
                     context += "\nComments:\n" + "\n".join(
-                        f"- {c[:300]}" for c in comments[:4]
+                        f"- {c[:300]}" for c in comments[:6]
                     )
                 stories_formatted.append(context)
 

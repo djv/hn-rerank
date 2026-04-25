@@ -67,7 +67,7 @@ MAX_USER_STORIES = 2000
 # Discovery Pool
 ALGOLIA_MIN_POINTS = 5
 ALGOLIA_DEFAULT_DAYS = 30
-CANDIDATE_FETCH_COUNT = 500
+CANDIDATE_FETCH_COUNT = 1000
 RSS_OPML_URL = (
     "https://gist.githubusercontent.com/emschwartz/e6d2bf860ccc367fe37ff953ba6de66b/raw/hn-popular-blogs-2025.opml"
 )
@@ -181,7 +181,7 @@ LLM_TLDR_MODEL = "llama-3.1-8b-instant"
 LLM_TEMPERATURE = 0.2
 LLM_TLDR_MAX_TOKENS = 2000
 LLM_CLUSTER_MAX_TOKENS = 64
-LLM_TLDR_BATCH_SIZE = 5  # Stories per TLDR request
+LLM_TLDR_BATCH_SIZE = 3  # Stories per TLDR request
 LLM_CLUSTER_TITLE_MAX_CHARS = 140  # Max chars per title in naming payload
 LLM_CLUSTER_NAME_MAX_WORDS = 6  # Max words in cluster name
 LLM_CLUSTER_NAME_MIN_COVERAGE = 0.35  # Min title token overlap with label

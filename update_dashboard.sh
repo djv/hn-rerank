@@ -13,14 +13,14 @@ cd "$PROJECT_DIR"
 # 1) Existing process environment (e.g., systemd EnvironmentFile)
 # 2) User secret file (~/.config/hn_rerank/secrets.env)
 # 3) Repo-local .env (legacy fallback)
-if [ -z "${GROQ_API_KEY:-}" ] && [ -f "$HOME/.config/hn_rerank/secrets.env" ]; then
+if [ -z "${GROQ_API_KEY:-}" ] && [ -z "${MISTRAL_API_KEY:-}" ] && [ -f "$HOME/.config/hn_rerank/secrets.env" ]; then
     set -a
     # shellcheck disable=SC1090
     source "$HOME/.config/hn_rerank/secrets.env"
     set +a
 fi
 
-if [ -z "${GROQ_API_KEY:-}" ] && [ -f "$PROJECT_DIR/.env" ]; then
+if [ -z "${GROQ_API_KEY:-}" ] && [ -z "${MISTRAL_API_KEY:-}" ] && [ -f "$PROJECT_DIR/.env" ]; then
     set -a
     # shellcheck disable=SC1091
     source "$PROJECT_DIR/.env"
@@ -28,8 +28,8 @@ if [ -z "${GROQ_API_KEY:-}" ] && [ -f "$PROJECT_DIR/.env" ]; then
 fi
 
 # API Keys check
-if [ -z "${GROQ_API_KEY:-}" ]; then
-    echo "Error: GROQ_API_KEY not set in environment or .env file" >&2
+if [ -z "${GROQ_API_KEY:-}" ] && [ -z "${MISTRAL_API_KEY:-}" ]; then
+    echo "Error: Neither GROQ_API_KEY nor MISTRAL_API_KEY set in environment or .env file" >&2
     exit 1
 fi
 
@@ -46,8 +46,8 @@ if [ -z "$UV_BIN" ]; then
     exit 1
 fi
 
-echo "[$(date)] Running: HN_RERANK_FORCE_NO_TLDR=1 $UV_BIN run generate_html.py --no-tldr" >> "$LOG_FILE"
-if HN_RERANK_FORCE_NO_TLDR=1 "$UV_BIN" run generate_html.py --no-tldr >> "$LOG_FILE" 2>&1; then
+echo "[$(date)] Running: $UV_BIN run generate_html.py" >> "$LOG_FILE"
+if "$UV_BIN" run generate_html.py >> "$LOG_FILE" 2>&1; then
     echo "[$(date)] Update successful." >> "$LOG_FILE"
 else
     echo "[$(date)] Update FAILED. Check $LOG_FILE for details." >> "$LOG_FILE"

@@ -4,8 +4,11 @@ days = 7
 clusters = 30
 count = 40
 no_rss = false
-no_tldr = true
+no_tldr = false
 debug_scores = false
+
+[hn_rerank.llm]
+provider = "mistral"
 
 # Tuned Hyperparameters (80-trial classifier retune on story-content v2 caches - 2026-03-08)
 
