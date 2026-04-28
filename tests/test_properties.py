@@ -636,62 +636,59 @@ def test_freshness_boost_ordering():
 
 def test_adaptive_hn_weight():
     """
-    Invariant: Old stories with high HN points can overcome semantic disadvantage.
+    Invariant: Old stories receive a larger HN-score contribution than young
+    stories when adaptive HN weighting is enabled.
     """
     import time
 
     now = int(time.time())
 
-    # Story A: 72h old, low semantic match, HIGH points
-    # Story B: 72h old, high semantic match, LOW points
     stories = [
         Story(
             id=1,
-            title="Viral",
+            title="Young Viral",
             url=None,
-            score=1000,  # Very popular
-            time=now - 72 * 3600,  # 72 hours ago
-            text_content="Low match",
+            score=1000,
+            time=now - 1 * 3600,
+            text_content="Young",
         ),
         Story(
             id=2,
-            title="Niche",
+            title="Old Viral",
             url=None,
-            score=10,  # Low points
+            score=1000,
             time=now - 72 * 3600,
-            text_content="High match",
+            text_content="Old",
         ),
     ]
 
-    # Pos signal: [1, 0]
-    # Story A: [0.3, 0.95] (low semantic match)
-    # Story B: [0.95, 0.3] (high semantic match)
     pos_emb = np.array([[1.0, 0.0]], dtype=np.float32)
-    cand_emb = np.array(
-        [[0.3, 0.95], [0.95, 0.3]], dtype=np.float32
-    )
-    # Normalize
-    cand_emb = cand_emb / np.linalg.norm(cand_emb, axis=1, keepdims=True)
+    cand_emb = np.array([[0.0, 1.0], [0.0, 1.0]], dtype=np.float32)
 
     import api.rerank
 
     with pytest.MonkeyPatch().context() as mp:
         mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: cand_emb)
+        mp.setattr(api.rerank, "ADAPTIVE_HN_WEIGHT_MIN", 0.0)
+        mp.setattr(api.rerank, "ADAPTIVE_HN_WEIGHT_MAX", 0.5)
+        mp.setattr(api.rerank, "ADAPTIVE_HN_THRESHOLD_YOUNG", 6.0)
+        mp.setattr(api.rerank, "ADAPTIVE_HN_THRESHOLD_OLD", 48.0)
+        mp.setattr(api.rerank, "FRESHNESS_ENABLED", False)
+        mp.setattr(api.rerank, "HN_SCORE_NORMALIZATION_CAP", 1000.0)
 
-        # With adaptive weighting, old stories use more HN weight
         results = rank_stories(
             stories,
             positive_embeddings=pos_emb,
             diversity_lambda=0.0,
         )
 
-        # Both stories get HN_WEIGHT_MAX (0.15) since they're old
-        # Story A has much higher HN score contribution
-        # The semantic + HN combination should make this competitive
-        # (We're testing that HN weight adapts, not that it wins)
-        assert len(results) == 2
-        # Story A's HN boost should be significant
-        # Story B's semantic advantage should be reduced by the 15% HN weight
+    by_index = {result.index: result for result in results}
+    assert by_index[0].semantic_score == pytest.approx(0.0)
+    assert by_index[1].semantic_score == pytest.approx(0.0)
+    assert by_index[0].hn_score == pytest.approx(by_index[1].hn_score)
+    assert by_index[0].hybrid_score == pytest.approx(0.0)
+    assert by_index[1].hybrid_score == pytest.approx(0.5)
+    assert results[0].index == 1
 
 
 def test_median_knn_outlier_robustness():

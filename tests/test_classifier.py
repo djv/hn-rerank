@@ -177,36 +177,6 @@ def test_classifier_local_hidden_penalty_reduces_semantic_scores():
     assert diagnostics["local_hidden_penalty_max"] == pytest.approx(0.5, abs=1e-6)
 
 
-def test_logistic_regression_cv_selects_C():
-    """LogisticRegressionCV auto-selects best C from provided grid."""
-    from sklearn.linear_model import LogisticRegressionCV
-
-    rng = np.random.default_rng(42)
-    # Linearly separable data
-    X_pos = rng.normal(loc=2.0, size=(30, 4)).astype(np.float32)
-    X_neg = rng.normal(loc=-2.0, size=(30, 4)).astype(np.float32)
-    X = np.vstack([X_pos, X_neg])
-    y = np.concatenate([np.ones(30), np.zeros(30)])
-
-    clf = LogisticRegressionCV(
-        Cs=[0.01, 0.1, 1.0, 10.0],
-        cv=3,
-        class_weight="balanced",
-        solver="liblinear",
-        scoring="f1",
-        l1_ratios=(0.0,),
-        use_legacy_attributes=False,
-    )
-    clf.fit(X, y)
-
-    # C_ should be auto-selected (not necessarily 1.0)
-    assert hasattr(clf, "C_")
-    selected_c = float(np.atleast_1d(clf.C_)[0])
-    assert selected_c in [0.01, 0.1, 1.0, 10.0]
-    # Should fit well on linearly separable data
-    assert clf.score(X, y) > 0.95
-
-
 def test_classifier_feature_augmentation_shape():
     """Classifier training with augmented features produces correct shape (N, dim+3)."""
     stories = _make_stories(10)

@@ -17,7 +17,7 @@ from promote_stable_params import (
     _score_metrics,
     SeedRun,
 )
-from tuning_common import validate_candidate_metrics
+from tuning_common import build_patch_kwargs, validate_candidate_metrics
 
 
 def test_parse_seed_list_dedups_preserves_order():
@@ -139,6 +139,24 @@ def test_render_promoted_toml_contains_expected_sections():
     assert "[hn_rerank.freshness]" in text
     assert "[hn_rerank.semantic]" in text
     assert "[hn_rerank.classifier]" in text
+
+
+def test_removed_knn_semantic_knobs_are_not_promoted_or_patched():
+    resolved = _resolved_params(
+        {
+            "knn_k": 2,
+            "knn_sigmoid_k": 4.5,
+            "knn_maxsim_weight": 0.25,
+        }
+    )
+    text = _render_promoted_toml(resolved)
+    patch_kwargs = build_patch_kwargs(resolved)
+
+    assert "knn_neighbors = 2" in text
+    assert "knn_sigmoid_k" not in text
+    assert "knn_maxsim_weight" not in text
+    assert "KNN_SIGMOID_K" not in patch_kwargs
+    assert "KNN_MAXSIM_WEIGHT" not in patch_kwargs
 
 
 def test_validate_candidate_metrics_requires_score_gain_and_no_guard_regressions():

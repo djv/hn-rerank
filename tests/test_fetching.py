@@ -279,6 +279,7 @@ async def test_get_best_stories_caps_candidate_collection(monkeypatch):
     """Small limits over many windows should not hydrate every window minimum."""
     search_url = f"{ALGOLIA_BASE}/search"
     search_calls = 0
+    fetched_story_ids: list[int] = []
 
     def search_response(request):
         nonlocal search_calls
@@ -288,6 +289,7 @@ async def test_get_best_stories_caps_candidate_collection(monkeypatch):
         return Response(200, json={"hits": hits, "nbPages": 1})
 
     async def fake_fetch_story(client, sid, **kwargs):
+        fetched_story_ids.append(sid)
         return Story(
             id=sid,
             title=f"Story {sid}",
@@ -313,6 +315,7 @@ async def test_get_best_stories_caps_candidate_collection(monkeypatch):
 
     assert len(stories) <= 60
     assert len(stories) >= 40
+    assert len(fetched_story_ids) <= 60
 
 
 @pytest.mark.asyncio
@@ -482,48 +485,3 @@ class TestWindowFilters:
             assert f"num_comments>={MIN_CANDIDATE_COMMENTS}" in filters
         else:
             assert all("num_comments" not in f for f in filters)
-
-
-class TestWinTargetCalculation:
-    """Test window target distribution logic."""
-
-    def test_proportional_distribution(self):
-        """Test that win_target is proportional to window duration."""
-        import math
-
-        # Simulate windows: 2 days live + 7 days archive
-        windows = [
-            (1000, 1000 + 2 * 86400, True),  # 2 days
-            (1000 - 7 * 86400, 1000, False),  # 7 days
-        ]
-        limit = 100
-
-        total_duration = sum(end - start for start, end, _ in windows)
-
-        targets = []
-        for ts_start, ts_end, _ in windows:
-            duration = ts_end - ts_start
-            win_target = math.ceil(limit * (duration / total_duration))
-            win_target = max(win_target, 20)
-            targets.append(win_target)
-
-        # Live window (2 days) should get ~22% of limit
-        # Archive window (7 days) should get ~78% of limit
-        # But minimum is 20
-        assert targets[0] >= 20  # Live window minimum
-        assert targets[1] >= 20  # Archive window minimum
-        assert targets[1] > targets[0]  # Archive should get more (longer duration)
-
-    def test_minimum_target_enforced(self):
-        """Test that minimum target of 20 is enforced even for small limits."""
-        import math
-
-        # Small limit with one window
-        limit = 5
-        total_duration = 7 * 86400
-        duration = 7 * 86400
-
-        win_target = math.ceil(limit * (duration / total_duration))
-        win_target = max(win_target, 20)
-
-        assert win_target == 20  # Should be minimum, not 5

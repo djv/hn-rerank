@@ -71,7 +71,14 @@ async def test_generate_html_integration(tmp_path):
         mock_cluster_emb.return_value = np.zeros((1, 768))
         mock_cluster.return_value = (np.zeros((1, 768)), np.array([0], dtype=np.int32))
         mock_rank.return_value = [
-            RankResult(index=0, hybrid_score=0.95, best_fav_index=0, max_sim_score=0.95, knn_score=0.90, max_cluster_score=0.90)
+            RankResult(
+                index=0,
+                hybrid_score=0.95,
+                best_fav_index=0,
+                max_sim_score=0.95,
+                knn_score=0.12,
+                max_cluster_score=0.90,
+            )
         ]
         mock_dupes.return_value = mock_rank.return_value
 
@@ -87,7 +94,8 @@ async def test_generate_html_integration(tmp_path):
         assert output_file.exists()
         html_content = output_file.read_text()
         assert "Integrated Test" in html_content
-        assert "90%" in html_content  # Uses knn_score for display
+        assert "90%" in html_content
+        assert "12%" not in html_content
         assert username in html_content
         # TL;DR replaces raw comments
         assert "This is a test TL;DR summary." in html_content
