@@ -941,11 +941,31 @@ async def generate_batch_cluster_names(
 TLDR_CACHE_PATH = Path(".cache/tldrs.json")
 
 
+def _coerce_tldr_value(value: object) -> str:
+    """Return a displayable TL;DR string from common LLM/cache shapes."""
+    if isinstance(value, str):
+        return value.strip().strip('"').strip("'")
+    if isinstance(value, dict):
+        for key in ("summary", "tldr", "tl_dr", "text"):
+            candidate = value.get(key)
+            if isinstance(candidate, str):
+                return candidate.strip().strip('"').strip("'")
+    return ""
+
+
 def _load_tldr_cache() -> dict[str, str]:
     """Load TL;DR cache from disk."""
     if TLDR_CACHE_PATH.exists():
         try:
-            return json.loads(TLDR_CACHE_PATH.read_text())
+            raw = json.loads(TLDR_CACHE_PATH.read_text())
+            if not isinstance(raw, dict):
+                return {}
+            coerced: dict[str, str] = {}
+            for key, value in raw.items():
+                text = _coerce_tldr_value(value)
+                if text:
+                    coerced[str(key)] = text
+            return coerced
         except Exception as e:
             logger.warning(f"Failed to load TLDR cache: {e}")
     return {}
@@ -955,6 +975,43 @@ def _save_tldr_cache(cache: dict[str, str]) -> None:
     """Save TL;DR cache to disk."""
     TLDR_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_json(TLDR_CACHE_PATH, cache)
+
+
+def _build_tldr_prompt(stories_formatted: Sequence[str]) -> str:
+    """Build the TL;DR prompt with a flat JSON contract."""
+    batch_context = "\n\n".join(stories_formatted)
+    return f"""
+Synthesize one TL;DR per story using only the provided Content and Comments.
+
+Rules:
+- Return ONLY valid JSON.
+- Return a flat JSON object mapping each requested story ID string to a plain string summary.
+- Do NOT return nested objects, arrays, or metadata fields.
+- Do NOT include title, source, or any extra keys inside the value.
+- Exactly 2 sentences per summary, max 45 words total.
+- Sentence 1: The primary thesis (technical 'how' for tools, industry 'why' for news/meta).
+- Sentence 2: The critical synthesis or trade-offs from the community discussion.
+- Use dense, professional terminology. Avoid conversational filler or repeating the title.
+- Every requested story ID must be present exactly once.
+- Summaries must be grounded only in the data provided for that specific ID.
+
+Bad example:
+{{
+  "12345": {{
+    "title": "Tool X",
+    "summary": "Nested objects are not allowed."
+  }}
+}}
+
+Good example:
+{{
+  "12345": "Tool X implements lock-free concurrency via atomic primitives to minimize context switching overhead. Community consensus highlights impressive benchmarks while cautioning against increased memory pressure in multi-tenant environments."
+}}
+
+Stories:
+{batch_context}
+
+JSON:"""
 
 
 async def generate_batch_tldrs(
@@ -1017,29 +1074,7 @@ async def generate_batch_tldrs(
                         f"- {c[:300]}" for c in comments[:6]
                     )
                 stories_formatted.append(context)
-
-            batch_context = "\n\n".join(stories_formatted)
-
-            prompt = f"""
-Synthesize the core proposition ('Content') with the critical community consensus ('Comments').
-
-Rules:
-- Exactly 2 sentences per summary, max 45 words total.
-- Sentence 1: The primary thesis (technical 'how' for tools, industry 'why' for news/meta).
-- Sentence 2: The critical synthesis or trade-offs from the community discussion.
-- Use dense, professional terminology. Avoid conversational filler or repeating the title.
-- CRITICAL: Return a JSON object containing a summary for EVERY story ID requested below.
-- CRITICAL: Ensure summaries are GROUNDED only in the data provided for that specific ID.
-
-Example Response:
-{{
-  "12345": "Tool X implements lock-free concurrency via atomic primitives to minimize context switching overhead. Community consensus highlights impressive benchmarks while cautioning against increased memory pressure in multi-tenant environments."
-}}
-
-Stories:
-{batch_context}
-
-JSON:"""
+            prompt = _build_tldr_prompt(stories_formatted)
 
             try:
                 text = await _generate_with_retry(
@@ -1057,12 +1092,12 @@ JSON:"""
                     for sid_str, tldr in batch_results.items():
                         try:
                             sid = int(sid_str)
-                            if not isinstance(tldr, str):
+                            tldr_clean = _coerce_tldr_value(tldr)
+                            if not tldr_clean:
                                 logger.debug(
-                                    f"TLDR value for {sid_str} was not a string"
+                                    f"TLDR value for {sid_str} did not contain summary text"
                                 )
                                 continue
-                            tldr_clean = tldr.strip().strip('"').strip("'")
                             if sid in pending_stories:
                                 results[sid] = tldr_clean
                                 cache[str(sid)] = tldr_clean
