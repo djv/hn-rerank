@@ -1,0 +1,6 @@
+:8000 {
+    handle_path /public/* {
+        root * public
+        file_server
+    }
+}
