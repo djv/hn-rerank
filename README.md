@@ -22,7 +22,7 @@ Requires Python 3.12+.
 - External services:
   Hacker News, Algolia, RSS feeds, and optionally Groq for cluster names and TL;DRs.
 - Built-in extra feeds:
-  `jack-clark.net`, `lobste.rs`, and `tildes.net` are appended to the OPML feed set.
+  `jack-clark.net`, `lobste.rs`, `tildes.net`, and `lesswrong.com` are appended to the OPML feed set.
 - Browser dependency:
   the generated HTML currently loads Tailwind from `https://cdn.tailwindcss.com` at render time.
 

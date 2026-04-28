@@ -5,13 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal, TypedDict
 
-StorySource = Literal["hn", "rss", "lobsters", "tildes"]
+StorySource = Literal["hn", "rss", "lobsters", "tildes", "lesswrong"]
 
 _SOURCE_BADGE_LABELS: dict[StorySource, str | None] = {
     "hn": None,
     "rss": "RSS",
     "lobsters": "Lobsters",
     "tildes": "Tildes",
+    "lesswrong": "LessWrong",
 }
 
 

@@ -75,6 +75,7 @@ RSS_EXTRA_FEEDS = [
     "https://jack-clark.net/feed/",
     "https://lobste.rs/rss",
     "https://tildes.net/topics.rss",
+    "https://www.lesswrong.com/feed.xml",
 ]  # Additional feeds not in OPML
 RSS_MAX_FEEDS = 0  # 0 = no max feed limit
 RSS_PER_FEED_LIMIT = 5

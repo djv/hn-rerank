@@ -199,6 +199,32 @@ def test_parse_feed_entries_preserves_discussion_url_for_curated_sources():
     assert story.discussion_url == "https://lobste.rs/s/example/post"
 
 
+def test_parse_feed_entries_marks_lesswrong_source():
+    xml = """
+    <rss version="2.0">
+      <channel>
+        <language>en</language>
+        <item>
+          <title>LessWrong Post</title>
+          <link>https://www.lesswrong.com/posts/abc/example</link>
+          <pubDate>Mon, 02 Feb 2026 12:00:00 GMT</pubDate>
+          <description>LessWrong summary</description>
+        </item>
+      </channel>
+    </rss>
+    """
+    stories = _parse_feed_entries(
+        xml,
+        feed_url="https://www.lesswrong.com/feed.xml",
+        max_items=5,
+        min_ts=0,
+    )
+
+    assert len(stories) == 1
+    assert stories[0].source == "lesswrong"
+    assert stories[0].badge_label == "LessWrong"
+
+
 @pytest.mark.asyncio
 @respx.mock
 async def test_fetch_rss_stories_filters_old_and_excluded_urls(monkeypatch):
@@ -293,7 +319,7 @@ async def test_fetch_rss_stories_uses_extra_feeds_when_opml_is_empty(monkeypatch
 @respx.mock
 async def test_fetch_rss_stories_uses_higher_limit_for_curated_news_sources(monkeypatch):
     opml_url = "https://example.com/feeds.opml"
-    feed_url = "https://lobste.rs/rss"
+    feed_url = "https://www.lesswrong.com/feed.xml"
     monkeypatch.setattr(rss, "RSS_EXTRA_FEEDS", [feed_url])
 
     items = []
@@ -301,11 +327,10 @@ async def test_fetch_rss_stories_uses_higher_limit_for_curated_news_sources(monk
         items.append(
             f"""
             <item>
-              <title>Lobsters Post {i}</title>
-              <link>https://example.com/post-{i}</link>
-              <comments>https://lobste.rs/s/example/post-{i}</comments>
+              <title>LessWrong Post {i}</title>
+              <link>https://www.lesswrong.com/posts/{i}/post-{i}</link>
               <pubDate>Mon, 02 Feb 2026 12:{i:02d}:00 GMT</pubDate>
-              <description>Lobsters summary {i}</description>
+              <description>LessWrong summary {i}</description>
             </item>
             """
         )
@@ -329,5 +354,5 @@ async def test_fetch_rss_stories_uses_higher_limit_for_curated_news_sources(monk
     )
 
     assert len(stories) == rss.RSS_CURATED_NEWS_PER_FEED_LIMIT
-    assert stories[0].source == "lobsters"
-    assert stories[-1].title == f"Lobsters Post {rss.RSS_CURATED_NEWS_PER_FEED_LIMIT - 1}"
+    assert stories[0].source == "lesswrong"
+    assert stories[-1].title == f"LessWrong Post {rss.RSS_CURATED_NEWS_PER_FEED_LIMIT - 1}"

@@ -241,6 +241,25 @@ def test_generate_story_html_rss_badge():
     assert "RSS" in html
 
 
+def test_generate_story_html_lesswrong_badge():
+    story = StoryDisplay(
+        id=-43,
+        match_percent=80,
+        cluster_name="",
+        points=0,
+        time_ago="1h",
+        url="https://www.lesswrong.com/posts/abc/example",
+        title="LessWrong Story",
+        hn_url=None,
+        reason="",
+        reason_url="",
+        comments=[],
+        source="lesswrong",
+    )
+    html = generate_story_html(story)
+    assert "LessWrong" in html
+
+
 def test_generate_story_html_external_comments_link():
     story = StoryDisplay(
         id=-7,

@@ -107,12 +107,14 @@ def _feed_source(feed_url: str, link: str) -> StorySource:
         return "lobsters"
     if any("tildes.net" in value for value in haystacks):
         return "tildes"
+    if any("lesswrong.com" in value for value in haystacks):
+        return "lesswrong"
     return "rss"
 
 
 def _feed_item_limit(feed_url: str, default_limit: int) -> int:
     source = _feed_source(feed_url, feed_url)
-    if source in {"lobsters", "tildes"}:
+    if source in {"lobsters", "tildes", "lesswrong"}:
         return max(default_limit, RSS_CURATED_NEWS_PER_FEED_LIMIT)
     return default_limit
 
