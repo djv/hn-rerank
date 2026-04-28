@@ -371,11 +371,21 @@ async def get_best_stories(
         if total_duration == 0:
             total_duration = 1  # prevent div/0
 
+        candidate_budget = max(limit, math.ceil(limit * 1.5))
+
         for ts_start, ts_end, is_live in windows:
+            remaining_budget = candidate_budget - len(hits)
+            if remaining_budget <= 0:
+                break
+
             duration = ts_end - ts_start
-            # Proportional target, but at least 10% of limit or 20 items
+            # Proportional target, but ensure Today's news is well-represented
             win_target = math.ceil(limit * (duration / total_duration))
-            win_target = max(win_target, 20)
+            if is_live:
+                # Give today a much larger share (at least 25% of pool)
+                win_target = max(win_target, limit // 4)
+            win_target = max(win_target, 50)
+            win_target = min(win_target, remaining_budget)
 
             # For live window, we use a stable key (ignoring ts_end) to respect TTL
             # For archive windows, ts_end is fixed/stable so we keep it
@@ -398,20 +408,24 @@ async def get_best_stories(
             cached_ids = get_cached_candidates(cache_key, ttl, allow_stale=allow_stale)
             page_ids: list[int] = []
 
-            # Use cache if valid, even if fewer IDs than target (avoid wasteful refetches)
-            if cached_ids is not None:
+            # If cache has too few IDs for the current target, treat as a miss to refetch deeper
+            if cached_ids is not None and len(cached_ids) >= win_target:
                 page_ids = cached_ids
             elif cache_only:
-                logger.info(
-                    f"Cache-only: no cached candidates for window {ts_start}-{ts_end}"
-                )
-                continue
+                if cached_ids:
+                    page_ids = cached_ids
+                else:
+                    logger.info(
+                        f"Cache-only: no cached candidates for window {ts_start}-{ts_end}"
+                    )
+                    continue
             else:
-                # Cache miss or expired - fetch from API
+                # Cache miss, expired, or too shallow - fetch from API
                 logger.info(
-                    f"Cache miss for window {ts_start}-{ts_end} (live={is_live}). Fetching from Algolia."
+                    f"Fetching window {ts_start}-{ts_end} (live={is_live}, target={win_target})."
                 )
-                fetch_count = min(max(win_target, 200), ALGOLIA_MAX_PER_QUERY)
+                # Always fetch a full page to maximize cache utility for future runs
+                fetch_count = ALGOLIA_MAX_PER_QUERY
 
                 # Use >= for start to include boundary stories and < end to avoid overlap.
                 filters = build_candidate_filters(ts_start, ts_end)
@@ -425,6 +439,9 @@ async def get_best_stories(
                     f"{ALGOLIA_BASE}/search", params=params
                 )
                 if resp.status_code != 200 or not resp.content:
+                    # Fallback to whatever we had in cache if API fails
+                    if cached_ids:
+                        page_ids = cached_ids
                     continue
                 try:
                     data = cast(AlgoliaSearchResponse, resp.json())
@@ -432,6 +449,8 @@ async def get_best_stories(
                     page_ids = [int(h["objectID"]) for h in page_hits]
                     save_cached_candidates(cache_key, page_ids)
                 except Exception:
+                    if cached_ids:
+                        page_ids = cached_ids
                     continue
 
             # Take only the required slice from this window
@@ -442,10 +461,6 @@ async def get_best_stories(
                     window_hits += 1
                     if window_hits >= win_target:
                         break
-
-            # Stop if we have enough total hits (optional, but good for speed)
-            if len(hits) >= limit * 1.5:  # Buffer
-                break
 
         results: list[Story] = []
         if not hits:

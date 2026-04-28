@@ -123,8 +123,6 @@ max_results = 500
 
 [hn_rerank.semantic]
 knn_neighbors = 1
-knn_sigmoid_k = 6.35
-knn_maxsim_weight = 0.26
 
 [hn_rerank.classifier]
 k_feat = 5
@@ -146,7 +144,7 @@ Optional artifacts written next to the output HTML include:
 - `cluster_name_debug.json` via `--debug-clusters`
 - `cluster_stats.json` via `--cluster-stats`
 
-The match badge shown in the UI is derived from `knn_score`, not the blended `hybrid_score` used for ranking.
+The match badge shown in the UI is derived from `max_cluster_score`, not the blended `hybrid_score` used for ranking. `knn_score` remains available in debug output as a diagnostic neighborhood score.
 
 ## Systemd Timer
 

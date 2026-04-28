@@ -75,8 +75,8 @@ Embedding model:
 - embedding results are cached in `.cache/embeddings` and `.cache/embeddings_cluster`
 
 Clustering path:
-- default algorithm is `spectral`
-- alternatives exist for `agglomerative` and `kmeans`
+- default algorithm is `agglomerative`
+- alternatives exist for `spectral` and `kmeans`
 - cluster count is capped by sample count, `MAX_CLUSTERS`, and `MIN_SAMPLES_PER_CLUSTER`
 - post-processing refines assignments, merges small clusters, splits oversized clusters, and can split low-similarity outliers into singleton clusters
 
@@ -97,14 +97,14 @@ Classifier mode:
 - still computes k-NN display scores and explicit negative penalties after classification
 
 Fallback mode:
-- computes median top-k similarity against positive history
-- blends cluster-max similarity and k-NN behavior for semantic scoring
+- computes median top-k similarity against positive history for diagnostics
+- scores semantic relevance from cluster-max similarity, optionally blended with k-NN when configured
 - uses the best positive match for display reasoning
 
 Final ranking behavior:
 - hybrid score blends semantic relevance, adaptive HN weighting, and freshness
 - MMR-style diversification suppresses redundant candidates
-- the UI match badge uses `knn_score`, while ordering uses `hybrid_score`
+- the UI match badge uses `max_cluster_score`, while ordering uses `hybrid_score`
 
 ## LLM Enrichment
 
@@ -128,7 +128,7 @@ Operational rules:
 ### `index.html`
 Contains:
 - ranked story cards
-- match badge from `knn_score`
+- match badge from `max_cluster_score`
 - RSS badge for RSS items
 - optional cluster chip
 - HN points and relative age

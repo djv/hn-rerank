@@ -564,13 +564,16 @@ def test_knn_scoring_logic():
         # C2 has only 1 good neighbor, so its median top-3 score is dragged down
         assert results[0].index == 0  # C1
         assert results[0].knn_score > results[1].knn_score
-        
+
         # Cluster-max scoring can still see both as strong semantic matches...
         assert results[0].max_sim_score == pytest.approx(1.0, abs=1e-6)
         assert results[1].max_sim_score == pytest.approx(1.0, abs=1e-6)
-        # ...but k-NN normalization should downrank the one-hit wonder.
+
+        # Current configured scoring is pure cluster-max, so k-NN stays diagnostic.
+        assert results[0].semantic_score == pytest.approx(1.0, abs=1e-6)
+        assert results[1].semantic_score == pytest.approx(1.0, abs=1e-6)
         assert results[0].hybrid_score > 0.9
-        assert results[1].hybrid_score < 0.1
+        assert results[1].hybrid_score >= 0.9
 
 
 def test_freshness_boost_ordering():
@@ -735,9 +738,9 @@ def test_median_knn_outlier_robustness():
         assert results[0].knn_score == pytest.approx(0.0, abs=0.01)
         # Cluster-max scoring still sees a perfect match
         assert results[0].max_sim_score == pytest.approx(1.0, abs=1e-6)
-        # With a single candidate, z-score normalization yields 0 -> sigmoid=0.5
-        assert results[0].semantic_score == pytest.approx(0.5, abs=1e-6)
-        assert results[0].hybrid_score == pytest.approx(0.5, abs=1e-6)
+        # Current configured scoring is pure cluster-max.
+        assert results[0].semantic_score == pytest.approx(1.0, abs=1e-6)
+        assert results[0].hybrid_score == pytest.approx(1.0, abs=1e-6)
 
 
 @settings(deadline=None)

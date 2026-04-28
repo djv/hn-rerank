@@ -65,15 +65,20 @@ class TestBuildRangesDefaults:
 
     def test_param_counts(self):
         assert len(_DEFAULTS_CORE) == 8, f"core got {len(_DEFAULTS_CORE)}: {sorted(_DEFAULTS_CORE)}"
-        assert len(_DEFAULTS_FULL) == 11, f"full got {len(_DEFAULTS_FULL)}: {sorted(_DEFAULTS_FULL)}"
+        assert len(_DEFAULTS_FULL) == 9, f"full got {len(_DEFAULTS_FULL)}: {sorted(_DEFAULTS_FULL)}"
 
     def test_core_is_subset_of_full(self):
         assert _DEFAULTS_CORE.keys() <= _DEFAULTS_FULL.keys()
 
     def test_core_drops_expected_keys(self):
-        dropped = {"freshness_boost", "knn_sigmoid_k", "knn_maxsim_weight"}
+        dropped = {"freshness_boost"}
         assert dropped.isdisjoint(_DEFAULTS_CORE)
         assert dropped <= _DEFAULTS_FULL.keys()
+
+    def test_dead_semantic_knobs_removed(self):
+        removed = {"knn_sigmoid_k", "knn_maxsim_weight"}
+        assert removed.isdisjoint(_DEFAULTS_CORE)
+        assert removed.isdisjoint(_DEFAULTS_FULL)
 
     def test_all_lo_lt_hi(self):
         for key, (lo, hi) in _DEFAULTS_CORE.items():

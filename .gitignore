@@ -33,6 +33,7 @@ clusters.html
 
 # Local artifacts / experiments
 .ralphy/
+.codex
 .config/
 .pki/
 .rodney/

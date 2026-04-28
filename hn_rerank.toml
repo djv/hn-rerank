@@ -1,6 +1,7 @@
 [hn_rerank]
 username = "pure_coder"
-days = 7
+output = "public/index.html"
+days = 30
 clusters = 30
 count = 40
 no_rss = false
@@ -10,36 +11,31 @@ debug_scores = false
 [hn_rerank.llm]
 provider = "mistral"
 
-# Tuned Hyperparameters (80-trial classifier retune on story-content v2 caches - 2026-03-08)
+# Balanced Hybrid Ranking (Linear 85/5/10 split)
 
 [hn_rerank.ranking]
-negative_weight = 0.5952
+negative_weight = 0.6
 max_results = 500
 
 [hn_rerank.adaptive_hn]
-weight_min = 0.06
-weight_max = 0.09
-threshold_young = 5.84
-threshold_old = 50.12
-score_normalization_cap = 1392.41
+weight_min = 0.05
+weight_max = 0.05
+threshold_young = 24.0
+threshold_old = 720.0
+score_normalization_cap = 2500.0
 
 [hn_rerank.freshness]
 enabled = true
-half_life_hours = 66.01
-max_boost = 0.02
+half_life_hours = 168.0
+max_boost = 0.10
 
 [hn_rerank.recency]
 enabled = false
-half_life_days = 90.0
 
 [hn_rerank.semantic]
-maxsim_weight = 0.95
-meansim_weight = 0.05
-sigmoid_k = 31.22
-sigmoid_threshold = 0.47
-knn_sigmoid_k = 6.35
-knn_maxsim_weight = 0.26
-knn_neighbors = 3
+maxsim_weight = 1.0
+meansim_weight = 0.0
+knn_neighbors = 1
 
 [hn_rerank.classifier]
 k_feat = 1

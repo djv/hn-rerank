@@ -21,9 +21,7 @@ from api.constants import (
     FRESHNESS_HALF_LIFE_HOURS,
     FRESHNESS_MAX_BOOST,
     HN_SCORE_NORMALIZATION_CAP,
-    KNN_MAXSIM_WEIGHT,
     KNN_NEIGHBORS,
-    KNN_SIGMOID_K,
     RANKING_DIVERSITY_LAMBDA,
     RANKING_NEGATIVE_WEIGHT,
 )
@@ -170,10 +168,6 @@ def resolve_params(params: Mapping[str, float | int]) -> ResolvedParams:
             "max_boost": float(params.get("freshness_boost", FRESHNESS_MAX_BOOST)),
         },
         "semantic": {
-            "knn_sigmoid_k": float(params.get("knn_sigmoid_k", KNN_SIGMOID_K)),
-            "knn_maxsim_weight": float(
-                params.get("knn_maxsim_weight", KNN_MAXSIM_WEIGHT)
-            ),
             "knn_neighbors": int(round(float(params.get("knn_k", KNN_NEIGHBORS)))),
         },
         "classifier": {
@@ -228,8 +222,6 @@ def build_patch_kwargs(resolved: ResolvedParams) -> dict[str, Any]:
         "HN_SCORE_NORMALIZATION_CAP": adaptive_hn["score_normalization_cap"],
         "FRESHNESS_MAX_BOOST": freshness["max_boost"],
         "FRESHNESS_HALF_LIFE_HOURS": freshness["half_life_hours"],
-        "KNN_SIGMOID_K": semantic["knn_sigmoid_k"],
-        "KNN_MAXSIM_WEIGHT": semantic["knn_maxsim_weight"],
         "KNN_NEIGHBORS": semantic["knn_neighbors"],
         "CLASSIFIER_K_FEAT": classifier["k_feat"],
         "CLASSIFIER_NEG_SAMPLE_WEIGHT": classifier["neg_sample_weight"],
@@ -277,8 +269,6 @@ def render_promoted_toml(resolved: ResolvedParams) -> str:
         f"half_life_hours = {float(freshness['half_life_hours']):.10f}\n"
         f"max_boost = {float(freshness['max_boost']):.10f}\n\n"
         "[hn_rerank.semantic]\n"
-        f"knn_sigmoid_k = {float(semantic['knn_sigmoid_k']):.10f}\n"
-        f"knn_maxsim_weight = {float(semantic['knn_maxsim_weight']):.10f}\n"
         f"knn_neighbors = {int(semantic['knn_neighbors'])}\n\n"
         "[hn_rerank.classifier]\n"
         f"k_feat = {int(classifier['k_feat'])}\n"

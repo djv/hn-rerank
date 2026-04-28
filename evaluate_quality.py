@@ -32,11 +32,10 @@ _ensure_joblib_settings()
 from api.client import HNClient  # noqa: E402
 from api.fetching import fetch_story, get_best_stories  # noqa: E402
 from api.models import RankResult, Story, StoryDict  # noqa: E402
-from api.rerank import compute_recency_weights, get_embeddings, rank_stories  # noqa: E402
+from api.rerank import get_embeddings, rank_stories  # noqa: E402
 from api.url_utils import normalize_url  # noqa: E402
 from api.constants import (  # noqa: E402
     KNN_NEIGHBORS,
-    POSITIVE_RECENCY_ENABLED,
     RANKING_DIVERSITY_LAMBDA,
     RANKING_NEGATIVE_WEIGHT,
 )
@@ -445,7 +444,6 @@ class EvaluationDataset:
     candidates: list[Story]
     train_embeddings: NDArray[np.float32]
     neg_embeddings: NDArray[np.float32] | None
-    pos_weights: NDArray[np.float32] | None
     test_ids: set[int]
 
 
@@ -458,7 +456,6 @@ class SnapshotPayload(TypedDict):
     test_stories: list[StoryDict]
     neg_stories: list[StoryDict]
     candidates: list[StoryDict]
-    pos_weights: list[float] | None
     test_ids: list[int]
 
 
@@ -484,7 +481,6 @@ class RankingEvaluator:
         limit_neg: int = 100,
         candidate_count: int = 200,
         use_classifier: bool = True,
-        use_recency: bool = False,
         cache_only: bool = False,
         allow_stale: bool = False,
     ) -> bool:
@@ -562,11 +558,6 @@ class RankingEvaluator:
                 neg_texts = [s.text_content for s in neg_stories]
                 neg_emb = get_embeddings(neg_texts)
 
-            # Recency weights
-            pos_weights: NDArray[np.float32] | None = None
-            if use_recency and POSITIVE_RECENCY_ENABLED and train_stories:
-                pos_weights = compute_recency_weights([s.time for s in train_stories])
-
             # Fetch candidates (exclude both train and hidden story IDs)
             neg_ids = {s.id for s in neg_stories}
             print(f"Fetching {candidate_count} candidates...")
@@ -596,7 +587,6 @@ class RankingEvaluator:
                 candidates=candidates,
                 train_embeddings=train_emb,
                 neg_embeddings=neg_emb,
-                pos_weights=pos_weights,
                 test_ids=test_ids,
             )
             self.snapshot_metadata = {
@@ -606,7 +596,6 @@ class RankingEvaluator:
                 "limit_neg": limit_neg,
                 "candidate_count": candidate_count,
                 "use_classifier": use_classifier,
-                "use_recency": use_recency,
                 "cache_only": cache_only,
                 "allow_stale": allow_stale,
             }
@@ -634,11 +623,6 @@ class RankingEvaluator:
             "test_stories": [story.to_dict() for story in dataset.test_stories],
             "neg_stories": [story.to_dict() for story in dataset.neg_stories],
             "candidates": [story.to_dict() for story in dataset.candidates],
-            "pos_weights": (
-                dataset.pos_weights.astype(float).tolist()
-                if dataset.pos_weights is not None
-                else None
-            ),
             "test_ids": sorted(dataset.test_ids),
         }
         snapshot_path.write_text(json.dumps(payload, indent=2, sort_keys=True))
@@ -675,11 +659,6 @@ class RankingEvaluator:
         if neg_stories:
             neg_embeddings = get_embeddings([story.text_content for story in neg_stories])
 
-        raw_weights = raw.get("pos_weights")
-        pos_weights: NDArray[np.float32] | None = None
-        if isinstance(raw_weights, list):
-            pos_weights = np.array(raw_weights, dtype=np.float32)
-
         raw_test_ids = raw.get("test_ids", [])
         if isinstance(raw_test_ids, list):
             test_ids = {int(sid) for sid in raw_test_ids}
@@ -698,7 +677,6 @@ class RankingEvaluator:
             candidates=candidates,
             train_embeddings=train_embeddings,
             neg_embeddings=neg_embeddings,
-            pos_weights=pos_weights,
             test_ids=test_ids,
         )
         return True
@@ -728,7 +706,6 @@ class RankingEvaluator:
             dataset.candidates,
             positive_embeddings=dataset.train_embeddings,
             negative_embeddings=dataset.neg_embeddings,
-            positive_weights=dataset.pos_weights,
             use_classifier=use_classifier,
             diversity_lambda=diversity,
             knn_k=knn,
@@ -782,16 +759,6 @@ class RankingEvaluator:
         all_emb = get_embeddings([s.text_content for s in all_stories])
         n = len(all_stories)
 
-        # Build combined weights (train weights + uniform for test stories)
-        if dataset.pos_weights is not None:
-            n_test = len(dataset.test_stories)
-            all_weights: NDArray[np.float32] | None = np.concatenate([
-                dataset.pos_weights,
-                np.ones(n_test, dtype=np.float32),
-            ])
-        else:
-            all_weights = None
-
         # Shuffle indices for random folds (deterministic before threads)
         indices = np.random.permutation(n)
         fold_size = n // n_folds
@@ -805,7 +772,6 @@ class RankingEvaluator:
             train_idx = [i for i in range(n) if i not in test_idx]
 
             train_emb = all_emb[train_idx]
-            fold_weights = all_weights[train_idx] if all_weights is not None else None
             test_ids = {all_stories[i].id for i in test_idx}
 
             candidate_ids = {c.id for c in dataset.candidates}
@@ -821,7 +787,6 @@ class RankingEvaluator:
                 fold_candidates,
                 positive_embeddings=train_emb,
                 negative_embeddings=dataset.neg_embeddings,
-                positive_weights=fold_weights,
                 use_classifier=use_classifier,
                 diversity_lambda=diversity,
                 knn_k=knn,
@@ -894,12 +859,6 @@ async def main():
     parser.add_argument("--k", type=int, default=30, help="Cutoff for metrics")
     parser.add_argument("--candidates", type=int, default=200, help="Candidate pool size")
     parser.add_argument("--classifier", action="store_true", help="Use classifier mode with hidden stories")
-    parser.add_argument(
-        "--recency",
-        action=argparse.BooleanOptionalAction,
-        default=POSITIVE_RECENCY_ENABLED,
-        help="Enable or disable recency weighting for positive signals",
-    )
     parser.add_argument("--diversity", type=float, default=RANKING_DIVERSITY_LAMBDA, help="MMR diversity lambda")
     parser.add_argument("--knn", type=int, default=KNN_NEIGHBORS, help="k-NN neighbors for scoring")
     parser.add_argument("--neg-weight", type=float, default=RANKING_NEGATIVE_WEIGHT, help="Weight for negative similarity penalty")
@@ -928,7 +887,6 @@ async def main():
         holdout=args.holdout,
         candidate_count=args.candidates,
         use_classifier=args.classifier,
-        use_recency=args.recency,
         cache_only=args.cache_only,
         allow_stale=args.cache_only,
     )
@@ -1004,7 +962,6 @@ async def main():
         dataset.candidates,
         positive_embeddings=dataset.train_embeddings,
         negative_embeddings=dataset.neg_embeddings,
-        positive_weights=dataset.pos_weights,
         use_classifier=args.classifier,
         diversity_lambda=args.diversity,
         knn_k=args.knn,

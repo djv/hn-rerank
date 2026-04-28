@@ -5,7 +5,7 @@ import logging
 import math
 import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -63,12 +63,11 @@ from api.constants import (  # noqa: E402
     MAX_CLUSTER_SIZE,
     MIN_CLUSTERS,
     MIN_SAMPLES_PER_CLUSTER,
-    POSITIVE_RECENCY_HALF_LIFE_DAYS,
     RANKING_HN_WEIGHT,
     RANKING_MAX_RESULTS,
     RANKING_NEGATIVE_WEIGHT,
-    KNN_SIGMOID_K,
-    KNN_MAXSIM_WEIGHT,
+    SEMANTIC_MAXSIM_WEIGHT,
+    SEMANTIC_MEANSIM_WEIGHT,
     CLASSIFIER_K_FEAT,
     CLASSIFIER_LOCAL_HIDDEN_PENALTY_K,
     CLASSIFIER_LOCAL_HIDDEN_PENALTY_WEIGHT,
@@ -94,21 +93,6 @@ def _set_rank_diagnostics(
     if diagnostics is None:
         return
     diagnostics.update(kwargs)
-
-
-def compute_recency_weights(
-    timestamps: Sequence[int | float],
-    *,
-    half_life_seconds: float = POSITIVE_RECENCY_HALF_LIFE_DAYS * 24 * 3600,
-    now: float | None = None,
-) -> NDArray[np.float32] | None:
-    """Return exponential recency weights aligned to the input timestamp order."""
-    if not timestamps:
-        return None
-    current_time = time.time() if now is None else now
-    times = np.array(timestamps, dtype=np.float32)
-    ages = current_time - times
-    return np.exp(-ages * np.log(2) / half_life_seconds).astype(np.float32)
 
 
 def _combine_classifier_features(
@@ -448,19 +432,17 @@ def get_cluster_embeddings(
 
 def cluster_interests(
     embeddings: NDArray[np.float32],
-    weights: NDArray[np.float32] | None = None,
 ) -> NDArray[np.float32]:
     """
     Cluster user interest embeddings into K centroids.
     Returns centroids array of shape (n_clusters, embedding_dim).
     """
-    centroids, _ = cluster_interests_with_labels(embeddings, weights)
+    centroids, _ = cluster_interests_with_labels(embeddings)
     return centroids
 
 
 def cluster_interests_with_labels(
     embeddings: NDArray[np.float32],
-    weights: NDArray[np.float32] | None = None,
     n_clusters: int = DEFAULT_CLUSTER_COUNT,
     distance_threshold: float | None = CLUSTER_AGGLOMERATIVE_THRESHOLD,
 ) -> tuple[NDArray[np.float32], NDArray[np.int32]]:
@@ -479,10 +461,7 @@ def cluster_interests_with_labels(
     if n_samples < MIN_SAMPLES_PER_CLUSTER * 2:
         # Not enough for meaningful clustering
         labels = np.zeros(n_samples, dtype=np.int32)
-        if weights is not None:
-            centroid = np.average(embeddings, axis=0, weights=weights).reshape(1, -1)
-        else:
-            centroid = np.mean(embeddings, axis=0).reshape(1, -1)
+        centroid = np.mean(embeddings, axis=0).reshape(1, -1)
         return centroid.astype(np.float32), labels
 
     # Normalize embeddings for cosine-like behavior (unless metric is euclidean)
@@ -547,11 +526,11 @@ def cluster_interests_with_labels(
             max_clusters=max_clusters,
         )
 
-    centroids = _centroids_from_labels(embeddings, labels, weights)
+    centroids = _centroids_from_labels(embeddings, labels)
     
     if not (CLUSTER_ALGORITHM == "agglomerative" and distance_threshold is not None):
         centroids, labels, _ = split_outlier_clusters(
-            embeddings, labels, CLUSTER_OUTLIER_SIMILARITY_THRESHOLD, weights=weights
+            embeddings, labels, CLUSTER_OUTLIER_SIMILARITY_THRESHOLD
         )
     return centroids, labels
 
@@ -559,18 +538,13 @@ def cluster_interests_with_labels(
 def _centroids_from_labels(
     embeddings: NDArray[np.float32],
     labels: NDArray[np.int32],
-    weights: NDArray[np.float32] | None = None,
 ) -> NDArray[np.float32]:
     """Compute centroids for each cluster label."""
     unique_labels = sorted(set(labels))
     centroids = []
     for lbl in unique_labels:
         mask = labels == lbl
-        if weights is not None:
-            cluster_weights = weights[mask]
-            centroid = np.average(embeddings[mask], axis=0, weights=cluster_weights)
-        else:
-            centroid = embeddings[mask].mean(axis=0)
+        centroid = embeddings[mask].mean(axis=0)
         centroids.append(centroid)
     return np.array(centroids, dtype=np.float32)
 
@@ -587,7 +561,6 @@ def split_outlier_clusters(
     embeddings: NDArray[np.float32],
     labels: NDArray[np.int32],
     min_similarity: float,
-    weights: NDArray[np.float32] | None = None,
 ) -> tuple[NDArray[np.float32], NDArray[np.int32], int]:
     """Split low-similarity items into singleton clusters.
 
@@ -599,7 +572,7 @@ def split_outlier_clusters(
         centroids = _centroids_from_labels(embeddings, labels)
         return centroids, labels, 0
 
-    centroids = _centroids_from_labels(embeddings, labels, weights)
+    centroids = _centroids_from_labels(embeddings, labels)
     if len(centroids) == 0:
         return centroids, labels, 0
 
@@ -618,7 +591,7 @@ def split_outlier_clusters(
 
     remap = {old: i for i, old in enumerate(sorted(set(new_labels)))}
     new_labels = np.array([remap[int(lbl)] for lbl in new_labels], dtype=np.int32)
-    new_centroids = _centroids_from_labels(embeddings, new_labels, weights)
+    new_centroids = _centroids_from_labels(embeddings, new_labels)
     logger.info(
         "Split %d low-similarity items into singleton clusters (min %.2f).",
         len(outlier_idx),
@@ -879,7 +852,6 @@ def rank_stories(
     stories: list[Story],
     positive_embeddings: NDArray[np.float32] | None,
     negative_embeddings: NDArray[np.float32] | None = None,
-    positive_weights: NDArray[np.float32] | None = None,
     hn_weight: float = RANKING_HN_WEIGHT,
     neg_weight: float = RANKING_NEGATIVE_WEIGHT,
     diversity_lambda: float = 0.0,
@@ -918,10 +890,11 @@ def rank_stories(
         local_hidden_penalty_max=0.0,
     )
 
-    semantic_scores: NDArray[np.float32]
-    max_sim_scores: NDArray[np.float32]
-    best_fav_indices: NDArray[np.int64]
-    raw_knn_scores: NDArray[np.float32]  # For display (before sigmoid)
+    semantic_scores: NDArray[np.float32] = np.zeros(len(stories), dtype=np.float32)
+    max_sim_scores: NDArray[np.float32] = np.zeros(len(stories), dtype=np.float32)
+    best_fav_indices: NDArray[np.int64] = np.full(len(stories), -1, dtype=np.int64)
+    raw_knn_scores: NDArray[np.float32] = np.zeros(len(stories), dtype=np.float32)
+    cluster_max_scores: NDArray[np.float32] = np.zeros(len(stories), dtype=np.float32)
 
     # Check if we can/should use classifier
     classifier_success = False
@@ -947,7 +920,7 @@ def rank_stories(
             # Use inverse log weighting (1/log(1+N)) for even softer dampening.
             # This respects that large clusters represent confirmed, deep interest
             # while still preventing them from totally drowning out small niches.
-            centroids, labels = cluster_interests_with_labels(X_pos, positive_weights)
+            centroids, labels = cluster_interests_with_labels(X_pos)
             unique_labels, counts = np.unique(labels, return_counts=True)
             # Use log1p for soft dampening: 1/log(1+count)
             weight_map = {
@@ -960,10 +933,6 @@ def rank_stories(
             # Normalize so sum(weights) == n_samples (maintains scale with negatives)
             norm_factor = len(X_pos) / np.sum(pos_sample_weights)
             pos_sample_weights *= norm_factor
-
-            # Apply recency weights if available (multiplicative)
-            if positive_weights is not None:
-                pos_sample_weights *= positive_weights
 
             # Scale negative-class weight to tune classifier decision boundary.
             neg_sample_weights = (
@@ -1093,6 +1062,11 @@ def rank_stories(
             max_sim_scores = np.max(sim_pos_ui, axis=0)
             best_fav_indices = np.argmax(sim_pos_ui, axis=0)
 
+            # Compute cluster-max scores for the UI match percent
+            if len(centroids) > 0:
+                cluster_sim = cosine_similarity(centroids, cand_emb)
+                cluster_max_scores = np.max(cluster_sim, axis=0).astype(np.float32)
+
             # Compute k-NN scores for display
             k = min(len(X_pos), knn_k)
             if k > 0:
@@ -1154,25 +1128,22 @@ def rank_stories(
             best_fav_indices = np.argmax(sim_matrix, axis=0)
 
             # 2. Cluster-max semantic scoring
-            cluster_centroids = cluster_interests(positive_embeddings, positive_weights)
+            cluster_centroids = cluster_interests(positive_embeddings)
             if len(cluster_centroids) > 0:
-                cluster_sim = cosine_similarity(cluster_centroids, cand_emb)
-                cluster_max_scores = np.max(cluster_sim, axis=0).astype(np.float32)
+                # Calculate similarity of each story to each centroid: (n_stories, n_centroids)
+                cluster_sim = cosine_similarity(cand_emb, cluster_centroids)
+                # Max sim for each story across all centroids
+                cluster_max_scores = np.max(cluster_sim, axis=1).astype(np.float32)
             else:
                 cluster_max_scores = np.zeros(len(stories), dtype=np.float32)
 
-            # Blend cluster-max and k-NN scores, then z-score normalize
-            # This replaces the fixed sigmoid that saturated all k-NN scores to ~1.0
+            # 2. Map raw similarity to semantic score [0, 1]
+            # Blend cluster-max and k-NN scores
             blended = (
-                KNN_MAXSIM_WEIGHT * cluster_max_scores
-                + (1.0 - KNN_MAXSIM_WEIGHT) * knn_scores
-            )
-            mu = blended.mean()
-            sigma = blended.std() + 1e-9
-            z = (blended - mu) / sigma
-            # Gentle sigmoid (k=KNN_SIGMOID_K) maps z-scores to [0,1]
-            semantic_scores = 1.0 / (1.0 + np.exp(-KNN_SIGMOID_K * z))
-            semantic_scores = semantic_scores.astype(np.float32)
+                SEMANTIC_MAXSIM_WEIGHT * cluster_max_scores
+                + SEMANTIC_MEANSIM_WEIGHT * knn_scores
+            ).astype(np.float32)
+            semantic_scores = np.clip(blended, 0.0, 1.0)
 
     # 3. HN Gravity Score (Log-scaled)
     # We use a log scale so that high-point stories punch through without dominating
@@ -1233,6 +1204,7 @@ def rank_stories(
             best_fav_index=int(best_fav_indices[best_idx]),
             max_sim_score=float(max_sim_scores[best_idx]),
             knn_score=float(raw_knn_scores[best_idx]),
+            max_cluster_score=float(cluster_max_scores[best_idx]),
             semantic_score=float(semantic_scores[best_idx]),
             hn_score=float(hn_scores[best_idx]),
             freshness_boost=float(freshness_boost[best_idx]),

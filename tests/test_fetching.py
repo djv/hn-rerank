@@ -15,6 +15,7 @@ from api.fetching import (
     fetch_story,
     get_best_stories,
 )
+from api.models import Story
 
 
 class TestCleanText:
@@ -270,6 +271,48 @@ async def test_get_best_stories_filtering():
         assert 1 in ids
         assert 3 in ids
         assert 2 not in ids
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_get_best_stories_caps_candidate_collection(monkeypatch):
+    """Small limits over many windows should not hydrate every window minimum."""
+    search_url = f"{ALGOLIA_BASE}/search"
+    search_calls = 0
+
+    def search_response(request):
+        nonlocal search_calls
+        start = search_calls * 1000
+        search_calls += 1
+        hits = [{"objectID": str(sid)} for sid in range(start, start + 1000)]
+        return Response(200, json={"hits": hits, "nbPages": 1})
+
+    async def fake_fetch_story(client, sid, **kwargs):
+        return Story(
+            id=sid,
+            title=f"Story {sid}",
+            url=f"http://example.com/{sid}",
+            score=100,
+            time=1600000000,
+            comments=["comment"],
+            text_content="story text",
+        )
+
+    respx.get(search_url).mock(side_effect=search_response)
+    monkeypatch.setattr("api.fetching.fetch_story", fake_fetch_story)
+
+    with pytest.MonkeyPatch().context() as mp:
+        mock_cache = MagicMock()
+        mp.setattr("api.fetching.CACHE_PATH", mock_cache)
+        mp.setattr("api.fetching.CANDIDATE_CACHE_PATH", mock_cache)
+        mock_cache.__truediv__.return_value.exists.return_value = False
+        mp.setattr("api.fetching.atomic_write_json", lambda p, d: None)
+        mp.setattr("api.fetching.evict_old_cache_files", lambda *args, **kwargs: None)
+
+        stories = await get_best_stories(limit=40, days=30, include_rss=False)
+
+    assert len(stories) <= 60
+    assert len(stories) >= 40
 
 
 @pytest.mark.asyncio

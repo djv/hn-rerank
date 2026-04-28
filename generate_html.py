@@ -37,7 +37,6 @@ from api.constants import (
     KNN_NEIGHBORS,
     MAX_CLUSTERS,
     MAX_USER_STORIES,
-    POSITIVE_RECENCY_ENABLED,
     SEMANTIC_MATCH_THRESHOLD,
 )
 
@@ -952,10 +951,6 @@ async def main() -> None:
         )
         progress.update(e_task, description="[green][+] Preferences embedded.")
 
-        positive_weights: NDArray[np.float32] | None = None
-        if POSITIVE_RECENCY_ENABLED:
-            positive_weights = rerank.compute_recency_weights([s.time for s in pos_stories])
-
         cluster_emb: NDArray[np.float32] | None = None
         if pos_stories:
             ce_task: TaskID = progress.add_task(
@@ -989,7 +984,6 @@ async def main() -> None:
             cl_task: TaskID = progress.add_task("[cyan]Clustering interests...", total=1)
             cluster_centroids, cluster_labels = rerank.cluster_interests_with_labels(
                 cluster_source,
-                positive_weights,
                 n_clusters=args.clusters,
             )
             progress.update(
@@ -1120,7 +1114,6 @@ async def main() -> None:
             cands,
             p_emb,
             n_emb,
-            positive_weights=positive_weights,
             use_classifier=args.use_classifier,
             use_contrastive=args.contrastive,
             knn_k=args.knn,
@@ -1172,7 +1165,7 @@ async def main() -> None:
             if discussion_url is None and s.is_hn and s.id > 0:
                 discussion_url = f"https://news.ycombinator.com/item?id={s.id}"
             return StoryDisplay(
-                id=s.id, match_percent=format_match_percent(result.knn_score),
+                id=s.id, match_percent=format_match_percent(result.max_cluster_score),
                 cluster_name=cluster_name, points=s.score, time_ago=get_relative_time(s.time),
                 url=s.url, title=s.title or "Untitled", hn_url=discussion_url,
                 reason=reason, reason_url=reason_url, comments=list(s.comments),
@@ -1244,6 +1237,7 @@ async def main() -> None:
                     "hn_score": result.hn_score,
                     "freshness_boost": result.freshness_boost,
                     "knn_score": result.knn_score,
+                    "max_cluster_score": result.max_cluster_score,
                 }
             )
         debug_path.write_text(json.dumps(debug_rows, indent=2))

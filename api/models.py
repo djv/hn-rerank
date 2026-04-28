@@ -122,6 +122,7 @@ class RankResult:
     best_fav_index: int  # Index of most similar positive signal (-1 if none)
     max_sim_score: float  # Similarity to best matching positive signal
     knn_score: float  # Mean similarity to top-k neighbors (for display)
+    max_cluster_score: float = 0.0  # Similarity to best matching cluster centroid
     semantic_score: float = 0.0  # Raw semantic score (classifier or k-NN)
     hn_score: float = 0.0  # HN score contribution (log-scaled)
     freshness_boost: float = 0.0  # Freshness boost applied to hybrid score

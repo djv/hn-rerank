@@ -18,7 +18,6 @@ from typing import Any
 import numpy as np
 
 from evaluate_quality import RankingEvaluator, _merge_rank_diagnostic_summaries
-from api.constants import POSITIVE_RECENCY_ENABLED
 from tuning_common import (
     average_seed_metrics as _average_seed_metrics,
     patched_rerank_params,
@@ -424,10 +423,8 @@ async def main() -> int:
         success = evaluator.load_snapshot(args.snapshot)
     else:
         success = await evaluator.load_data(
-            holdout=0.2,
             candidate_count=args.candidates,
             use_classifier=True,
-            use_recency=POSITIVE_RECENCY_ENABLED,
             cache_only=args.cache_only,
             allow_stale=args.cache_only,
         )

@@ -30,7 +30,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit-pos", type=int, default=200, help="Max positive stories")
     parser.add_argument("--limit-neg", type=int, default=100, help="Max hidden stories")
     parser.add_argument("--classifier", action="store_true", help="Include hidden-story negatives")
-    parser.add_argument("--recency", action="store_true", help="Persist recency weights")
     parser.add_argument("--cache-only", action="store_true", help="Use cached data only")
     return parser
 
@@ -51,7 +50,6 @@ async def main() -> int:
         limit_neg=args.limit_neg,
         candidate_count=args.candidates,
         use_classifier=args.classifier,
-        use_recency=args.recency,
         cache_only=args.cache_only,
         allow_stale=args.cache_only,
     )

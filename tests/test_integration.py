@@ -33,7 +33,6 @@ async def test_generate_html_integration(tmp_path):
         patch("generate_html.fetch_story", new_callable=AsyncMock) as mock_fetch,
         patch("generate_html.rerank.get_embeddings") as mock_emb,
         patch("generate_html.rerank.get_cluster_embeddings") as mock_cluster_emb,
-        patch("generate_html.rerank.compute_recency_weights") as mock_recency,
         patch("generate_html.rerank.cluster_interests_with_labels") as mock_cluster,
         patch("generate_html.rerank.rank_stories") as mock_rank,
         patch("generate_html.filter_top_ranked_hn_dupes", new_callable=AsyncMock) as mock_dupes,
@@ -72,7 +71,7 @@ async def test_generate_html_integration(tmp_path):
         mock_cluster_emb.return_value = np.zeros((1, 768))
         mock_cluster.return_value = (np.zeros((1, 768)), np.array([0], dtype=np.int32))
         mock_rank.return_value = [
-            RankResult(index=0, hybrid_score=0.95, best_fav_index=0, max_sim_score=0.95, knn_score=0.90)
+            RankResult(index=0, hybrid_score=0.95, best_fav_index=0, max_sim_score=0.95, knn_score=0.90, max_cluster_score=0.90)
         ]
         mock_dupes.return_value = mock_rank.return_value
 
@@ -95,9 +94,3 @@ async def test_generate_html_integration(tmp_path):
 
         cluster_call = mock_cluster.call_args
         assert cluster_call is not None
-        assert cluster_call.args[1] is None
-
-        rank_call = mock_rank.call_args
-        assert rank_call is not None
-        assert rank_call.kwargs["positive_weights"] is None
-        mock_recency.assert_not_called()

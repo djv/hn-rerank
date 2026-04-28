@@ -162,10 +162,10 @@ def test_refine_cluster_assignments_moves_misassigned_point():
 
 
 def test_centroid_is_cluster_mean():
-    """Each centroid is the mean of its cluster members (without weights)."""
+    """Each centroid is the mean of its cluster members."""
     np.random.seed(42)
     embeddings = np.random.randn(20, 384).astype(np.float32)
-    centroids, labels = cluster_interests_with_labels(embeddings, weights=None)
+    centroids, labels = cluster_interests_with_labels(embeddings)
 
     for cluster_id in range(len(centroids)):
         mask = labels == cluster_id
@@ -257,27 +257,6 @@ def test_split_large_clusters_respects_absolute_cap():
 
     allowed_max = MAX_CLUSTER_SIZE + MIN_SAMPLES_PER_CLUSTER - 1
     assert counts.max() <= allowed_max
-
-
-def test_weighted_centroid():
-    """Centroids respect weights when provided."""
-    np.random.seed(42)
-    embeddings = np.random.randn(20, 384).astype(np.float32)
-    weights = np.random.rand(20).astype(np.float32)
-    weights = weights / weights.sum()  # Normalize
-
-    centroids, labels = cluster_interests_with_labels(embeddings, weights=weights)
-
-    for cluster_id in range(len(centroids)):
-        mask = labels == cluster_id
-        if mask.sum() > 0:
-            cluster_weights = weights[mask]
-            expected_centroid = np.average(
-                embeddings[mask], axis=0, weights=cluster_weights
-            )
-            np.testing.assert_array_almost_equal(
-                centroids[cluster_id], expected_centroid, decimal=5
-            )
 
 
 def test_cluster_interests_returns_centroids_only():

@@ -444,7 +444,6 @@ def test_evaluate_cv_parallel_matches_serial():
     rng = np.random.default_rng(42)
     emb = rng.normal(size=(10, 8)).astype(np.float32)
     neg_emb = rng.normal(size=(3, 8)).astype(np.float32)
-    pos_weights = np.linspace(0.5, 1.0, 10).astype(np.float32)
 
     def _run_cv(parallel: bool) -> dict[str, float]:
         evaluator = RankingEvaluator("test_user")
@@ -455,7 +454,6 @@ def test_evaluate_cv_parallel_matches_serial():
             candidates=stories,
             train_embeddings=emb[:8],
             neg_embeddings=neg_emb,
-            pos_weights=pos_weights,
             test_ids={8, 9},
         )
 
@@ -483,57 +481,6 @@ def test_evaluate_cv_parallel_matches_serial():
         assert serial[key] == pytest.approx(parallel[key], abs=1e-9), (
             f"Mismatch on {key}: serial={serial[key]}, parallel={parallel[key]}"
         )
-
-
-def test_evaluate_cv_passes_positive_weights():
-    """evaluate_cv must pass positive_weights to rank_stories like evaluate does."""
-    from evaluate_quality import RankingEvaluator, EvaluationDataset
-
-    # Create minimal dataset
-    stories = [
-        Story(id=i, title=f"S{i}", url=None, score=100, time=1000, text_content=f"S{i}")
-        for i in range(10)
-    ]
-    emb = np.random.rand(10, 8).astype(np.float32)
-    neg_emb = np.random.rand(3, 8).astype(np.float32)
-    pos_weights = np.linspace(0.5, 1.0, 10).astype(np.float32)
-
-    evaluator = RankingEvaluator("test_user")
-    evaluator.dataset = EvaluationDataset(
-        train_stories=stories[:8],
-        test_stories=stories[8:],
-        neg_stories=[],
-        candidates=stories,
-        train_embeddings=emb[:8],
-        neg_embeddings=neg_emb,
-        pos_weights=pos_weights,
-        test_ids={8, 9},
-    )
-
-    with (
-        patch("evaluate_quality.get_embeddings", return_value=emb),
-        patch("evaluate_quality.rank_stories") as mock_rank,
-    ):
-        # Return dummy results
-        from api.models import RankResult
-        mock_rank.return_value = [
-            RankResult(index=i, hybrid_score=1.0 - i * 0.1,
-                       best_fav_index=0, max_sim_score=0.5, knn_score=0.5)
-            for i in range(10)
-        ]
-
-        evaluator.evaluate_cv(
-            n_folds=2, k_metrics=[10], report_each=False
-        )
-
-        # Every call to rank_stories should have positive_weights
-        for c in mock_rank.call_args_list:
-            assert "positive_weights" in c.kwargs, (
-                "evaluate_cv must pass positive_weights to rank_stories"
-            )
-            pw = c.kwargs["positive_weights"]
-            assert pw is not None
-            assert len(pw) > 0
 
 
 def test_hidden_stories_excluded_from_candidates():
@@ -567,7 +514,6 @@ def test_hidden_stories_excluded_from_candidates():
         candidates=candidates_with_leak,
         train_embeddings=train_emb,
         neg_embeddings=neg_emb,
-        pos_weights=None,
         test_ids={50},
     )
 

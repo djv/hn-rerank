@@ -48,7 +48,6 @@ def test_parse_args_supports_repeated_models_and_flags(tmp_path) -> None:
             "--model",
             f"base={base_dir}",
             "--no-classifier",
-            "--no-recency",
             "--seed",
             "2",
             "--seed",
@@ -66,28 +65,10 @@ def test_parse_args_supports_repeated_models_and_flags(tmp_path) -> None:
     assert args.username == "alice"
     assert [spec.label for spec in args.models] == ["prod", "base"]
     assert args.classifier is False
-    assert args.recency is False
     assert args.seeds == [2, 5]
     assert args.cv_folds == 7
     assert args.candidates == 300
     assert args.cache_only is True
-
-
-def test_parse_args_defaults_recency_to_project_setting(tmp_path) -> None:
-    prod_dir = make_model_dir(tmp_path, "prod")
-    base_dir = make_model_dir(tmp_path, "base")
-
-    args = parse_args(
-        [
-            "alice",
-            "--model",
-            f"prod={prod_dir}",
-            "--model",
-            f"base={base_dir}",
-        ]
-    )
-
-    assert args.recency is False
 
 
 def test_parse_args_supports_snapshot_and_final_list(tmp_path) -> None:

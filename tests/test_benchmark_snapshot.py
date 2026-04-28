@@ -26,7 +26,6 @@ def test_snapshot_round_trip_recomputes_embeddings(tmp_path):
     test = [_story(3)]
     neg = [_story(4)]
     candidates = [_story(5), _story(3)]
-    pos_weights = np.array([0.5, 0.75], dtype=np.float32)
 
     evaluator = RankingEvaluator("snapshot_user")
     evaluator.dataset = EvaluationDataset(
@@ -36,7 +35,6 @@ def test_snapshot_round_trip_recomputes_embeddings(tmp_path):
         candidates=candidates,
         train_embeddings=np.ones((2, 3), dtype=np.float32),
         neg_embeddings=np.ones((1, 3), dtype=np.float32),
-        pos_weights=pos_weights,
         test_ids={3},
     )
     evaluator.snapshot_metadata = {"source": "test"}
@@ -63,10 +61,8 @@ def test_snapshot_round_trip_recomputes_embeddings(tmp_path):
     assert [story.id for story in loaded.dataset.candidates] == [5, 3]
     assert loaded.dataset.test_ids == {3}
     assert loaded.dataset.neg_embeddings is not None
-    assert loaded.dataset.pos_weights is not None
     assert np.allclose(loaded.dataset.train_embeddings, 2.0)
     assert np.allclose(loaded.dataset.neg_embeddings, 3.0)
-    assert np.allclose(loaded.dataset.pos_weights, pos_weights)
     assert loaded.snapshot_metadata["source"] == "snapshot"
     assert loaded.snapshot_metadata["note"] == "unit"
 
@@ -168,7 +164,6 @@ def test_evaluate_can_score_final_displayed_list():
         candidates=candidates,
         train_embeddings=np.ones((2, 3), dtype=np.float32),
         neg_embeddings=None,
-        pos_weights=None,
         test_ids={12},
     )
 
@@ -201,7 +196,6 @@ def test_evaluate_cv_populates_diagnostics_summary():
         candidates=candidates,
         train_embeddings=np.ones((4, 3), dtype=np.float32),
         neg_embeddings=np.ones((2, 3), dtype=np.float32),
-        pos_weights=None,
         test_ids={12},
     )
 

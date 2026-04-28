@@ -16,7 +16,6 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from api.constants import POSITIVE_RECENCY_ENABLED  # noqa: E402
 from api.model_metadata import load_model_spec  # noqa: E402
 
 
@@ -126,12 +125,6 @@ def build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Enable or disable classifier mode",
-    )
-    parser.add_argument(
-        "--recency",
-        action=argparse.BooleanOptionalAction,
-        default=POSITIVE_RECENCY_ENABLED,
-        help="Enable or disable recency weighting for positive signals",
     )
     parser.add_argument(
         "--seed",
@@ -254,7 +247,6 @@ def clone_dataset_for_model(eq_module: Any, rerank_module: Any, dataset: Any) ->
         candidates=list(dataset.candidates),
         train_embeddings=train_embeddings,
         neg_embeddings=neg_embeddings,
-        pos_weights=None if dataset.pos_weights is None else dataset.pos_weights.copy(),
         test_ids=set(dataset.test_ids),
     )
 
@@ -268,7 +260,6 @@ def build_output_payload(
         "username": args.username,
         "snapshot": None if args.snapshot is None else str(args.snapshot),
         "classifier": args.classifier,
-        "recency": args.recency,
         "cv_folds": args.cv_folds,
         "candidate_count": args.candidates,
         "holdout": args.holdout,
@@ -329,7 +320,6 @@ async def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 limit_neg=10_000,
                 candidate_count=args.candidates,
                 use_classifier=args.classifier,
-                use_recency=args.recency,
                 cache_only=args.cache_only,
                 allow_stale=args.cache_only,
             )

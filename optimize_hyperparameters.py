@@ -61,9 +61,6 @@ from api.constants import (  # noqa: E402
     FRESHNESS_HALF_LIFE_HOURS,
     HN_SCORE_NORMALIZATION_CAP,
     KNN_NEIGHBORS,
-    KNN_SIGMOID_K,
-    KNN_MAXSIM_WEIGHT,
-    POSITIVE_RECENCY_ENABLED,
 )
 import tuning_common as _tuning_common  # noqa: E402
 
@@ -167,8 +164,6 @@ def _build_ranges(
         "adaptive_hn_max": (0.02, 0.12),
         "freshness_boost": (0.04, 0.15),
         "freshness_half_life": (45.0, 100.0),
-        "knn_sigmoid_k": (4.0, 8.0),
-        "knn_maxsim_weight": (0.25, 0.65),
         "hn_threshold_young": (4.0, 16.0),
         "hn_score_cap": (120.0, 1600.0),
         "classifier_k_feat": (1, 9),
@@ -176,14 +171,14 @@ def _build_ranges(
     }
     spaces: dict[str, set[str]] = {
         "full": set(full_defaults.keys()),
-        "core": set(full_defaults.keys()) - {"freshness_boost", "knn_sigmoid_k", "knn_maxsim_weight"},
+        "core": set(full_defaults.keys()) - {"freshness_boost"},
         "cat_relevance": {
             "knn_k",
             "classifier_k_feat",
             "classifier_neg_sample_weight",
         },
         "cat_freshness": {"freshness_boost", "freshness_half_life"},
-        "cat_semantic": {"knn_sigmoid_k", "knn_maxsim_weight"},
+        "cat_semantic": {"knn_k"},
         "cat_hn": {"adaptive_hn_min", "hn_threshold_young", "hn_score_cap"},
         "cat_hn_decoupled": {
             "adaptive_hn_min",
@@ -378,10 +373,8 @@ async def main():
         success = evaluator.load_snapshot(args.snapshot)
     else:
         success = await evaluator.load_data(
-            holdout=0.2,
             candidate_count=args.candidates,
             use_classifier=True,
-            use_recency=POSITIVE_RECENCY_ENABLED,
             cache_only=args.cache_only,
             allow_stale=args.cache_only,
         )
@@ -430,17 +423,6 @@ async def main():
             else FRESHNESS_HALF_LIFE_HOURS
         )
 
-        knn_sigmoid_k = (
-            trial.suggest_float("knn_sigmoid_k", *r["knn_sigmoid_k"])
-            if "knn_sigmoid_k" in r
-            else KNN_SIGMOID_K
-        )
-        knn_maxsim_weight = (
-            trial.suggest_float("knn_maxsim_weight", *r["knn_maxsim_weight"])
-            if "knn_maxsim_weight" in r
-            else KNN_MAXSIM_WEIGHT
-        )
-
         hn_threshold_young = (
             trial.suggest_float("hn_threshold_young", *r["hn_threshold_young"])
             if "hn_threshold_young" in r
@@ -469,8 +451,6 @@ async def main():
             "adaptive_hn_max": adaptive_hn_max,
             "freshness_boost": freshness_boost,
             "freshness_half_life": freshness_half_life,
-            "knn_sigmoid_k": knn_sigmoid_k,
-            "knn_maxsim_weight": knn_maxsim_weight,
             "hn_threshold_young": hn_threshold_young,
             "hn_score_cap": hn_score_cap,
             "classifier_k_feat": classifier_k_feat,

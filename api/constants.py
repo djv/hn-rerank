@@ -53,7 +53,7 @@ CANDIDATE_CACHE_TTL_ARCHIVE = 7776000  # 90 days
 STORY_CACHE_MAX_FILES = 25000  # LRU eviction threshold
 RSS_CACHE_DIR = ".cache/rss"
 RSS_OPML_CACHE_TTL = 86400  # 1 day
-RSS_FEED_CACHE_TTL = 3600  # 1 hour
+RSS_FEED_CACHE_TTL = 86400  # 1 day
 RSS_FEED_CACHE_VERSION = 2
 RSS_ARTICLE_CACHE_TTL = 86400  # 1 day
 RSS_CACHE_MAX_FILES = 5000
@@ -67,7 +67,7 @@ MAX_USER_STORIES = 2000
 # Discovery Pool
 ALGOLIA_MIN_POINTS = 5
 ALGOLIA_DEFAULT_DAYS = 30
-CANDIDATE_FETCH_COUNT = 1000
+CANDIDATE_FETCH_COUNT = 2000
 RSS_OPML_URL = (
     "https://gist.githubusercontent.com/emschwartz/e6d2bf860ccc367fe37ff953ba6de66b/raw/hn-popular-blogs-2025.opml"
 )
@@ -113,28 +113,22 @@ RANKING_DIVERSITY_LAMBDA = _get("ranking", "diversity_lambda", 0.2396634418)
 RANKING_MAX_RESULTS = _get("ranking", "max_results", 500)
 
 # Adaptive HN Weight (age-based)
-ADAPTIVE_HN_WEIGHT_MIN = _get("adaptive_hn", "weight_min", 0.0449033752)
-ADAPTIVE_HN_WEIGHT_MAX = _get("adaptive_hn", "weight_max", 0.0585400016)
-ADAPTIVE_HN_THRESHOLD_YOUNG = _get("adaptive_hn", "threshold_young", 5.8379569842)
-ADAPTIVE_HN_THRESHOLD_OLD = _get("adaptive_hn", "threshold_old", 50.1201376639)
+ADAPTIVE_HN_WEIGHT_MIN = _get("adaptive_hn", "weight_min", 0.04)
+ADAPTIVE_HN_WEIGHT_MAX = _get("adaptive_hn", "weight_max", 0.03)
+ADAPTIVE_HN_THRESHOLD_YOUNG = _get("adaptive_hn", "threshold_young", 24.0)
+ADAPTIVE_HN_THRESHOLD_OLD = _get("adaptive_hn", "threshold_old", 720.0)
 
 # Freshness Decay
 FRESHNESS_ENABLED = _get("freshness", "enabled", True)
-FRESHNESS_HALF_LIFE_HOURS = _get("freshness", "half_life_hours", 66.0122091339)
-FRESHNESS_MAX_BOOST = _get("freshness", "max_boost", 0.0411369570)
-
-# Positive-signal Recency Weighting
-POSITIVE_RECENCY_ENABLED = _get("recency", "enabled", True)
-POSITIVE_RECENCY_HALF_LIFE_DAYS = _get("recency", "half_life_days", 90.0)
+FRESHNESS_HALF_LIFE_HOURS = _get("freshness", "half_life_hours", 72.0)
+FRESHNESS_MAX_BOOST = _get("freshness", "max_boost", 0.2)
 
 # Semantic Scoring
 SEMANTIC_MAXSIM_WEIGHT = _get("semantic", "maxsim_weight", 0.95)
 SEMANTIC_MEANSIM_WEIGHT = _get("semantic", "meansim_weight", 0.05)
 SEMANTIC_SIGMOID_K = _get("semantic", "sigmoid_k", 31.2249293861)
 SEMANTIC_SIGMOID_THRESHOLD = _get("semantic", "sigmoid_threshold", 0.4749411784)
-KNN_SIGMOID_K = _get("semantic", "knn_sigmoid_k", 6.3521201201)
-KNN_MAXSIM_WEIGHT = _get("semantic", "knn_maxsim_weight", 0.2635706275)
-HN_SCORE_NORMALIZATION_CAP = _get("adaptive_hn", "score_normalization_cap", 1392.4125765115)
+HN_SCORE_NORMALIZATION_CAP = _get("adaptive_hn", "score_normalization_cap", 2500.0)
 
 # Classifier Tuning
 CLASSIFIER_K_FEAT = _get("classifier", "k_feat", 5)
