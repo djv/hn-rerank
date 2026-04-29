@@ -11,9 +11,11 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import TypedDict, cast
 from xml.etree import ElementTree as ET
+from urllib.parse import urljoin, urlparse
 
 import feedparser
 import httpx
+from bs4 import BeautifulSoup
 from langdetect import DetectorFactory, LangDetectException, detect
 
 from api.cache_utils import atomic_write_json, evict_old_cache_files
@@ -34,6 +36,7 @@ from api.url_utils import normalize_url
 logger = logging.getLogger(__name__)
 
 DetectorFactory.seed = 0
+RSS_USER_AGENT = "linux:hn_rerank:1.0 (local-first dashboard)"
 
 RSS_CACHE_PATH: Path = Path(RSS_CACHE_DIR)
 RSS_CACHE_PATH.mkdir(parents=True, exist_ok=True)
@@ -103,6 +106,8 @@ def _make_story_id(feed_url: str, link: str, title: str) -> int:
 
 def _feed_source(feed_url: str, link: str) -> StorySource:
     haystacks = (feed_url.lower(), link.lower())
+    if any("reddit.com/r/machinelearning" in value for value in haystacks):
+        return "reddit"
     if any("lobste.rs" in value for value in haystacks):
         return "lobsters"
     if any("tildes.net" in value for value in haystacks):
@@ -114,9 +119,35 @@ def _feed_source(feed_url: str, link: str) -> StorySource:
 
 def _feed_item_limit(feed_url: str, default_limit: int) -> int:
     source = _feed_source(feed_url, feed_url)
-    if source in {"lobsters", "tildes", "lesswrong"}:
+    if source in {"lobsters", "tildes", "lesswrong", "reddit"}:
         return max(default_limit, RSS_CURATED_NEWS_PER_FEED_LIMIT)
     return default_limit
+
+
+def _is_reddit_internal_url(url: str) -> bool:
+    parsed = urlparse(url)
+    host = parsed.netloc.lower()
+    if host not in {"reddit.com", "www.reddit.com", "old.reddit.com"}:
+        return False
+    return parsed.path.startswith(("/r/", "/gallery/"))
+
+
+def _extract_reddit_urls(content_html: str, entry_link: str) -> tuple[str, str | None]:
+    discussion_url = entry_link
+    submitted_url = entry_link
+    soup = BeautifulSoup(content_html, "html.parser")
+
+    for anchor in soup.find_all("a", href=True):
+        href = urljoin("https://www.reddit.com", str(anchor.get("href") or "").strip())
+        label = anchor.get_text(" ", strip=True).lower()
+        if label == "[comments]":
+            discussion_url = href
+        elif label == "[link]":
+            submitted_url = href
+
+    if _is_reddit_internal_url(submitted_url):
+        submitted_url = discussion_url
+    return submitted_url, discussion_url or None
 
 
 def _normalize_language(value: str | None) -> str | None:
@@ -218,19 +249,24 @@ def _parse_feed(
         if ts < min_ts:
             continue
 
+        source = _feed_source(feed_url, link)
+        story_url = link or None
+        discussion_url = str(entry.get("comments") or "").strip() or None
+        if source == "reddit":
+            story_url, discussion_url = _extract_reddit_urls(str(summary), link)
+
         text = strip_html(str(summary))
         text_content = compose_story_text(title=title, article_text=text)
-        discussion_url = str(entry.get("comments") or "").strip() or None
         story = Story(
             id=_make_story_id(feed_url, link, title),
             title=title,
-            url=link or None,
+            url=story_url,
             score=0,
             time=ts,
             discussion_url=discussion_url,
             comments=[],
             text_content=text_content,
-            source=_feed_source(feed_url, link),
+            source=source,
         )
         stories.append(story)
         if len(stories) >= max_items:
@@ -295,7 +331,9 @@ async def fetch_rss_stories(
     opml_cache = _cache_path("opml", opml_url)
     feed_urls = _load_cached_urls(opml_cache, RSS_OPML_CACHE_TTL)
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(
+        timeout=30.0, headers={"User-Agent": RSS_USER_AGENT}
+    ) as client:
         if feed_urls is None:
             try:
                 resp = await client.get(opml_url)

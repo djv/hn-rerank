@@ -76,6 +76,7 @@ RSS_EXTRA_FEEDS = [
     "https://lobste.rs/rss",
     "https://tildes.net/topics.rss",
     "https://www.lesswrong.com/feed.xml",
+    "https://www.reddit.com/r/MachineLearning/top/.rss?t=week&limit=25",
 ]  # Additional feeds not in OPML
 RSS_MAX_FEEDS = 0  # 0 = no max feed limit
 RSS_PER_FEED_LIMIT = 5

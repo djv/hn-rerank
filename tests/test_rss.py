@@ -225,6 +225,71 @@ def test_parse_feed_entries_marks_lesswrong_source():
     assert stories[0].badge_label == "LessWrong"
 
 
+def test_parse_feed_entries_marks_reddit_source_and_external_link():
+    xml = """
+    <feed xmlns="http://www.w3.org/2005/Atom">
+      <title>Machine Learning</title>
+      <subtitle>Machine learning research discussion and papers.</subtitle>
+      <entry>
+        <title>There Will Be a Scientific Theory of Deep Learning [R]</title>
+        <link href="https://www.reddit.com/r/MachineLearning/comments/1sun588/post/" />
+        <published>2026-04-24T17:58:00+00:00</published>
+        <content type="html">
+          &lt;div class=&quot;md&quot;&gt;&lt;p&gt;Research discussion summary.&lt;/p&gt;&lt;/div&gt;
+          &lt;span&gt;&lt;a href=&quot;https://arxiv.org/abs/2604.21691&quot;&gt;[link]&lt;/a&gt;&lt;/span&gt;
+          &lt;span&gt;&lt;a href=&quot;https://www.reddit.com/r/MachineLearning/comments/1sun588/post/&quot;&gt;[comments]&lt;/a&gt;&lt;/span&gt;
+        </content>
+      </entry>
+    </feed>
+    """
+    stories = _parse_feed_entries(
+        xml,
+        feed_url="https://www.reddit.com/r/MachineLearning/top/.rss?t=week&limit=25",
+        max_items=5,
+        min_ts=0,
+    )
+
+    assert len(stories) == 1
+    assert stories[0].source == "reddit"
+    assert stories[0].badge_label == "Reddit"
+    assert stories[0].url == "https://arxiv.org/abs/2604.21691"
+    assert (
+        stories[0].discussion_url
+        == "https://www.reddit.com/r/MachineLearning/comments/1sun588/post/"
+    )
+
+
+def test_parse_feed_entries_reddit_self_post_uses_comments_url():
+    comments_url = "https://www.reddit.com/r/MachineLearning/comments/1syjlc2/post/"
+    xml = f"""
+    <feed xmlns="http://www.w3.org/2005/Atom">
+      <title>Machine Learning</title>
+      <subtitle>Machine learning research discussion and papers.</subtitle>
+      <entry>
+        <title>Why is reasoning not done in vector space? [D]</title>
+        <link href="{comments_url}" />
+        <published>2026-04-29T00:46:15+00:00</published>
+        <content type="html">
+          &lt;div class=&quot;md&quot;&gt;&lt;p&gt;Discussion of vector-space reasoning.&lt;/p&gt;&lt;/div&gt;
+          &lt;span&gt;&lt;a href=&quot;{comments_url}&quot;&gt;[link]&lt;/a&gt;&lt;/span&gt;
+          &lt;span&gt;&lt;a href=&quot;{comments_url}&quot;&gt;[comments]&lt;/a&gt;&lt;/span&gt;
+        </content>
+      </entry>
+    </feed>
+    """
+    stories = _parse_feed_entries(
+        xml,
+        feed_url="https://www.reddit.com/r/MachineLearning/top/.rss?t=week&limit=25",
+        max_items=5,
+        min_ts=0,
+    )
+
+    assert len(stories) == 1
+    assert stories[0].source == "reddit"
+    assert stories[0].url == comments_url
+    assert stories[0].discussion_url == comments_url
+
+
 @pytest.mark.asyncio
 @respx.mock
 async def test_fetch_rss_stories_filters_old_and_excluded_urls(monkeypatch):
@@ -356,3 +421,52 @@ async def test_fetch_rss_stories_uses_higher_limit_for_curated_news_sources(monk
     assert len(stories) == rss.RSS_CURATED_NEWS_PER_FEED_LIMIT
     assert stories[0].source == "lesswrong"
     assert stories[-1].title == f"LessWrong Post {rss.RSS_CURATED_NEWS_PER_FEED_LIMIT - 1}"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_fetch_rss_stories_uses_higher_limit_for_reddit(monkeypatch):
+    opml_url = "https://example.com/feeds.opml"
+    feed_url = "https://www.reddit.com/r/MachineLearning/top/.rss?t=week&limit=25"
+    monkeypatch.setattr(rss, "RSS_EXTRA_FEEDS", [feed_url])
+
+    entries = []
+    for i in range(60):
+        comments_url = f"https://www.reddit.com/r/MachineLearning/comments/{i}/post-{i}/"
+        entries.append(
+            f"""
+            <entry>
+              <title>Reddit ML Post {i}</title>
+              <link href="{comments_url}" />
+              <published>2026-04-24T12:{i:02d}:00+00:00</published>
+              <content type="html">
+                &lt;div class=&quot;md&quot;&gt;&lt;p&gt;Machine learning research post {i}.&lt;/p&gt;&lt;/div&gt;
+                &lt;span&gt;&lt;a href=&quot;https://example.com/paper-{i}&quot;&gt;[link]&lt;/a&gt;&lt;/span&gt;
+                &lt;span&gt;&lt;a href=&quot;{comments_url}&quot;&gt;[comments]&lt;/a&gt;&lt;/span&gt;
+              </content>
+            </entry>
+            """
+        )
+    atom_xml = f"""
+    <feed xmlns="http://www.w3.org/2005/Atom">
+      <title>Machine Learning</title>
+      <subtitle>Machine learning research discussion and papers.</subtitle>
+      {''.join(entries)}
+    </feed>
+    """
+
+    respx.get(opml_url).mock(return_value=Response(200, text=""))
+    respx.get(feed_url).mock(return_value=Response(200, text=atom_xml))
+
+    stories = await fetch_rss_stories(
+        opml_url=opml_url,
+        days=3650,
+        max_feeds=5,
+        per_feed=5,
+        fetch_full_content=False,
+    )
+
+    assert len(stories) == rss.RSS_CURATED_NEWS_PER_FEED_LIMIT
+    assert stories[0].source == "reddit"
+    assert stories[0].url == "https://example.com/paper-0"
+    assert stories[-1].title == f"Reddit ML Post {rss.RSS_CURATED_NEWS_PER_FEED_LIMIT - 1}"
