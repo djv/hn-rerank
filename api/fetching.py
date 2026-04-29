@@ -4,12 +4,13 @@ import hashlib
 import html
 import json
 import math
+import os
 import re
 import time
 import logging
 from pathlib import Path
 from datetime import UTC, datetime, timedelta
-from typing import TypedDict, cast
+from typing import Any, TypedDict, cast
 from collections.abc import Awaitable, Callable
 import httpx
 
@@ -30,7 +31,6 @@ from api.constants import (
     CANDIDATE_CACHE_DIR,
     CANDIDATE_CACHE_TTL_SHORT,
     CANDIDATE_CACHE_TTL_LONG,
-    CANDIDATE_CACHE_TTL_ARCHIVE,
     RSS_MAX_FEEDS,
     RSS_OPML_URL,
     RSS_PER_FEED_LIMIT,
@@ -43,6 +43,11 @@ from api.url_utils import normalize_url
 logger = logging.getLogger(__name__)
 
 ALGOLIA_BASE: str = "https://hn.algolia.com/api/v1"
+HN_FULL_TABLE: str = "bigquery-public-data.hacker_news.full"
+HN_BIGQUERY_PROJECT_ENV: str = "HN_RERANK_BIGQUERY_PROJECT"
+HN_LIVE_WINDOW_DAYS: int = 4
+HN_BIGQUERY_MAX_COMMENT_DEPTH: int = 4
+HN_BIGQUERY_ARCHIVE_STORY_CACHE_TTL: int = CANDIDATE_CACHE_TTL_LONG
 SEM: asyncio.Semaphore = asyncio.Semaphore(EXTERNAL_REQUEST_SEMAPHORE)
 CACHE_PATH: Path = Path(STORY_CACHE_DIR)
 CACHE_PATH.mkdir(parents=True, exist_ok=True)
@@ -109,6 +114,7 @@ class AlgoliaItem(TypedDict, total=False):
     text: str
     story_text: str
     points: int
+    num_comments: int
     created_at_i: int
     children: list[AlgoliaComment]
 
@@ -130,6 +136,52 @@ class CachedStory(TypedDict):
     ts: float
     version: str
     story: StoryDict | None
+
+
+def _load_cached_story(
+    sid: int,
+    *,
+    ttl: int,
+    allow_stale: bool = False,
+    require_comment_count: bool = False,
+) -> Story | None:
+    cache_file = CACHE_PATH / f"{sid}.json"
+    if not cache_file.exists():
+        return None
+    try:
+        data = cast(CachedStory, json.loads(cache_file.read_text()))
+        if data.get("version") != STORY_CACHE_VERSION:
+            return None
+        if not allow_stale and time.time() - float(data["ts"]) >= ttl:
+            return None
+        cached_story = data.get("story")
+        if not cached_story:
+            return None
+        story_dict = cast(StoryDict, cached_story)
+        if (
+            require_comment_count
+            and story_dict.get("source") == "hn"
+            and "comment_count" not in story_dict
+        ):
+            return None
+        return Story.from_dict(story_dict)
+    except Exception as e:
+        logger.debug(f"Failed to load story cache {cache_file}: {e}")
+        return None
+
+
+def _save_cached_story(story: Story | None) -> None:
+    sid = story.id if story is not None else None
+    if sid is None:
+        return
+    cache_file = CACHE_PATH / f"{sid}.json"
+    cache_payload: CachedStory = {
+        "ts": time.time(),
+        "version": STORY_CACHE_VERSION,
+        "story": story.to_dict(),
+    }
+    atomic_write_json(cache_file, cache_payload)
+    evict_old_cache_files(CACHE_PATH, "*.json", STORY_CACHE_MAX_FILES)
 
 
 def _extract_comments_recursive(
@@ -199,16 +251,24 @@ async def fetch_story(
     if cache_file.exists():
         try:
             data = cast(CachedStory, json.loads(cache_file.read_text()))
-            if (
-                data.get("version") == STORY_CACHE_VERSION
-                and (allow_stale or time.time() - float(data["ts"]) < STORY_CACHE_TTL)
+            if data.get("version") == STORY_CACHE_VERSION and (
+                allow_stale or time.time() - float(data["ts"]) < STORY_CACHE_TTL
             ):
                 cached_story = data.get("story")
-                return (
-                    Story.from_dict(cast(StoryDict, cached_story))
-                    if cached_story
-                    else None
-                )
+                if cached_story:
+                    story_dict = cast(StoryDict, cached_story)
+                    if (
+                        not cache_only
+                        and story_dict.get("source") == "hn"
+                        and "comment_count" not in story_dict
+                    ):
+                        logger.debug(
+                            "Refetching story %s cache missing comment_count", sid
+                        )
+                    else:
+                        return Story.from_dict(story_dict)
+                else:
+                    return None
         except Exception as e:
             logger.debug(f"Failed to load story cache {cache_file}: {e}")
 
@@ -234,6 +294,7 @@ async def fetch_story(
             title = html.unescape(item.get("title", ""))
             url = item.get("url", "")
             score = item.get("points", 0) or 0
+            comment_count = item.get("num_comments")
             created_at = item.get("created_at_i", 0) or 0
             story_text = strip_html(
                 str(item.get("story_text") or item.get("text") or "")
@@ -274,6 +335,9 @@ async def fetch_story(
                 comments=ui_comments,
                 text_content=text_content,
                 source="hn",
+                comment_count=comment_count
+                if comment_count is not None
+                else len(all_comments),
             )
             cache_payload: CachedStory = {
                 "ts": time.time(),
@@ -300,6 +364,249 @@ def build_candidate_filters(ts_start: int, ts_end: int) -> list[str]:
     return filters
 
 
+def _clean_bigquery_comment(text: str) -> str:
+    text = html.unescape(strip_html(text))
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _timestamp_to_unix(value: Any) -> int:
+    if isinstance(value, datetime):
+        dt = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+        return int(dt.timestamp())
+    return int(value or 0)
+
+
+def story_from_bigquery_row(row: Any) -> Story | None:
+    get = row.get if hasattr(row, "get") else row.__getitem__
+    story_id = int(get("id") or 0)
+    if story_id <= 0:
+        return None
+
+    title = html.unescape(str(get("title") or "")).strip()
+    self_text = strip_html(str(get("text") or ""))
+    url = str(get("url") or "").strip() or None
+    score = int(get("score") or 0)
+    created_at = _timestamp_to_unix(get("timestamp") or get("time"))
+    comment_count = get("comment_count")
+    comments_raw = get("comments") or []
+
+    comments: list[str] = []
+    for item in comments_raw:
+        if isinstance(item, dict):
+            text = str(item.get("text") or "")
+        else:
+            text = str(getattr(item, "text", "") or "")
+        text = _clean_bigquery_comment(text)
+        if text:
+            comments.append(text)
+
+    text_content = compose_story_text(
+        title=title,
+        self_text=self_text,
+        comments=comments[:TOP_COMMENTS_FOR_RANKING],
+    )
+    if not text_content:
+        return None
+
+    return Story(
+        id=story_id,
+        title=title,
+        url=url,
+        score=score,
+        time=created_at,
+        discussion_url=f"https://news.ycombinator.com/item?id={story_id}",
+        comments=comments[:TOP_COMMENTS_FOR_UI],
+        text_content=text_content,
+        source="hn",
+        comment_count=int(comment_count) if comment_count is not None else None,
+    )
+
+
+def build_bigquery_sql(table: str = HN_FULL_TABLE) -> str:
+    return f"""
+WITH RECURSIVE candidate_stories AS (
+  SELECT
+    id,
+    title,
+    url,
+    text,
+    score,
+    timestamp,
+    descendants AS comment_count
+  FROM `{table}`
+  WHERE type = 'story'
+    AND timestamp >= TIMESTAMP_SECONDS(@start_ts)
+    AND timestamp < TIMESTAMP_SECONDS(@end_ts)
+    AND IFNULL(score, 0) > @min_points
+    AND (@min_comments <= 0 OR IFNULL(descendants, 0) >= @min_comments)
+    AND NOT IFNULL(deleted, FALSE)
+    AND NOT IFNULL(dead, FALSE)
+  ORDER BY score DESC, timestamp DESC
+  LIMIT @candidate_limit
+),
+descendant_items AS (
+  SELECT id AS story_id, id AS item_id, 0 AS depth
+  FROM candidate_stories
+  UNION ALL
+  SELECT d.story_id, child.id AS item_id, d.depth + 1 AS depth
+  FROM descendant_items AS d
+  JOIN `{table}` AS child
+    ON child.parent = d.item_id
+  WHERE d.depth < @max_comment_depth
+    AND child.type = 'comment'
+    AND NOT IFNULL(child.deleted, FALSE)
+    AND NOT IFNULL(child.dead, FALSE)
+),
+ranked_comments AS (
+  SELECT
+    d.story_id,
+    child.text,
+    IFNULL(child.score, 0) AS score,
+    child.timestamp,
+    ROW_NUMBER() OVER (
+      PARTITION BY d.story_id
+      ORDER BY IFNULL(child.score, 0) DESC, child.timestamp ASC
+    ) AS rn
+  FROM descendant_items AS d
+  JOIN `{table}` AS child
+    ON child.id = d.item_id
+  WHERE d.depth > 0
+    AND child.text IS NOT NULL
+)
+SELECT
+  cs.id,
+  cs.title,
+  cs.url,
+  cs.text,
+  cs.score,
+  cs.timestamp,
+  cs.comment_count,
+  ARRAY_AGG(
+    IF(rc.rn <= @comments_per_story, STRUCT(rc.text AS text, rc.score AS score), NULL)
+    IGNORE NULLS
+    ORDER BY rc.score DESC
+  ) AS comments
+FROM candidate_stories AS cs
+LEFT JOIN ranked_comments AS rc
+  ON rc.story_id = cs.id
+GROUP BY cs.id, cs.title, cs.url, cs.text, cs.score, cs.timestamp, cs.comment_count
+ORDER BY cs.score DESC, cs.timestamp DESC
+"""
+
+
+def _query_bigquery_archive_sync(
+    *,
+    start_ts: int,
+    end_ts: int,
+    candidate_limit: int,
+) -> list[Story]:
+    try:
+        from google.cloud import bigquery
+    except ImportError as exc:
+        raise RuntimeError(
+            "BigQuery archive fetching requires google-cloud-bigquery"
+        ) from exc
+
+    project = os.environ.get(HN_BIGQUERY_PROJECT_ENV) or None
+    client = bigquery.Client(project=project)
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("start_ts", "INT64", start_ts),
+            bigquery.ScalarQueryParameter("end_ts", "INT64", end_ts),
+            bigquery.ScalarQueryParameter("candidate_limit", "INT64", candidate_limit),
+            bigquery.ScalarQueryParameter("min_points", "INT64", ALGOLIA_MIN_POINTS),
+            bigquery.ScalarQueryParameter(
+                "min_comments", "INT64", MIN_CANDIDATE_COMMENTS
+            ),
+            bigquery.ScalarQueryParameter(
+                "max_comment_depth", "INT64", HN_BIGQUERY_MAX_COMMENT_DEPTH
+            ),
+            bigquery.ScalarQueryParameter(
+                "comments_per_story", "INT64", TOP_COMMENTS_FOR_RANKING
+            ),
+        ]
+    )
+    rows = client.query(build_bigquery_sql(), job_config=job_config).result()
+    stories: list[Story] = []
+    for row in rows:
+        story = story_from_bigquery_row(row)
+        if story is not None:
+            stories.append(story)
+    return stories
+
+
+async def fetch_bigquery_archive_stories(
+    *,
+    http_client: httpx.AsyncClient,
+    start_ts: int,
+    end_ts: int,
+    candidate_limit: int,
+    exclude_ids: set[int],
+    exclude_urls: set[str] | None,
+    seen_urls: set[str] | None = None,
+    cache_only: bool = False,
+    allow_stale: bool = False,
+) -> list[Story]:
+    cached_results: list[Story] = []
+    if cache_only:
+        return cached_results
+
+    stories = await asyncio.to_thread(
+        _query_bigquery_archive_sync,
+        start_ts=start_ts,
+        end_ts=end_ts,
+        candidate_limit=candidate_limit,
+    )
+
+    results: list[Story] = []
+    seen: set[int] = set()
+    for story in stories:
+        if story.id in exclude_ids or story.id in seen:
+            continue
+        if story.url:
+            norm_url = normalize_url(story.url)
+            if norm_url and (
+                (exclude_urls and norm_url in exclude_urls)
+                or (seen_urls and norm_url in seen_urls)
+            ):
+                continue
+
+        cached = _load_cached_story(
+            story.id,
+            ttl=HN_BIGQUERY_ARCHIVE_STORY_CACHE_TTL,
+            allow_stale=allow_stale,
+        )
+        if cached is not None:
+            results.append(cached)
+            seen.add(cached.id)
+            if cached.url and seen_urls is not None:
+                norm_url = normalize_url(cached.url)
+                if norm_url:
+                    seen_urls.add(norm_url)
+            continue
+
+        article_text = ""
+        if story.url:
+            async with ARTICLE_SEM:
+                article_text = await fetch_full_text(http_client, story.url)
+        if article_text:
+            story.text_content = compose_story_text(
+                title=story.title,
+                article_text=article_text,
+                comments=story.comments,
+            )
+        _save_cached_story(story)
+        results.append(story)
+        seen.add(story.id)
+        if story.url and seen_urls is not None:
+            norm_url = normalize_url(story.url)
+            if norm_url:
+                seen_urls.add(norm_url)
+
+    return results
+
+
 async def get_best_stories(
     limit: int,
     exclude_ids: set[int] | None = None,
@@ -313,102 +620,80 @@ async def get_best_stories(
     if exclude_ids is None:
         exclude_ids = set()
 
-    # Algolia limits to 1000 results per query, so use time windows
     ALGOLIA_MAX_PER_QUERY = 1000
-
-    # Calculate distribution target per window
-    # num_windows calculation removed as it was unused
-
-    hits: set[int] = set()
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         now = datetime.now(UTC)
-
-        # Align anchor to last Monday midnight UTC
-        # This makes older windows stable for a full week, maximizing cache reuse
-        days_since_monday = now.weekday()
-        anchor = (now - timedelta(days=days_since_monday)).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
-        anchor_ts = int(anchor.timestamp())
         ts_now = int(now.timestamp() // 900 * 900)  # Round to 15m
         cutoff_ts = int((now - timedelta(days=days)).timestamp())
-        recent_start = max(anchor_ts, cutoff_ts)
+        live_start_ts = int((now - timedelta(days=HN_LIVE_WINDOW_DAYS)).timestamp())
+        algolia_start_ts = max(cutoff_ts, live_start_ts)
+        archive_end_ts = min(live_start_ts, ts_now)
+        has_archive_window = cutoff_ts < archive_end_ts
 
-        # Construct windows
-        # Tuple: (ts_start, ts_end, is_live_window)
-        windows: list[tuple[int, int, bool]] = []
+        candidate_budget = max(limit, math.ceil(limit * 1.5))
+        lookback_seconds = max(ts_now - cutoff_ts, 1)
+        live_seconds = max(ts_now - algolia_start_ts, 0)
+        archive_seconds = max(archive_end_ts - cutoff_ts, 0)
 
-        # 1. Recent Windows: From recent_start to Now
-        # Split into daily chunks to reduce refetch volume when Live window expires
-        if ts_now > recent_start:
+        live_budget = 0
+        if live_seconds > 0:
+            live_budget = math.ceil(
+                candidate_budget * (live_seconds / lookback_seconds)
+            )
+            live_budget = max(live_budget, limit // 4, 50)
+            live_budget = min(live_budget, candidate_budget)
+
+        archive_budget = 0
+        if has_archive_window:
+            archive_budget = max(candidate_budget - live_budget, 50)
+            if archive_seconds > 0:
+                archive_budget = max(
+                    archive_budget,
+                    math.ceil(candidate_budget * (archive_seconds / lookback_seconds)),
+                )
+
+        hits: set[int] = set()
+
+        # Algolia live window: daily chunks over the last 4 days.
+        live_windows: list[tuple[int, int, bool]] = []
+        if ts_now > algolia_start_ts and live_budget > 0:
             current_end = ts_now
-            while current_end > recent_start:
+            while current_end > algolia_start_ts:
                 prev_midnight = (current_end // 86400) * 86400
                 if prev_midnight == current_end:
                     prev_midnight -= 86400
 
-                ts_start = max(prev_midnight, recent_start)
+                ts_start = max(prev_midnight, algolia_start_ts)
                 is_live = current_end == ts_now
-                windows.append((ts_start, current_end, is_live))
+                live_windows.append((ts_start, current_end, is_live))
                 current_end = ts_start
 
-        # 2. Archive Windows: 7-day chunks back from Anchor
-        if cutoff_ts < anchor_ts:
-            current_end = anchor_ts
-            # Safety limit to prevent infinite loops if days is huge
-            max_archive_weeks = math.ceil(days / 7) + 1
-
-            for _ in range(max_archive_weeks):
-                if current_end <= cutoff_ts:
-                    break
-                current_start = max(current_end - (7 * 86400), cutoff_ts)
-                windows.append((current_start, current_end, False))
-                current_end = current_start
-
-        # Calculate targets based on duration
-        total_duration = sum(end - start for start, end, _ in windows)
+        total_duration = sum(end - start for start, end, _ in live_windows)
         if total_duration == 0:
-            total_duration = 1  # prevent div/0
+            total_duration = 1
 
-        candidate_budget = max(limit, math.ceil(limit * 1.5))
-
-        for ts_start, ts_end, is_live in windows:
-            remaining_budget = candidate_budget - len(hits)
+        for ts_start, ts_end, is_live in live_windows:
+            remaining_budget = live_budget - len(hits)
             if remaining_budget <= 0:
                 break
 
             duration = ts_end - ts_start
-            # Proportional target, but ensure Today's news is well-represented
-            win_target = math.ceil(limit * (duration / total_duration))
+            win_target = math.ceil(live_budget * (duration / total_duration))
             if is_live:
-                # Give today a much larger share (at least 25% of pool)
                 win_target = max(win_target, limit // 4)
             win_target = max(win_target, 50)
             win_target = min(win_target, remaining_budget)
 
-            # For live window, we use a stable key (ignoring ts_end) to respect TTL
-            # For archive windows, ts_end is fixed/stable so we keep it
             key_suffix = f"{ts_start}" if is_live else f"{ts_start}-{ts_end}"
             cache_key = hashlib.md5(
                 f"{CANDIDATE_CACHE_VERSION}-{key_suffix}-{ALGOLIA_MIN_POINTS}-{MIN_CANDIDATE_COMMENTS}".encode()
             ).hexdigest()
 
-            # TTL Logic:
-            # 1. Live window: Short TTL (CANDIDATE_CACHE_TTL_SHORT)
-            # 2. Old Archive (>= 30 days): Long/Archive TTL (CANDIDATE_CACHE_TTL_ARCHIVE)
-            # 3. Recent Archive: Weekly TTL (7 days)
-            if is_live:
-                ttl = CANDIDATE_CACHE_TTL_SHORT
-            elif ts_end <= int(now.timestamp()) - (30 * 86400):
-                ttl = CANDIDATE_CACHE_TTL_ARCHIVE
-            else:
-                ttl = CANDIDATE_CACHE_TTL_LONG
-
+            ttl = CANDIDATE_CACHE_TTL_SHORT if is_live else CANDIDATE_CACHE_TTL_LONG
             cached_ids = get_cached_candidates(cache_key, ttl, allow_stale=allow_stale)
             page_ids: list[int] = []
 
-            # If cache has too few IDs for the current target, treat as a miss to refetch deeper
             if cached_ids is not None and len(cached_ids) >= win_target:
                 page_ids = cached_ids
             elif cache_only:
@@ -420,14 +705,12 @@ async def get_best_stories(
                     )
                     continue
             else:
-                # Cache miss, expired, or too shallow - fetch from API
                 logger.info(
-                    f"Fetching window {ts_start}-{ts_end} (live={is_live}, target={win_target})."
+                    f"Fetching Algolia live window {ts_start}-{ts_end} "
+                    f"(target={win_target})."
                 )
-                # Always fetch a full page to maximize cache utility for future runs
                 fetch_count = ALGOLIA_MAX_PER_QUERY
 
-                # Use >= for start to include boundary stories and < end to avoid overlap.
                 filters = build_candidate_filters(ts_start, ts_end)
 
                 params: dict[str, str | int] = {
@@ -463,24 +746,45 @@ async def get_best_stories(
                         break
 
         results: list[Story] = []
-        if not hits:
-            return []
+        if hits:
+            tasks: list[Awaitable[Story | None]] = [
+                fetch_story(client, sid, cache_only=cache_only, allow_stale=allow_stale)
+                for sid in hits
+            ]
+            for i, task in enumerate(asyncio.as_completed(tasks)):
+                res: Story | None = await task
+                if res:
+                    if exclude_urls and res.url:
+                        norm_url = normalize_url(res.url)
+                        if norm_url and norm_url in exclude_urls:
+                            continue
+                    results.append(res)
+                if progress_callback:
+                    progress_callback(i + 1, len(hits))
 
-        tasks: list[Awaitable[Story | None]] = [
-            fetch_story(client, sid, cache_only=cache_only, allow_stale=allow_stale)
-            for sid in hits
-        ]
-        for i, task in enumerate(asyncio.as_completed(tasks)):
-            res: Story | None = await task
-            if res:
-                # URL-based exclusion for duplicates/hidden items
-                if exclude_urls and res.url:
-                    norm_url = normalize_url(res.url)
-                    if norm_url and norm_url in exclude_urls:
-                        continue
-                results.append(res)
-            if progress_callback:
-                progress_callback(i + 1, len(hits))
+        if has_archive_window and not cache_only:
+            seen_urls = {
+                norm_url
+                for story in results
+                if story.url
+                for norm_url in [normalize_url(story.url)]
+                if norm_url
+            }
+            archive_stories = await fetch_bigquery_archive_stories(
+                http_client=client,
+                start_ts=cutoff_ts,
+                end_ts=archive_end_ts,
+                candidate_limit=archive_budget,
+                exclude_ids=exclude_ids | {story.id for story in results},
+                exclude_urls=exclude_urls,
+                seen_urls=seen_urls,
+                cache_only=cache_only,
+                allow_stale=allow_stale,
+            )
+            results.extend(archive_stories)
+
+        if not results and not include_rss:
+            return []
 
         rss_stories: list[Story] = []
         if include_rss and not cache_only:

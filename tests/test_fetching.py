@@ -1,19 +1,27 @@
 import json
 import time
+from datetime import UTC, datetime
 import pytest
 import respx
 import httpx
 from httpx import Response
 from unittest.mock import MagicMock
-from api.constants import MIN_CANDIDATE_COMMENTS, MIN_COMMENT_LENGTH, MIN_STORY_COMMENTS, STORY_CACHE_VERSION
+from api.constants import (
+    MIN_CANDIDATE_COMMENTS,
+    MIN_COMMENT_LENGTH,
+    MIN_STORY_COMMENTS,
+    STORY_CACHE_VERSION,
+)
 from api.fetching import (
     ALGOLIA_BASE,
     AlgoliaComment,
     _clean_text,
     _extract_comments_recursive,
+    build_bigquery_sql,
     build_candidate_filters,
     fetch_story,
     get_best_stories,
+    story_from_bigquery_row,
 )
 from api.models import Story
 
@@ -126,14 +134,16 @@ async def test_get_best_stories_accepts_min_comment_length():
         mp.setattr("api.fetching.atomic_write_json", lambda p, d: None)
         mp.setattr("api.fetching.evict_old_cache_files", lambda *args, **kwargs: None)
 
-        stories = await get_best_stories(limit=1, include_rss=False)
+        stories = await get_best_stories(limit=1, days=1, include_rss=False)
         assert len(stories) == 1
         assert stories[0].id == 42
 
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_fetch_story_uses_article_text_without_comment_threshold(monkeypatch, tmp_path):
+async def test_fetch_story_uses_article_text_without_comment_threshold(
+    monkeypatch, tmp_path
+):
     respx.get(f"{ALGOLIA_BASE}/items/99").mock(
         return_value=Response(
             200,
@@ -143,6 +153,7 @@ async def test_fetch_story_uses_article_text_without_comment_threshold(monkeypat
                 "title": "Sparse Comments Story",
                 "url": "https://example.com/full-story",
                 "points": 50,
+                "num_comments": 17,
                 "created_at_i": 1600000000,
                 "children": [
                     {
@@ -167,10 +178,116 @@ async def test_fetch_story_uses_article_text_without_comment_threshold(monkeypat
         story = await fetch_story(client, 99)
 
     assert story is not None
+    assert story.comment_count == 17
     assert "Full article body" in story.text_content
     assert "substantial comment" in story.text_content
     cached = json.loads((tmp_path / "99.json").read_text())
     assert cached["version"] == STORY_CACHE_VERSION
+    assert cached["story"]["comment_count"] == 17
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_fetch_story_refetches_cached_hn_story_without_comment_count(
+    monkeypatch, tmp_path
+):
+    cache_file = tmp_path / "100.json"
+    cache_file.write_text(
+        json.dumps(
+            {
+                "ts": time.time(),
+                "version": STORY_CACHE_VERSION,
+                "story": {
+                    "id": 100,
+                    "title": "Cached without count",
+                    "url": "https://example.com/old",
+                    "score": 10,
+                    "time": 1600000000,
+                    "discussion_url": "https://news.ycombinator.com/item?id=100",
+                    "comments": ["Old comment"],
+                    "text_content": "Old content",
+                    "source": "hn",
+                },
+            }
+        )
+    )
+    respx.get(f"{ALGOLIA_BASE}/items/100").mock(
+        return_value=Response(
+            200,
+            json={
+                "id": 100,
+                "type": "story",
+                "title": "Fresh with count",
+                "url": "https://example.com/fresh",
+                "points": 20,
+                "num_comments": 31,
+                "created_at_i": 1600000001,
+                "children": [],
+            },
+        )
+    )
+
+    async def fake_fetch_full_text(client: httpx.AsyncClient, url: str) -> str:
+        assert url == "https://example.com/fresh"
+        return "Fresh article body"
+
+    monkeypatch.setattr("api.fetching.CACHE_PATH", tmp_path)
+    monkeypatch.setattr("api.fetching.fetch_full_text", fake_fetch_full_text)
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        story = await fetch_story(client, 100)
+
+    assert story is not None
+    assert story.title == "Fresh with count"
+    assert story.comment_count == 31
+
+
+def test_story_from_bigquery_row_converts_to_story():
+    row = {
+        "id": 123,
+        "title": "A &amp; B",
+        "url": "https://example.com/post",
+        "text": "<p>Self text</p>",
+        "score": 42,
+        "timestamp": datetime(2026, 4, 29, 12, 0, tzinfo=UTC),
+        "comment_count": 17,
+        "comments": [
+            {"text": "<p>First &amp; useful comment</p>", "score": 5},
+            {"text": "", "score": 4},
+            {"text": "<i>Second comment</i>", "score": 3},
+        ],
+    }
+
+    story = story_from_bigquery_row(row)
+
+    assert story is not None
+    assert story.id == 123
+    assert story.title == "A & B"
+    assert story.url == "https://example.com/post"
+    assert story.score == 42
+    assert story.time == 1777464000
+    assert story.discussion_url == "https://news.ycombinator.com/item?id=123"
+    assert story.comment_count == 17
+    assert story.comments == ["First & useful comment", "Second comment"]
+    assert "A & B" in story.text_content
+    assert "Self text" in story.text_content
+    assert "First & useful comment" in story.text_content
+
+
+def test_story_from_bigquery_row_rejects_empty_payload():
+    assert story_from_bigquery_row({"id": 0}) is None
+    assert story_from_bigquery_row({"id": 123, "title": "", "comments": []}) is None
+
+
+def test_build_bigquery_sql_uses_archive_bounds_and_public_table():
+    sql = build_bigquery_sql()
+
+    assert "`bigquery-public-data.hacker_news.full`" in sql
+    assert "WITH RECURSIVE" in sql
+    assert "TIMESTAMP_SECONDS(@start_ts)" in sql
+    assert "TIMESTAMP_SECONDS(@end_ts)" in sql
+    assert "@candidate_limit" in sql
+    assert "@max_comment_depth" in sql
 
 
 @pytest.mark.asyncio
@@ -263,7 +380,9 @@ async def test_get_best_stories_filtering():
         mp.setattr("api.fetching.atomic_write_json", lambda p, d: None)
         mp.setattr("api.fetching.evict_old_cache_files", lambda *args, **kwargs: None)
 
-        stories = await get_best_stories(limit=limit, exclude_ids=exclude, days=1, include_rss=False)
+        stories = await get_best_stories(
+            limit=limit, exclude_ids=exclude, days=1, include_rss=False
+        )
 
         # The fetcher uses a buffer and minimum window size (20), so it may return more than limit
         assert len(stories) >= 2
@@ -311,7 +430,7 @@ async def test_get_best_stories_caps_candidate_collection(monkeypatch):
         mp.setattr("api.fetching.atomic_write_json", lambda p, d: None)
         mp.setattr("api.fetching.evict_old_cache_files", lambda *args, **kwargs: None)
 
-        stories = await get_best_stories(limit=40, days=30, include_rss=False)
+        stories = await get_best_stories(limit=40, days=1, include_rss=False)
 
     assert len(stories) <= 60
     assert len(stories) >= 40
@@ -380,7 +499,7 @@ async def test_get_best_stories_pagination():
         mp.setattr("api.fetching.atomic_write_json", lambda p, d: None)
         mp.setattr("api.fetching.evict_old_cache_files", lambda *args, **kwargs: None)
 
-        stories = await get_best_stories(limit=1100, include_rss=False)
+        stories = await get_best_stories(limit=1100, days=4, include_rss=False)
         # We expect 1100 unique stories
         assert len(stories) >= 1100
 
@@ -402,7 +521,7 @@ async def test_get_best_stories_empty_response():
         mp.setattr("api.fetching.atomic_write_json", lambda p, d: None)
         mp.setattr("api.fetching.evict_old_cache_files", lambda *args, **kwargs: None)
 
-        stories = await get_best_stories(limit=10, days=7, include_rss=False)
+        stories = await get_best_stories(limit=10, days=1, include_rss=False)
         assert stories == []
 
 
@@ -459,9 +578,104 @@ async def test_get_best_stories_partial_failure():
         mp.setattr("api.fetching.atomic_write_json", lambda p, d: None)
         mp.setattr("api.fetching.evict_old_cache_files", lambda *args, **kwargs: None)
 
-        stories = await get_best_stories(limit=10, days=14, include_rss=False)
+        stories = await get_best_stories(limit=10, days=1, include_rss=False)
         # Should still return the stories from successful window
         assert len(stories) >= 1
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_get_best_stories_merges_algolia_live_and_bigquery_archive(
+    monkeypatch, tmp_path
+):
+    respx.get(f"{ALGOLIA_BASE}/search").mock(
+        return_value=Response(200, json={"hits": [{"objectID": "1"}]})
+    )
+
+    async def fake_fetch_story(client, sid, **kwargs):
+        return Story(
+            id=sid,
+            title=f"Live {sid}",
+            url=f"https://example.com/live/{sid}",
+            score=100,
+            time=1800000000,
+            discussion_url=f"https://news.ycombinator.com/item?id={sid}",
+            comments=["live comment"],
+            text_content="live story text",
+            source="hn",
+        )
+
+    captured: dict[str, int] = {}
+
+    def fake_query_bigquery_archive_sync(*, start_ts, end_ts, candidate_limit):
+        captured["start_ts"] = start_ts
+        captured["end_ts"] = end_ts
+        captured["candidate_limit"] = candidate_limit
+        return [
+            Story(
+                id=1,
+                title="Duplicate archive",
+                url="https://example.com/live/1",
+                score=90,
+                time=1700000000,
+                comments=["duplicate archive comment"],
+                text_content="duplicate archive text",
+            ),
+            Story(
+                id=2,
+                title="Archive 2",
+                url="https://example.com/archive/2",
+                score=80,
+                time=1700000001,
+                comments=["archive comment"],
+                text_content="archive story text",
+            ),
+        ]
+
+    async def fake_fetch_full_text(client, url):
+        assert url == "https://example.com/archive/2"
+        return "archive article text"
+
+    monkeypatch.setattr("api.fetching.CACHE_PATH", tmp_path)
+    monkeypatch.setattr(
+        "api.fetching.get_cached_candidates", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        "api.fetching.save_cached_candidates", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr("api.fetching.fetch_story", fake_fetch_story)
+    monkeypatch.setattr(
+        "api.fetching._query_bigquery_archive_sync",
+        fake_query_bigquery_archive_sync,
+    )
+    monkeypatch.setattr("api.fetching.fetch_full_text", fake_fetch_full_text)
+
+    stories = await get_best_stories(limit=10, days=10, include_rss=False)
+
+    assert [story.id for story in stories] == [1, 2]
+    assert "archive article text" in stories[1].text_content
+    assert captured["end_ts"] > captured["start_ts"]
+    assert 5 * 86400 < captured["end_ts"] - captured["start_ts"] < 7 * 86400
+    assert captured["candidate_limit"] >= 10
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_get_best_stories_raises_when_bigquery_archive_fails(monkeypatch):
+    respx.get(f"{ALGOLIA_BASE}/search").mock(
+        return_value=Response(200, json={"hits": []})
+    )
+
+    def fake_query_bigquery_archive_sync(**kwargs):
+        raise RuntimeError("BigQuery unavailable")
+
+    monkeypatch.setattr(
+        "api.fetching._query_bigquery_archive_sync",
+        fake_query_bigquery_archive_sync,
+    )
+
+    with pytest.raises(RuntimeError, match="BigQuery unavailable"):
+        await get_best_stories(limit=10, days=10, include_rss=False)
 
 
 class TestWindowFilters:
