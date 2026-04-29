@@ -946,10 +946,13 @@ def _coerce_tldr_value(value: object) -> str:
     if isinstance(value, str):
         return value.strip().strip('"').strip("'")
     if isinstance(value, dict):
+        from typing import cast
+        dict_val = cast(dict[str, object], value)
         for key in ("summary", "tldr", "tl_dr", "text"):
-            candidate = value.get(key)
-            if isinstance(candidate, str):
-                return candidate.strip().strip('"').strip("'")
+            if key in dict_val:
+                candidate = dict_val[key]
+                if isinstance(candidate, str):
+                    return candidate.strip().strip('"').strip("'")
     return ""
 
 
