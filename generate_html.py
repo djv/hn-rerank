@@ -448,17 +448,14 @@ def select_ranked_results(
     cand_cluster_map: dict[int, int],
     count: int,
 ) -> list[RankResult]:
-    """Select a ranked subset with a small fixed external quota.
+    """Select a ranked subset with a small fixed external quota and diversity.
 
     The quota compensates for HN's site-score blend so external stories are not
-    crowded out purely by HN points.
+    crowded out purely by HN points. It also ensures source diversity for external items.
     """
     _ = (cluster_labels, cluster_names, cand_cluster_map)
     if not ranked:
         return []
-
-    selected_results: list[RankResult] = list(ranked[:count])
-    used_indices: set[int] = {result.index for result in selected_results}
 
     def is_external_result(res: RankResult) -> bool:
         return cands[res.index].is_external
@@ -469,40 +466,31 @@ def select_ranked_results(
     min_external = max(0, count - available_hn)
     max_external = min(count, available_external)
     target_external = min(max(desired_external, min_external), max_external)
+    target_hn = count - target_external
 
-    external_selected = sum(1 for r in selected_results if is_external_result(r))
-
-    if external_selected < target_external:
-        external_candidates = [
-            r for r in ranked if is_external_result(r) and r.index not in used_indices
-        ]
-        hn_selected = [r for r in selected_results if not is_external_result(r)]
-        hn_selected.sort(key=lambda r: r.hybrid_score)
-        for new_external in external_candidates:
-            if external_selected >= target_external or not hn_selected:
+    # Select external with diversity: start with strict per-source quota and relax if needed
+    external_candidates = [r for r in ranked if is_external_result(r)]
+    selected_external: list[RankResult] = []
+    
+    for max_per_source in [2, 3, count]:
+        selected_external = []
+        source_counts: Counter[str] = Counter()
+        for r in external_candidates:
+            if len(selected_external) >= target_external:
                 break
-            to_remove = hn_selected.pop(0)
-            selected_results.remove(to_remove)
-            used_indices.discard(to_remove.index)
-            selected_results.append(new_external)
-            used_indices.add(new_external.index)
-            external_selected += 1
-    elif external_selected > target_external:
-        hn_candidates = [
-            r for r in ranked if not is_external_result(r) and r.index not in used_indices
-        ]
-        external_selected_items = [r for r in selected_results if is_external_result(r)]
-        external_selected_items.sort(key=lambda r: r.hybrid_score)
-        for new_hn in hn_candidates:
-            if external_selected <= target_external or not external_selected_items:
-                break
-            to_remove = external_selected_items.pop(0)
-            selected_results.remove(to_remove)
-            used_indices.discard(to_remove.index)
-            selected_results.append(new_hn)
-            used_indices.add(new_hn.index)
-            external_selected -= 1
+            source = cands[r.index].source
+            if source_counts[source] < max_per_source:
+                selected_external.append(r)
+                source_counts[source] += 1
+        if len(selected_external) >= target_external:
+            break
 
+    # Select HN
+    hn_candidates = [r for r in ranked if not is_external_result(r)]
+    selected_hn = hn_candidates[:target_hn]
+
+    # Combine and sort by hybrid score
+    selected_results = selected_external + selected_hn
     selected_results.sort(key=lambda x: x.hybrid_score, reverse=True)
     return selected_results
 
@@ -525,7 +513,7 @@ STORY_CARD_TEMPLATE: str = """
     <h2 class="text-sm font-semibold text-stone-900 leading-snug mb-1">
         <a href="{{ url }}" target="_blank" class="hover:text-hn transition-colors">{{ title }}</a>
         {% if hn_url %}
-        <a href="{{ hn_url }}" target="_blank" class="ml-2 text-xs font-medium text-hn/70 hover:text-hn transition-colors" title="Comments">💬</a>
+        <a href="{{ hn_url }}" target="_blank" class="ml-2 text-xs font-medium text-stone-900 hover:text-hn transition-colors" title="Comments">💬{% if comment_count is not none %} {{ comment_count }}{% endif %}</a>
         {% endif %}
     </h2>
     {% if tldr %}
@@ -554,6 +542,7 @@ def generate_story_html(story: StoryDisplay) -> str:
         url=link_url,
         title=story.title,
         hn_url=story.hn_url,
+        comment_count=story.comment_count,
         tldr=story.tldr,
     )
 
@@ -1170,6 +1159,7 @@ async def main() -> None:
                 url=s.url, title=s.title or "Untitled", hn_url=discussion_url,
                 reason=reason, reason_url=reason_url, comments=list(s.comments),
                 source=s.source, text_content=s.text_content,
+                comment_count=s.comment_count,
             )
 
         for result in selected_results:

@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal, TypedDict
+from typing import Literal, NotRequired, TypedDict
 
-StorySource = Literal["hn", "rss", "lobsters", "tildes", "lesswrong"]
+StorySource = Literal["hn", "rss", "lobsters", "tildes", "lesswrong", "reddit"]
 
 _SOURCE_BADGE_LABELS: dict[StorySource, str | None] = {
     "hn": None,
@@ -13,6 +13,7 @@ _SOURCE_BADGE_LABELS: dict[StorySource, str | None] = {
     "lobsters": "Lobsters",
     "tildes": "Tildes",
     "lesswrong": "LessWrong",
+    "reddit": "Reddit",
 }
 
 
@@ -32,6 +33,7 @@ class StoryDict(TypedDict):
     comments: list[str]
     text_content: str
     source: StorySource
+    comment_count: NotRequired[int | None]
 
 
 class StoryForTldr(TypedDict):
@@ -56,6 +58,7 @@ class StoryDisplayDict(StoryForTldr):
     reason_url: str
     source: StorySource
     tldr: str
+    comment_count: NotRequired[int | None]
 
 
 @dataclass
@@ -71,6 +74,7 @@ class Story:
     comments: list[str] = field(default_factory=list)
     text_content: str = ""
     source: StorySource = "hn"
+    comment_count: int | None = None
 
     @classmethod
     def from_dict(cls, d: StoryDict) -> Story:
@@ -85,6 +89,7 @@ class Story:
             comments=list(d.get("comments", [])),
             text_content=str(d.get("text_content", "")),
             source=d.get("source", "hn"),
+            comment_count=d.get("comment_count"),
         )
 
     def to_dict(self) -> StoryDict:
@@ -99,6 +104,7 @@ class Story:
             "comments": self.comments,
             "text_content": self.text_content,
             "source": self.source,
+            "comment_count": self.comment_count,
         }
 
     @property
@@ -147,6 +153,7 @@ class StoryDisplay:
     source: StorySource = "hn"
     tldr: str = ""
     text_content: str = ""
+    comment_count: int | None = None
 
     def to_dict(self) -> StoryDisplayDict:
         """Convert to dict for template rendering."""
@@ -165,6 +172,7 @@ class StoryDisplay:
             "source": self.source,
             "tldr": self.tldr,
             "text_content": self.text_content,
+            "comment_count": self.comment_count,
         }
 
     @property

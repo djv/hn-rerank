@@ -74,6 +74,48 @@ def test_generate_story_html_missing_fields():
     assert 'href="https://news.ycombinator.com/item?id=456"' in html
 
 
+def test_generate_story_html_includes_comment_count_after_icon():
+    story = StoryDisplay(
+        id=457,
+        match_percent=81,
+        cluster_name="",
+        points=90,
+        time_ago="3h",
+        url="https://example.com/story",
+        title="Story with discussion",
+        hn_url="https://news.ycombinator.com/item?id=457",
+        reason="",
+        reason_url="",
+        comments=[],
+        comment_count=42,
+    )
+
+    html = generate_story_html(story)
+
+    assert 'title="Comments">💬 42</a>' in html
+
+
+def test_generate_story_html_hides_unknown_comment_count():
+    story = StoryDisplay(
+        id=458,
+        match_percent=81,
+        cluster_name="",
+        points=90,
+        time_ago="3h",
+        url="https://example.com/story",
+        title="Story with unknown discussion count",
+        hn_url="https://news.ycombinator.com/item?id=458",
+        reason="",
+        reason_url="",
+        comments=[],
+    )
+
+    html = generate_story_html(story)
+
+    assert 'title="Comments">💬</a>' in html
+    assert "💬 0" not in html
+
+
 def test_resolve_cluster_name_fallback():
     cluster_names = {0: "Systems"}
 
@@ -258,6 +300,27 @@ def test_generate_story_html_lesswrong_badge():
     )
     html = generate_story_html(story)
     assert "LessWrong" in html
+
+
+def test_generate_story_html_reddit_badge():
+    story = StoryDisplay(
+        id=-44,
+        match_percent=80,
+        cluster_name="",
+        points=0,
+        time_ago="1h",
+        url="https://arxiv.org/abs/2604.21691",
+        title="Reddit ML Story",
+        hn_url="https://www.reddit.com/r/MachineLearning/comments/1sun588/post/",
+        reason="",
+        reason_url="",
+        comments=[],
+        source="reddit",
+    )
+    html = generate_story_html(story)
+    assert "Reddit" in html
+    assert 'href="https://arxiv.org/abs/2604.21691"' in html
+    assert 'href="https://www.reddit.com/r/MachineLearning/comments/1sun588/post/"' in html
 
 
 def test_generate_story_html_external_comments_link():
