@@ -2,6 +2,7 @@
 Constants and configuration values for HN reranking.
 Loads overrides from hn_rerank.toml if present.
 """
+
 import sys
 import tomllib
 from pathlib import Path
@@ -11,6 +12,7 @@ from dotenv import load_dotenv
 
 # Load .env file if present
 load_dotenv()
+
 
 def _load_config() -> dict[str, Any]:
     """Load configuration from hn_rerank.toml."""
@@ -25,7 +27,9 @@ def _load_config() -> dict[str, Any]:
         print(f"Warning: Failed to load config: {e}", file=sys.stderr)
         return {}
 
+
 _CONFIG = _load_config()
+
 
 def _get(section: str, key: str, default: Any) -> Any:
     """Get config value with fallback to default."""
@@ -68,9 +72,7 @@ MAX_USER_STORIES = 2000
 ALGOLIA_MIN_POINTS = 5
 ALGOLIA_DEFAULT_DAYS = 30
 CANDIDATE_FETCH_COUNT = 2000
-RSS_OPML_URL = (
-    "https://gist.githubusercontent.com/emschwartz/e6d2bf860ccc367fe37ff953ba6de66b/raw/hn-popular-blogs-2025.opml"
-)
+RSS_OPML_URL = "https://gist.githubusercontent.com/emschwartz/e6d2bf860ccc367fe37ff953ba6de66b/raw/hn-popular-blogs-2025.opml"
 RSS_EXTRA_FEEDS = [
     "https://jack-clark.net/feed/",
     "https://lobste.rs/rss",
@@ -78,6 +80,10 @@ RSS_EXTRA_FEEDS = [
     "https://www.lesswrong.com/feed.xml",
     "https://www.reddit.com/r/MachineLearning/top/.rss?t=week&limit=25",
 ]  # Additional feeds not in OPML
+RSS_EXCLUDED_FEEDS = {
+    "https://rachelbythebay.com/w/atom.xml",
+    "https://www.tedunangst.com/flak/rss",
+}
 RSS_MAX_FEEDS = 0  # 0 = no max feed limit
 RSS_PER_FEED_LIMIT = 5
 RSS_CURATED_NEWS_PER_FEED_LIMIT = 50
@@ -86,16 +92,15 @@ RSS_ALLOWED_SOURCE_LANGUAGES = ("en", "fr", "es")
 # Inference
 DEFAULT_EMBEDDING_BATCH_SIZE = 8
 EMBEDDING_MIN_CLIP = 1e-9
-# Current live ONNX artifact timestamped 2026-01-31. Exact checkpoint label is
-# not confirmed, so keep a neutral version id for cache invalidation/provenance.
-EMBEDDING_MODEL_VERSION = "prod-e5-2026-04-22"
-CLUSTER_EMBEDDING_MODEL_VERSION = "prod-e5-2026-04-24"
+# BGE-small CLS/query was selected by the local model bakeoff.
+EMBEDDING_MODEL_VERSION = "bge-small-cls-query-2026-04-30"
+CLUSTER_EMBEDDING_MODEL_VERSION = "bge-small-cls-query-2026-04-30"
 CLUSTER_EMBEDDING_MODEL_DIR = "onnx_model"
 
 # Similarity Bounds
 SIMILARITY_MIN = -1.0
 SEMANTIC_MATCH_THRESHOLD = 0.85
-KNN_NEIGHBORS = _get("semantic", "knn_neighbors", 1)
+KNN_NEIGHBORS = _get("semantic", "knn_neighbors", 6)
 
 # Multi-Interest Clustering
 DEFAULT_CLUSTER_COUNT = 30
@@ -106,7 +111,9 @@ MAX_CLUSTER_FRACTION = _get("clustering", "max_cluster_fraction", 0.25)
 MAX_CLUSTER_SIZE = _get("clustering", "max_cluster_size", 40)
 CLUSTER_REFINE_ITERS = _get("clustering", "refine_iters", 2)
 CLUSTER_SIMILARITY_THRESHOLD = _get("clustering", "similarity_threshold", 0.93)
-CLUSTER_OUTLIER_SIMILARITY_THRESHOLD = _get("clustering", "outlier_similarity_threshold", 0.0)
+CLUSTER_OUTLIER_SIMILARITY_THRESHOLD = _get(
+    "clustering", "outlier_similarity_threshold", 0.0
+)
 
 # Ranking Weights
 RANKING_HN_WEIGHT = 0.05
@@ -115,9 +122,9 @@ RANKING_DIVERSITY_LAMBDA = _get("ranking", "diversity_lambda", 0.2396634418)
 RANKING_MAX_RESULTS = _get("ranking", "max_results", 500)
 
 # Adaptive HN Weight (age-based)
-ADAPTIVE_HN_WEIGHT_MIN = _get("adaptive_hn", "weight_min", 0.04)
-ADAPTIVE_HN_WEIGHT_MAX = _get("adaptive_hn", "weight_max", 0.03)
-ADAPTIVE_HN_THRESHOLD_YOUNG = _get("adaptive_hn", "threshold_young", 24.0)
+ADAPTIVE_HN_WEIGHT_MIN = _get("adaptive_hn", "weight_min", 0.328)
+ADAPTIVE_HN_WEIGHT_MAX = _get("adaptive_hn", "weight_max", 0.652)
+ADAPTIVE_HN_THRESHOLD_YOUNG = _get("adaptive_hn", "threshold_young", 39.45)
 ADAPTIVE_HN_THRESHOLD_OLD = _get("adaptive_hn", "threshold_old", 720.0)
 
 # Freshness Decay
@@ -130,24 +137,14 @@ SEMANTIC_MAXSIM_WEIGHT = _get("semantic", "maxsim_weight", 0.95)
 SEMANTIC_MEANSIM_WEIGHT = _get("semantic", "meansim_weight", 0.05)
 SEMANTIC_SIGMOID_K = _get("semantic", "sigmoid_k", 31.2249293861)
 SEMANTIC_SIGMOID_THRESHOLD = _get("semantic", "sigmoid_threshold", 0.4749411784)
-HN_SCORE_NORMALIZATION_CAP = _get("adaptive_hn", "score_normalization_cap", 2500.0)
+HN_SCORE_NORMALIZATION_CAP = _get("adaptive_hn", "score_normalization_cap", 433.0)
 
 # Classifier Tuning
-CLASSIFIER_K_FEAT = _get("classifier", "k_feat", 5)
-CLASSIFIER_NEG_SAMPLE_WEIGHT = _get("classifier", "neg_sample_weight", 1.6984260758)
+CLASSIFIER_K_FEAT = _get("classifier", "k_feat", 10)
 CLASSIFIER_USE_BALANCED_CLASS_WEIGHT = _get(
     "classifier", "use_balanced_class_weight", True
 )
 CLASSIFIER_CV_SCORING = _get("classifier", "cv_scoring", "f1")
-CLASSIFIER_USE_LOCAL_HIDDEN_PENALTY = _get(
-    "classifier", "use_local_hidden_penalty", False
-)
-CLASSIFIER_LOCAL_HIDDEN_PENALTY_WEIGHT = _get(
-    "classifier", "local_hidden_penalty_weight", 0.0
-)
-CLASSIFIER_LOCAL_HIDDEN_PENALTY_K = _get(
-    "classifier", "local_hidden_penalty_k", 3
-)
 CLASSIFIER_USE_CENTROID_FEATURE = _get("classifier", "use_centroid_feature", True)
 CLASSIFIER_USE_POS_KNN_FEATURE = _get("classifier", "use_pos_knn_feature", True)
 CLASSIFIER_USE_NEG_KNN_FEATURE = _get("classifier", "use_neg_knn_feature", True)
@@ -156,7 +153,7 @@ CLASSIFIER_USE_NEG_KNN_FEATURE = _get("classifier", "use_neg_knn_feature", True)
 CLUSTER_ALGORITHM = _get("clustering", "algorithm", "agglomerative")
 CLUSTER_AGGLOMERATIVE_LINKAGE = _get("clustering", "linkage", "ward")
 CLUSTER_AGGLOMERATIVE_METRIC = _get("clustering", "metric", "euclidean")
-CLUSTER_AGGLOMERATIVE_THRESHOLD = _get("clustering", "distance_threshold", 0.75)
+CLUSTER_AGGLOMERATIVE_THRESHOLD = _get("clustering", "distance_threshold", 0.494)
 CLUSTER_SPECTRAL_NEIGHBORS = _get("clustering", "spectral_neighbors", 15)
 
 # Comment Pool
@@ -168,7 +165,7 @@ TOP_COMMENTS_FOR_UI = 10
 MIN_COMMENT_LENGTH = 30  # Filter short low-value comments (relaxed)
 
 # LLM Configuration
-LLM_PROVIDER = _get("llm", "provider", "groq")
+LLM_PROVIDER = _get("llm", "provider", "mistral")
 LLM_CLUSTER_NAME_MODEL_PRIMARY = "llama-3.3-70b-versatile"
 LLM_CLUSTER_NAME_MODEL_FALLBACK = "llama-3.1-8b-instant"
 LLM_MISTRAL_MODEL = "mistral-small-latest"

@@ -50,10 +50,10 @@ class EmbeddingModelSpec:
 
 
 CURRENT_PRODUCTION_SPEC = EmbeddingModelSpec(
-    model_id="bge-base-en-v1.5",
-    pooling="mean",
+    model_id="BAAI/bge-small-en-v1.5",
+    pooling="cls",
     normalize=True,
-    text_mode="asymmetric_query_doc",
+    text_mode="query_prefix_all",
     query_prefix=DEFAULT_QUERY_PREFIX,
 )
 
@@ -62,6 +62,14 @@ BGE_BASE_OFFICIAL_SPEC = EmbeddingModelSpec(
     pooling="cls",
     normalize=True,
     text_mode="plain",
+)
+
+BGE_SMALL_CLS_QUERY_SPEC = EmbeddingModelSpec(
+    model_id="BAAI/bge-small-en-v1.5",
+    pooling="cls",
+    normalize=True,
+    text_mode="query_prefix_all",
+    query_prefix=DEFAULT_QUERY_PREFIX,
 )
 
 GTE_BASE_V15_SPEC = EmbeddingModelSpec(
@@ -82,6 +90,7 @@ E5_BASE_V2_SPEC = EmbeddingModelSpec(
 
 BIENCODER_BAKEOFF_SPECS: dict[str, EmbeddingModelSpec] = {
     "bge_base_official": BGE_BASE_OFFICIAL_SPEC,
+    "bge_small_cls_query": BGE_SMALL_CLS_QUERY_SPEC,
     "gte_base_v15": GTE_BASE_V15_SPEC,
     "e5_base_v2": E5_BASE_V2_SPEC,
 }

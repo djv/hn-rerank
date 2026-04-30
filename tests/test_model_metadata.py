@@ -13,6 +13,9 @@ def test_load_model_spec_defaults_to_current_production(tmp_path) -> None:
     spec = load_model_spec(tmp_path)
 
     assert spec == CURRENT_PRODUCTION_SPEC
+    assert spec.model_id == "BAAI/bge-small-en-v1.5"
+    assert spec.pooling == "cls"
+    assert spec.text_mode == "query_prefix_all"
 
 
 def test_write_and_load_model_spec_round_trip(tmp_path) -> None:
