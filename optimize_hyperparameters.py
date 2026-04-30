@@ -18,8 +18,7 @@ from pathlib import Path
 import numpy as np
 
 TRAIN_EXTRA_HINT = (
-    "optimize_hyperparameters.py requires the 'train' extra. "
-    "Run: uv sync --extra train"
+    "optimize_hyperparameters.py requires the 'train' extra. Run: uv sync --extra train"
 )
 
 try:
@@ -56,7 +55,6 @@ from api.constants import (  # noqa: E402
     ADAPTIVE_HN_THRESHOLD_YOUNG,
     ADAPTIVE_HN_WEIGHT_MIN,
     CLASSIFIER_K_FEAT,
-    CLASSIFIER_NEG_SAMPLE_WEIGHT,
     FRESHNESS_MAX_BOOST,
     FRESHNESS_HALF_LIFE_HOURS,
     HN_SCORE_NORMALIZATION_CAP,
@@ -159,15 +157,14 @@ def _build_ranges(
     - Tight where top-10 converged.
     """
     full_defaults: dict[str, tuple[float, float]] = {
-        "knn_k": (1, 4),
-        "adaptive_hn_min": (0.0, 0.07),
-        "adaptive_hn_max": (0.02, 0.12),
+        "knn_k": (3, 10),
+        "adaptive_hn_min": (0.20, 0.45),
+        "adaptive_hn_max": (0.45, 0.80),
         "freshness_boost": (0.04, 0.15),
         "freshness_half_life": (45.0, 100.0),
-        "hn_threshold_young": (4.0, 16.0),
-        "hn_score_cap": (120.0, 1600.0),
-        "classifier_k_feat": (1, 9),
-        "classifier_neg_sample_weight": (0.7, 2.0),
+        "hn_threshold_young": (20.0, 60.0),
+        "hn_score_cap": (250.0, 700.0),
+        "classifier_k_feat": (5, 15),
     }
     spaces: dict[str, set[str]] = {
         "full": set(full_defaults.keys()),
@@ -175,7 +172,6 @@ def _build_ranges(
         "cat_relevance": {
             "knn_k",
             "classifier_k_feat",
-            "classifier_neg_sample_weight",
         },
         "cat_freshness": {"freshness_boost", "freshness_half_life"},
         "cat_semantic": {"knn_k"},
@@ -217,6 +213,8 @@ def _build_ranges(
         else:
             narrowed[key] = (lo, hi)
     return narrowed
+
+
 def _load_enqueued_params(path: str | None) -> list[dict[str, float]]:
     """Load optional list of parameter dicts to enqueue before optimization."""
     if not path:
@@ -266,14 +264,40 @@ async def main():
         help="Frozen benchmark snapshot to optimize against instead of loading live data.",
     )
     parser.add_argument("--trials", type=int, default=50, help="Number of trials")
-    parser.add_argument("--candidates", type=int, default=200, help="Candidate pool size")
-    parser.add_argument("--baseline", default=".cache/metrics_baseline.json", help="Path to metrics baseline JSON")
-    parser.add_argument("--guard-tolerance", type=float, default=0.0, help="Allowed drop vs baseline")
-    parser.add_argument("--cache-only", action="store_true", help="Use cached data only (ignore TTL, no RSS)")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed for Optuna sampler")
-    parser.add_argument("--startup-trials", type=int, default=10, help="Random trials before TPE kicks in")
-    parser.add_argument("--n-jobs", type=int, default=4, help="Number of parallel Optuna workers (threads)")
-    parser.add_argument("--no-prune", action="store_true", help="Disable Optuna pruning")
+    parser.add_argument(
+        "--candidates", type=int, default=200, help="Candidate pool size"
+    )
+    parser.add_argument(
+        "--baseline",
+        default=".cache/metrics_baseline.json",
+        help="Path to metrics baseline JSON",
+    )
+    parser.add_argument(
+        "--guard-tolerance", type=float, default=0.0, help="Allowed drop vs baseline"
+    )
+    parser.add_argument(
+        "--cache-only",
+        action="store_true",
+        help="Use cached data only (ignore TTL, no RSS)",
+    )
+    parser.add_argument(
+        "--seed", type=int, default=42, help="Random seed for Optuna sampler"
+    )
+    parser.add_argument(
+        "--startup-trials",
+        type=int,
+        default=10,
+        help="Random trials before TPE kicks in",
+    )
+    parser.add_argument(
+        "--n-jobs",
+        type=int,
+        default=4,
+        help="Number of parallel Optuna workers (threads)",
+    )
+    parser.add_argument(
+        "--no-prune", action="store_true", help="Disable Optuna pruning"
+    )
     parser.add_argument("--cv-folds", type=int, default=3, help="Number of CV folds")
     parser.add_argument(
         "--std-penalty",
@@ -281,7 +305,9 @@ async def main():
         default=0.5,
         help="Penalty multiplier for weighted metric std in objective",
     )
-    parser.add_argument("--log-dir", type=str, default=".", help="Directory for log files")
+    parser.add_argument(
+        "--log-dir", type=str, default=".", help="Directory for log files"
+    )
     parser.add_argument(
         "--warm-start-log-dir",
         type=str,
@@ -355,7 +381,9 @@ async def main():
     log_path = Path(args.log_dir) / f"optuna_{ts}.log"
 
     # Read previous best params to narrow search
-    warm_dir = Path(args.warm_start_log_dir) if args.warm_start_log_dir else Path(args.log_dir)
+    warm_dir = (
+        Path(args.warm_start_log_dir) if args.warm_start_log_dir else Path(args.log_dir)
+    )
     prev_best = _parse_last_log(warm_dir)
     ranges = _build_ranges(prev_best, args.space)
     if prev_best:
@@ -382,8 +410,10 @@ async def main():
         print("Failed to load data.")
         sys.exit(1)
 
-    print(f"Data loaded. Starting {args.trials}-trial optimization "
-          f"({args.cv_folds}-fold CV, {args.n_jobs} workers)...")
+    print(
+        f"Data loaded. Starting {args.trials}-trial optimization "
+        f"({args.cv_folds}-fold CV, {args.n_jobs} workers)..."
+    )
 
     baseline = _load_baseline(args.baseline)
 
@@ -435,16 +465,15 @@ async def main():
         )
 
         if "classifier_k_feat" in r:
-            k_feat_lo, k_feat_hi = int(r["classifier_k_feat"][0]), int(r["classifier_k_feat"][1])
-            classifier_k_feat = trial.suggest_int("classifier_k_feat", k_feat_lo, k_feat_hi)
+            k_feat_lo, k_feat_hi = (
+                int(r["classifier_k_feat"][0]),
+                int(r["classifier_k_feat"][1]),
+            )
+            classifier_k_feat = trial.suggest_int(
+                "classifier_k_feat", k_feat_lo, k_feat_hi
+            )
         else:
             classifier_k_feat = CLASSIFIER_K_FEAT
-        classifier_neg_sample_weight = (
-            trial.suggest_float("classifier_neg_sample_weight", *r["classifier_neg_sample_weight"])
-            if "classifier_neg_sample_weight" in r
-            else CLASSIFIER_NEG_SAMPLE_WEIGHT
-        )
-
         trial_params = {
             "knn_k": knn_k,
             "adaptive_hn_min": adaptive_hn_min,
@@ -454,13 +483,13 @@ async def main():
             "hn_threshold_young": hn_threshold_young,
             "hn_score_cap": hn_score_cap,
             "classifier_k_feat": classifier_k_feat,
-            "classifier_neg_sample_weight": classifier_neg_sample_weight,
         }
 
         with patched_rerank_params(trial_params):
             resolved = _tuning_common.resolve_params(trial_params)
             ranking = resolved["ranking"]
             semantic = resolved["semantic"]
+
             def report_callback(step: int, interim_metrics: dict[str, float]) -> None:
                 score = _score_metrics(interim_metrics, std_penalty=args.std_penalty)
                 trial.report(score, step)
@@ -560,7 +589,9 @@ async def main():
         study.enqueue_trial(enqueue_params)
         enqueued_signatures.add(sig)
 
-    study.optimize(objective, n_trials=args.trials, gc_after_trial=True, n_jobs=args.n_jobs)
+    study.optimize(
+        objective, n_trials=args.trials, gc_after_trial=True, n_jobs=args.n_jobs
+    )
 
     # 4. Report Results
     report_lines: list[str] = []
@@ -624,7 +655,9 @@ async def main():
         f"(candidate={validation['candidate_score']:.4f}, current={validation['incumbent_score']:.4f})"
     )
     if validation["primary_failures"]:
-        rprint(f"  Primary metric regressions: {', '.join(validation['primary_failures'])}")
+        rprint(
+            f"  Primary metric regressions: {', '.join(validation['primary_failures'])}"
+        )
     if validation["guard_failures"]:
         rprint(f"  Guard metric regressions: {', '.join(validation['guard_failures'])}")
 
@@ -647,19 +680,15 @@ async def main():
         candidate_avg_derived_dim = _diag_float(
             candidate_diagnostics, "avg_derived_feature_dim"
         )
-        candidate_rank_calls = max(_diag_int(candidate_diagnostics, "rank_calls", 1), 1)
-        candidate_penalty_applied_count = _diag_float(
-            candidate_diagnostics, "local_hidden_penalty_applied_count"
-        )
-        candidate_local_hidden_penalty_rate = (
-            candidate_penalty_applied_count / candidate_rank_calls
+        candidate_metadata_used_count = _diag_int(
+            candidate_diagnostics, "classifier_metadata_features_used_count"
         )
         rprint(
             "  Diagnostics: "
             f"classifier_used_rate={candidate_classifier_used_rate:.1%}, "
             f"fallbacks={candidate_classifier_fallback_count}, "
             f"avg_derived_dim={candidate_avg_derived_dim:.1f}, "
-            f"local_hidden_penalty_rate={candidate_local_hidden_penalty_rate:.1%}"
+            f"metadata_feature_uses={candidate_metadata_used_count}"
         )
 
     rprint("\nCurrent Metrics:")
@@ -681,19 +710,15 @@ async def main():
         current_avg_derived_dim = _diag_float(
             current_diagnostics, "avg_derived_feature_dim"
         )
-        current_rank_calls = max(_diag_int(current_diagnostics, "rank_calls", 1), 1)
-        current_penalty_applied_count = _diag_float(
-            current_diagnostics, "local_hidden_penalty_applied_count"
-        )
-        current_local_hidden_penalty_rate = (
-            current_penalty_applied_count / current_rank_calls
+        current_metadata_used_count = _diag_int(
+            current_diagnostics, "classifier_metadata_features_used_count"
         )
         rprint(
             "  Diagnostics: "
             f"classifier_used_rate={current_classifier_used_rate:.1%}, "
             f"fallbacks={current_classifier_fallback_count}, "
             f"avg_derived_dim={current_avg_derived_dim:.1f}, "
-            f"local_hidden_penalty_rate={current_local_hidden_penalty_rate:.1%}"
+            f"metadata_feature_uses={current_metadata_used_count}"
         )
 
     # Write log with timestamp
@@ -733,25 +758,30 @@ async def main():
             entry["cv_metrics"] = cv_metrics
         top_trials.append(entry)
 
-    json_path.write_text(json.dumps({
-        "best_score": study.best_value,
-        "best_params": study.best_params,
-        "candidate_metrics": candidate_metrics,
-        "candidate_diagnostics": candidate_diagnostics,
-        "current_metrics": current_metrics,
-        "current_diagnostics": current_diagnostics,
-        "validation": validation,
-        "n_trials": args.trials,
-        "cv_folds": args.cv_folds,
-        "std_penalty": args.std_penalty,
-        "snapshot": None if args.snapshot is None else str(args.snapshot),
-        "final_list": args.final_list,
-        "count": args.count,
-        "validation_seeds": validation_seeds,
-        "completed_trial_count": len(completed_trials),
-        "top_trials_limit": args.top_trials_json_limit,
-        "top_trials": top_trials,
-    }, indent=2))
+    json_path.write_text(
+        json.dumps(
+            {
+                "best_score": study.best_value,
+                "best_params": study.best_params,
+                "candidate_metrics": candidate_metrics,
+                "candidate_diagnostics": candidate_diagnostics,
+                "current_metrics": current_metrics,
+                "current_diagnostics": current_diagnostics,
+                "validation": validation,
+                "n_trials": args.trials,
+                "cv_folds": args.cv_folds,
+                "std_penalty": args.std_penalty,
+                "snapshot": None if args.snapshot is None else str(args.snapshot),
+                "final_list": args.final_list,
+                "count": args.count,
+                "validation_seeds": validation_seeds,
+                "completed_trial_count": len(completed_trials),
+                "top_trials_limit": args.top_trials_json_limit,
+                "top_trials": top_trials,
+            },
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

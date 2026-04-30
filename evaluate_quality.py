@@ -15,6 +15,7 @@ import httpx
 import numpy as np
 from numpy.typing import NDArray
 
+
 def _ensure_joblib_settings() -> None:
     # Disable joblib multiprocessing in this environment to avoid SemLock
     # permission warnings; joblib falls back to serial either way.
@@ -184,6 +185,11 @@ def _summarize_rank_diagnostics(records: list[dict[str, object]]) -> dict[str, o
         for record in records
         if bool(record.get("local_hidden_penalty_applied", False))
     )
+    classifier_metadata_features_used_count = sum(
+        1
+        for record in records
+        if bool(record.get("classifier_metadata_features_used", False))
+    )
 
     def _avg(key: str) -> float:
         return float(np.mean([_as_float(record.get(key, 0.0)) for record in records]))
@@ -206,10 +212,12 @@ def _summarize_rank_diagnostics(records: list[dict[str, object]]) -> dict[str, o
             else 0.0
         ),
         "local_hidden_penalty_applied_count": local_hidden_penalty_applied_count,
+        "classifier_metadata_features_used_count": classifier_metadata_features_used_count,
         "avg_positive_count": _avg("positive_count"),
         "avg_negative_count": _avg("negative_count"),
         "avg_base_feature_dim": _avg("base_feature_dim"),
         "avg_derived_feature_dim": _avg("derived_feature_dim"),
+        "avg_classifier_metadata_feature_dim": _avg("classifier_metadata_feature_dim"),
         "avg_local_hidden_penalty_mean": _avg("local_hidden_penalty_mean"),
         "avg_local_hidden_penalty_max": _avg("local_hidden_penalty_max"),
         "max_local_hidden_penalty_max": float(
@@ -228,7 +236,9 @@ def _merge_rank_diagnostic_summaries(
     if not summaries:
         return {}
 
-    total_rank_calls = sum(_as_int(summary.get("rank_calls", 0)) for summary in summaries)
+    total_rank_calls = sum(
+        _as_int(summary.get("rank_calls", 0)) for summary in summaries
+    )
     classifier_requested_count = sum(
         _as_int(summary.get("classifier_requested_count", 0)) for summary in summaries
     )
@@ -237,6 +247,10 @@ def _merge_rank_diagnostic_summaries(
     )
     local_hidden_penalty_applied_count = sum(
         _as_int(summary.get("local_hidden_penalty_applied_count", 0))
+        for summary in summaries
+    )
+    classifier_metadata_features_used_count = sum(
+        _as_int(summary.get("classifier_metadata_features_used_count", 0))
         for summary in summaries
     )
 
@@ -255,9 +269,9 @@ def _merge_rank_diagnostic_summaries(
         if not isinstance(reasons, dict):
             continue
         for reason, count in reasons.items():
-            failure_reasons[str(reason)] = (
-                failure_reasons.get(str(reason), 0) + _as_int(count)
-            )
+            failure_reasons[str(reason)] = failure_reasons.get(
+                str(reason), 0
+            ) + _as_int(count)
 
     return {
         "rank_calls": total_rank_calls,
@@ -270,10 +284,14 @@ def _merge_rank_diagnostic_summaries(
             else 0.0
         ),
         "local_hidden_penalty_applied_count": local_hidden_penalty_applied_count,
+        "classifier_metadata_features_used_count": classifier_metadata_features_used_count,
         "avg_positive_count": _weighted_avg("avg_positive_count"),
         "avg_negative_count": _weighted_avg("avg_negative_count"),
         "avg_base_feature_dim": _weighted_avg("avg_base_feature_dim"),
         "avg_derived_feature_dim": _weighted_avg("avg_derived_feature_dim"),
+        "avg_classifier_metadata_feature_dim": _weighted_avg(
+            "avg_classifier_metadata_feature_dim"
+        ),
         "avg_local_hidden_penalty_mean": _weighted_avg("avg_local_hidden_penalty_mean"),
         "avg_local_hidden_penalty_max": _weighted_avg("avg_local_hidden_penalty_max"),
         "max_local_hidden_penalty_max": float(
@@ -326,7 +344,10 @@ def _finalize_ranked_ids(
     candidates: list[Story],
     count: int,
 ) -> list[int]:
-    return [candidates[result.index].id for result in _finalize_ranked_results(results, candidates, count)]
+    return [
+        candidates[result.index].id
+        for result in _finalize_ranked_results(results, candidates, count)
+    ]
 
 
 def _format_metrics_line(metrics: dict[str, float], k: int) -> str:
@@ -386,9 +407,7 @@ def _print_metrics_report(
             print(indent + _format_metrics_line(metrics, k))
         return
 
-    print(
-        f"\n{indent}{'k':<6} {'NDCG':<8} {'MAP':<8} {'Prec':<8} {'Recall':<8}"
-    )
+    print(f"\n{indent}{'k':<6} {'NDCG':<8} {'MAP':<8} {'Prec':<8} {'Recall':<8}")
     print(indent + "-" * 42)
     for k in k_metrics:
         print(
@@ -462,6 +481,7 @@ class SnapshotPayload(TypedDict):
 @dataclass
 class CrossValFold:
     """Single fold for cross-validation."""
+
     train_emb: NDArray[np.float32]
     test_ids: set[int]
     candidates: list[Story]
@@ -636,28 +656,22 @@ class RankingEvaluator:
             return False
 
         train_stories = [
-            Story.from_dict(story)
-            for story in raw.get("train_stories", [])
+            Story.from_dict(story) for story in raw.get("train_stories", [])
         ]
-        test_stories = [
-            Story.from_dict(story)
-            for story in raw.get("test_stories", [])
-        ]
-        neg_stories = [
-            Story.from_dict(story)
-            for story in raw.get("neg_stories", [])
-        ]
-        candidates = [
-            Story.from_dict(story)
-            for story in raw.get("candidates", [])
-        ]
+        test_stories = [Story.from_dict(story) for story in raw.get("test_stories", [])]
+        neg_stories = [Story.from_dict(story) for story in raw.get("neg_stories", [])]
+        candidates = [Story.from_dict(story) for story in raw.get("candidates", [])]
         if not train_stories or not test_stories or not candidates:
             return False
 
-        train_embeddings = get_embeddings([story.text_content for story in train_stories])
+        train_embeddings = get_embeddings(
+            [story.text_content for story in train_stories]
+        )
         neg_embeddings: NDArray[np.float32] | None = None
         if neg_stories:
-            neg_embeddings = get_embeddings([story.text_content for story in neg_stories])
+            neg_embeddings = get_embeddings(
+                [story.text_content for story in neg_stories]
+            )
 
         raw_test_ids = raw.get("test_ids", [])
         if isinstance(raw_test_ids, list):
@@ -711,6 +725,8 @@ class RankingEvaluator:
             knn_k=knn,
             neg_weight=neg_weight,
             diagnostics=rank_diagnostics,
+            positive_stories=dataset.train_stories,
+            negative_stories=dataset.neg_stories,
         )
 
         summary = (
@@ -792,6 +808,8 @@ class RankingEvaluator:
                 knn_k=knn,
                 neg_weight=neg_weight,
                 diagnostics=rank_diagnostics,
+                positive_stories=[all_stories[i] for i in train_idx],
+                negative_stories=dataset.neg_stories,
             )
 
             ranked_ids = [fold_candidates[r.index].id for r in results]
@@ -821,9 +839,7 @@ class RankingEvaluator:
             fold_outputs = [_run_fold(fold) for fold in range(n_folds)]
 
         all_metrics = [metrics for metrics, _ in fold_outputs]
-        diagnostics_records = [
-            diag for _, diag in fold_outputs if diag is not None
-        ]
+        diagnostics_records = [diag for _, diag in fold_outputs if diag is not None]
 
         # Process results in fold order (reporting, callbacks, pruning)
         for fold, fold_metrics in enumerate(all_metrics):
@@ -855,20 +871,61 @@ class RankingEvaluator:
 async def main():
     parser = argparse.ArgumentParser(description="Evaluate ranking quality")
     parser.add_argument("username", help="HN username")
-    parser.add_argument("--holdout", type=float, default=0.2, help="Fraction for test set")
+    parser.add_argument(
+        "--holdout", type=float, default=0.2, help="Fraction for test set"
+    )
     parser.add_argument("--k", type=int, default=30, help="Cutoff for metrics")
-    parser.add_argument("--candidates", type=int, default=200, help="Candidate pool size")
-    parser.add_argument("--classifier", action="store_true", help="Use classifier mode with hidden stories")
-    parser.add_argument("--diversity", type=float, default=RANKING_DIVERSITY_LAMBDA, help="MMR diversity lambda")
-    parser.add_argument("--knn", type=int, default=KNN_NEIGHBORS, help="k-NN neighbors for scoring")
-    parser.add_argument("--neg-weight", type=float, default=RANKING_NEGATIVE_WEIGHT, help="Weight for negative similarity penalty")
-    parser.add_argument("--cv", type=int, default=0, help="Number of CV folds (0=single holdout)")
-    parser.add_argument("--baseline", default=BASELINE_DEFAULT_PATH, help="Path to metrics baseline JSON")
-    parser.add_argument("--save-baseline", action="store_true", help="Save current metrics as baseline")
-    parser.add_argument("--no-guard", action="store_true", help="Disable baseline regression guard")
-    parser.add_argument("--guard-metrics", nargs="*", default=DEFAULT_GUARD_METRICS, help="Metrics to guard")
-    parser.add_argument("--guard-tolerance", type=float, default=0.0, help="Allowed drop vs baseline")
-    parser.add_argument("--cache-only", action="store_true", help="Use cached data only (ignore TTL, no RSS)")
+    parser.add_argument(
+        "--candidates", type=int, default=200, help="Candidate pool size"
+    )
+    parser.add_argument(
+        "--classifier",
+        action="store_true",
+        help="Use classifier mode with hidden stories",
+    )
+    parser.add_argument(
+        "--diversity",
+        type=float,
+        default=RANKING_DIVERSITY_LAMBDA,
+        help="MMR diversity lambda",
+    )
+    parser.add_argument(
+        "--knn", type=int, default=KNN_NEIGHBORS, help="k-NN neighbors for scoring"
+    )
+    parser.add_argument(
+        "--neg-weight",
+        type=float,
+        default=RANKING_NEGATIVE_WEIGHT,
+        help="Weight for negative similarity penalty",
+    )
+    parser.add_argument(
+        "--cv", type=int, default=0, help="Number of CV folds (0=single holdout)"
+    )
+    parser.add_argument(
+        "--baseline",
+        default=BASELINE_DEFAULT_PATH,
+        help="Path to metrics baseline JSON",
+    )
+    parser.add_argument(
+        "--save-baseline", action="store_true", help="Save current metrics as baseline"
+    )
+    parser.add_argument(
+        "--no-guard", action="store_true", help="Disable baseline regression guard"
+    )
+    parser.add_argument(
+        "--guard-metrics",
+        nargs="*",
+        default=DEFAULT_GUARD_METRICS,
+        help="Metrics to guard",
+    )
+    parser.add_argument(
+        "--guard-tolerance", type=float, default=0.0, help="Allowed drop vs baseline"
+    )
+    parser.add_argument(
+        "--cache-only",
+        action="store_true",
+        help="Use cached data only (ignore TTL, no RSS)",
+    )
     parser.add_argument(
         "--final-list",
         action="store_true",
@@ -966,9 +1023,13 @@ async def main():
         diversity_lambda=args.diversity,
         knn_k=args.knn,
         neg_weight=args.neg_weight,
+        positive_stories=dataset.train_stories,
+        negative_stories=dataset.neg_stories,
     )
     if args.final_list:
-        final_results = _finalize_ranked_results(results, dataset.candidates, args.count)
+        final_results = _finalize_ranked_results(
+            results, dataset.candidates, args.count
+        )
         ranked_results = final_results
         print("\nTest story positions in final list:")
     else:
@@ -978,7 +1039,7 @@ async def main():
     for i, result in enumerate(ranked_results):
         sid = dataset.candidates[result.index].id
         if sid in dataset.test_ids:
-            print(f"  #{i+1}: story {sid} (score: {result.hybrid_score:.3f})")
+            print(f"  #{i + 1}: story {sid} (score: {result.hybrid_score:.3f})")
 
 
 if __name__ == "__main__":

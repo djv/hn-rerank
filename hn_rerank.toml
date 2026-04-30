@@ -18,11 +18,11 @@ negative_weight = 0.6
 max_results = 500
 
 [hn_rerank.adaptive_hn]
-weight_min = 0.05
-weight_max = 0.05
-threshold_young = 24.0
+weight_min = 0.328
+weight_max = 0.652
+threshold_young = 39.45
 threshold_old = 720.0
-score_normalization_cap = 2500.0
+score_normalization_cap = 433.0
 
 [hn_rerank.freshness]
 enabled = true
@@ -35,23 +35,19 @@ enabled = false
 [hn_rerank.semantic]
 maxsim_weight = 1.0
 meansim_weight = 0.0
-knn_neighbors = 1
+knn_neighbors = 6
 
 [hn_rerank.classifier]
-k_feat = 1
-neg_sample_weight = 1.67
+k_feat = 10
 use_balanced_class_weight = true
 cv_scoring = "f1"
-use_local_hidden_penalty = false
-local_hidden_penalty_weight = 0.0
-local_hidden_penalty_k = 3
-use_neg_knn_feature = false
+use_neg_knn_feature = true
 
 [hn_rerank.clustering]
 algorithm = "agglomerative"
 linkage = "ward"
 metric = "euclidean"
-distance_threshold = 0.75
+distance_threshold = 0.494
 similarity_threshold = 0.91
 outlier_similarity_threshold = 0.0
 min_samples_per_cluster = 1

@@ -60,12 +60,20 @@ _DEFAULTS_FULL = _build_ranges(None, "full")
 class TestBuildRangesDefaults:
     def test_no_collapsed_keys(self):
         removed = {"classifier_diversity_lambda", "hn_threshold_old"}
-        assert removed.isdisjoint(_DEFAULTS_CORE), f"Stale keys: {removed & _DEFAULTS_CORE.keys()}"
-        assert removed.isdisjoint(_DEFAULTS_FULL), f"Stale keys: {removed & _DEFAULTS_FULL.keys()}"
+        assert removed.isdisjoint(_DEFAULTS_CORE), (
+            f"Stale keys: {removed & _DEFAULTS_CORE.keys()}"
+        )
+        assert removed.isdisjoint(_DEFAULTS_FULL), (
+            f"Stale keys: {removed & _DEFAULTS_FULL.keys()}"
+        )
 
     def test_param_counts(self):
-        assert len(_DEFAULTS_CORE) == 8, f"core got {len(_DEFAULTS_CORE)}: {sorted(_DEFAULTS_CORE)}"
-        assert len(_DEFAULTS_FULL) == 9, f"full got {len(_DEFAULTS_FULL)}: {sorted(_DEFAULTS_FULL)}"
+        assert len(_DEFAULTS_CORE) == 7, (
+            f"core got {len(_DEFAULTS_CORE)}: {sorted(_DEFAULTS_CORE)}"
+        )
+        assert len(_DEFAULTS_FULL) == 8, (
+            f"full got {len(_DEFAULTS_FULL)}: {sorted(_DEFAULTS_FULL)}"
+        )
 
     def test_core_is_subset_of_full(self):
         assert _DEFAULTS_CORE.keys() <= _DEFAULTS_FULL.keys()
@@ -142,7 +150,9 @@ class TestBuildRangesNarrowing:
         assert clf_lo < clf_hi
 
     def test_out_of_range_integer_prev_uses_default_range(self):
-        ranges = _build_ranges({"classifier_k_feat": 0.0, "knn_k": 10.0}, "cat_relevance")
+        ranges = _build_ranges(
+            {"classifier_k_feat": 0.0, "knn_k": 20.0}, "cat_relevance"
+        )
 
         assert ranges["classifier_k_feat"] == _DEFAULTS_FULL["classifier_k_feat"]
         assert ranges["knn_k"] == _DEFAULTS_FULL["knn_k"]
@@ -179,9 +189,7 @@ class TestParseLastLog:
     def test_non_float_values_skipped(self, tmp_path):
         log = tmp_path / "optuna_20260205_120000.log"
         log.write_text(
-            "Best Parameters:\n"
-            "  good_param: 1.5\n"
-            "  bad_param: not_a_number\n"
+            "Best Parameters:\n  good_param: 1.5\n  bad_param: not_a_number\n"
         )
         result = _parse_last_log(tmp_path)
         assert result is not None
@@ -206,9 +214,13 @@ class TestParseLastLog:
         log = tmp_path / "optuna_20260205_120000.log"
         log.write_text("Optimization in progress...\n")
         json_path = tmp_path / "optuna_20260205_120000.json"
-        json_path.write_text(json.dumps({
-            "best_params": {"adaptive_hn_min": 0.042, "knn_k": 3},
-        }))
+        json_path.write_text(
+            json.dumps(
+                {
+                    "best_params": {"adaptive_hn_min": 0.042, "knn_k": 3},
+                }
+            )
+        )
         result = _parse_last_log(tmp_path)
         assert result is not None
         assert result["adaptive_hn_min"] == pytest.approx(0.042)
@@ -260,21 +272,23 @@ def _score(metrics: dict[str, float]) -> float:
 
 
 _metric_st = st.floats(min_value=0.0, max_value=1.0, allow_nan=False)
-_full_metrics_st = st.fixed_dictionaries({
-    "mrr": _metric_st, "ndcg@10": _metric_st,
-    "ndcg@20": _metric_st,
-    "mrr_std": _metric_st, "ndcg@10_std": _metric_st,
-    "ndcg@20_std": _metric_st,
-})
+_full_metrics_st = st.fixed_dictionaries(
+    {
+        "mrr": _metric_st,
+        "ndcg@10": _metric_st,
+        "ndcg@20": _metric_st,
+        "mrr_std": _metric_st,
+        "ndcg@10_std": _metric_st,
+        "ndcg@20_std": _metric_st,
+    }
+)
 
 
 class TestScoreMetrics:
     def test_variance_penalizes(self):
         base = {"mrr": 0.5, "ndcg@10": 0.4, "ndcg@20": 0.3}
-        stable = {**base, "mrr_std": 0.01, "ndcg@10_std": 0.02,
-                  "ndcg@20_std": 0.01}
-        noisy = {**base, "mrr_std": 0.15, "ndcg@10_std": 0.20,
-                 "ndcg@20_std": 0.15}
+        stable = {**base, "mrr_std": 0.01, "ndcg@10_std": 0.02, "ndcg@20_std": 0.01}
+        noisy = {**base, "mrr_std": 0.15, "ndcg@10_std": 0.20, "ndcg@20_std": 0.15}
         assert _score(stable) > _score(noisy)
 
     def test_zero_std_no_penalty(self):

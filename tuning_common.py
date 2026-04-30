@@ -9,12 +9,8 @@ import api.rerank
 from api.constants import (
     ADAPTIVE_HN_THRESHOLD_YOUNG,
     ADAPTIVE_HN_WEIGHT_MIN,
-    CLASSIFIER_LOCAL_HIDDEN_PENALTY_K,
-    CLASSIFIER_LOCAL_HIDDEN_PENALTY_WEIGHT,
     CLASSIFIER_K_FEAT,
-    CLASSIFIER_NEG_SAMPLE_WEIGHT,
     CLASSIFIER_USE_BALANCED_CLASS_WEIGHT,
-    CLASSIFIER_USE_LOCAL_HIDDEN_PENALTY,
     CLUSTER_OUTLIER_SIMILARITY_THRESHOLD,
     CLUSTER_SPECTRAL_NEIGHBORS,
     DEFAULT_CLUSTER_COUNT,
@@ -68,14 +64,15 @@ def score_metrics(
 
 
 def average_seed_metrics(
-    metrics_per_seed: Sequence[Mapping[str, float | int]]
+    metrics_per_seed: Sequence[Mapping[str, float | int]],
 ) -> dict[str, float]:
     if not metrics_per_seed:
         return {}
     keys = metrics_per_seed[0].keys()
     return {
         str(key): float(
-            sum(float(metrics[key]) for metrics in metrics_per_seed) / len(metrics_per_seed)
+            sum(float(metrics[key]) for metrics in metrics_per_seed)
+            / len(metrics_per_seed)
         )
         for key in keys
     }
@@ -110,13 +107,13 @@ def validate_candidate_metrics(
             guard_failures.append(metric)
 
     promotable = (
-        score_delta > score_tolerance
-        and not primary_failures
-        and not guard_failures
+        score_delta > score_tolerance and not primary_failures and not guard_failures
     )
 
     metric_deltas = {
-        metric: float(candidate_metrics.get(metric, 0.0) - incumbent_metrics.get(metric, 0.0))
+        metric: float(
+            candidate_metrics.get(metric, 0.0) - incumbent_metrics.get(metric, 0.0)
+        )
         for metric in sorted(set(primary_metrics) | set(guard_metrics))
     }
 
@@ -144,9 +141,7 @@ def resolve_params(params: Mapping[str, float | int]) -> ResolvedParams:
 
     return {
         "ranking": {
-            "negative_weight": float(
-                params.get("neg_weight", RANKING_NEGATIVE_WEIGHT)
-            ),
+            "negative_weight": float(params.get("neg_weight", RANKING_NEGATIVE_WEIGHT)),
             "diversity_lambda": diversity_lambda,
             "diversity_lambda_classifier": derive_classifier_diversity_lambda(
                 diversity_lambda
@@ -171,38 +166,13 @@ def resolve_params(params: Mapping[str, float | int]) -> ResolvedParams:
             "knn_neighbors": int(round(float(params.get("knn_k", KNN_NEIGHBORS)))),
         },
         "classifier": {
-            "k_feat": int(round(float(params.get("classifier_k_feat", CLASSIFIER_K_FEAT)))),
-            "neg_sample_weight": float(
-                params.get(
-                    "classifier_neg_sample_weight", CLASSIFIER_NEG_SAMPLE_WEIGHT
-                )
+            "k_feat": int(
+                round(float(params.get("classifier_k_feat", CLASSIFIER_K_FEAT)))
             ),
             "use_balanced_class_weight": bool(
                 params.get(
                     "classifier_use_balanced_class_weight",
                     CLASSIFIER_USE_BALANCED_CLASS_WEIGHT,
-                )
-            ),
-            "use_local_hidden_penalty": bool(
-                params.get(
-                    "classifier_use_local_hidden_penalty",
-                    CLASSIFIER_USE_LOCAL_HIDDEN_PENALTY,
-                )
-            ),
-            "local_hidden_penalty_weight": float(
-                params.get(
-                    "classifier_local_hidden_penalty_weight",
-                    CLASSIFIER_LOCAL_HIDDEN_PENALTY_WEIGHT,
-                )
-            ),
-            "local_hidden_penalty_k": int(
-                round(
-                    float(
-                        params.get(
-                            "classifier_local_hidden_penalty_k",
-                            CLASSIFIER_LOCAL_HIDDEN_PENALTY_K,
-                        )
-                    )
                 )
             ),
         },
@@ -224,11 +194,7 @@ def build_patch_kwargs(resolved: ResolvedParams) -> dict[str, Any]:
         "FRESHNESS_HALF_LIFE_HOURS": freshness["half_life_hours"],
         "KNN_NEIGHBORS": semantic["knn_neighbors"],
         "CLASSIFIER_K_FEAT": classifier["k_feat"],
-        "CLASSIFIER_NEG_SAMPLE_WEIGHT": classifier["neg_sample_weight"],
         "CLASSIFIER_USE_BALANCED_CLASS_WEIGHT": classifier["use_balanced_class_weight"],
-        "CLASSIFIER_USE_LOCAL_HIDDEN_PENALTY": classifier["use_local_hidden_penalty"],
-        "CLASSIFIER_LOCAL_HIDDEN_PENALTY_WEIGHT": classifier["local_hidden_penalty_weight"],
-        "CLASSIFIER_LOCAL_HIDDEN_PENALTY_K": classifier["local_hidden_penalty_k"],
         "CLUSTER_OUTLIER_SIMILARITY_THRESHOLD": CLUSTER_OUTLIER_SIMILARITY_THRESHOLD,
         "DEFAULT_CLUSTER_COUNT": DEFAULT_CLUSTER_COUNT,
         "CLUSTER_SPECTRAL_NEIGHBORS": CLUSTER_SPECTRAL_NEIGHBORS,
@@ -272,5 +238,5 @@ def render_promoted_toml(resolved: ResolvedParams) -> str:
         f"knn_neighbors = {int(semantic['knn_neighbors'])}\n\n"
         "[hn_rerank.classifier]\n"
         f"k_feat = {int(classifier['k_feat'])}\n"
-        f"neg_sample_weight = {float(classifier['neg_sample_weight']):.10f}\n"
+        f"use_balanced_class_weight = {str(bool(classifier['use_balanced_class_weight'])).lower()}\n"
     )

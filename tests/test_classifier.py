@@ -90,10 +90,12 @@ def test_rank_stories_populates_classifier_diagnostics():
         mock_cluster.return_value = (np.zeros((2, 8)), np.array([0, 0, 0, 1, 1]))
         mock_clf = MagicMock()
         mock_lr_class.return_value = mock_clf
-        mock_clf.predict_proba.return_value = np.column_stack([
-            np.linspace(1, 0, 3),
-            np.linspace(0, 1, 3),
-        ])
+        mock_clf.predict_proba.return_value = np.column_stack(
+            [
+                np.linspace(1, 0, 3),
+                np.linspace(0, 1, 3),
+            ]
+        )
 
         rank_stories(
             stories,
@@ -110,6 +112,8 @@ def test_rank_stories_populates_classifier_diagnostics():
     assert diagnostics["negative_count"] == 5
     assert diagnostics["base_feature_dim"] == 8
     assert diagnostics["derived_feature_dim"] == 2
+    assert diagnostics["classifier_metadata_features_used"] is False
+    assert diagnostics["classifier_metadata_feature_dim"] == 0
     assert diagnostics["local_hidden_penalty_applied"] is False
 
 
@@ -134,7 +138,7 @@ def test_rank_stories_reports_insufficient_examples_diagnostics():
     assert diagnostics["classifier_failure_reason"] == "insufficient_examples"
 
 
-def test_classifier_local_hidden_penalty_reduces_semantic_scores():
+def test_classifier_probability_is_semantic_score_without_post_hidden_penalty():
     stories = [Story(id=1, title="Test", url=None, score=0, time=0, text_content="A")]
     rng = np.random.default_rng(123)
     pos_emb = rng.normal(size=(5, 8)).astype(np.float32)
@@ -150,9 +154,6 @@ def test_classifier_local_hidden_penalty_reduces_semantic_scores():
         patch("api.rerank.get_embeddings", return_value=cand_emb),
         patch("api.rerank.cluster_interests_with_labels") as mock_cluster,
         patch("api.rerank.LogisticRegressionCV") as mock_lr_class,
-        patch("api.rerank.CLASSIFIER_USE_LOCAL_HIDDEN_PENALTY", True),
-        patch("api.rerank.CLASSIFIER_LOCAL_HIDDEN_PENALTY_WEIGHT", 0.5),
-        patch("api.rerank.CLASSIFIER_LOCAL_HIDDEN_PENALTY_K", 1),
     ):
         mock_cluster.return_value = (
             np.zeros((2, 8)),
@@ -171,10 +172,10 @@ def test_classifier_local_hidden_penalty_reduces_semantic_scores():
             diagnostics=diagnostics,
         )
 
-    assert results[0].semantic_score == pytest.approx(0.3, abs=1e-6)
-    assert diagnostics["local_hidden_penalty_applied"] is True
-    assert diagnostics["local_hidden_penalty_mean"] == pytest.approx(0.5, abs=1e-6)
-    assert diagnostics["local_hidden_penalty_max"] == pytest.approx(0.5, abs=1e-6)
+    assert results[0].semantic_score == pytest.approx(0.8, abs=1e-6)
+    assert diagnostics["local_hidden_penalty_applied"] is False
+    assert diagnostics["local_hidden_penalty_mean"] == 0.0
+    assert diagnostics["local_hidden_penalty_max"] == 0.0
 
 
 def test_classifier_feature_augmentation_shape():
@@ -205,25 +206,23 @@ def test_classifier_feature_augmentation_shape():
 
         mock_clf = MagicMock()
         mock_lr_class.return_value = mock_clf
-        mock_clf.predict_proba.return_value = np.column_stack([
-            np.linspace(1, 0, 10),
-            np.linspace(0, 1, 10),
-        ])
+        mock_clf.predict_proba.return_value = np.column_stack(
+            [
+                np.linspace(1, 0, 10),
+                np.linspace(0, 1, 10),
+            ]
+        )
 
         rank_stories(stories, pos_emb, neg_emb, use_classifier=True)
 
         # Check X_train shape: 10 samples, dim+3 features
         args, kwargs = mock_clf.fit.call_args
         X_train = args[0]
-        assert X_train.shape == (10, 8 + 3), (
-            f"Expected (10, 11), got {X_train.shape}"
-        )
+        assert X_train.shape == (10, 8 + 3), f"Expected (10, 11), got {X_train.shape}"
 
         # Check candidate features shape
         cand_arg = mock_clf.predict_proba.call_args[0][0]
-        assert cand_arg.shape == (10, 8 + 3), (
-            f"Expected (10, 11), got {cand_arg.shape}"
-        )
+        assert cand_arg.shape == (10, 8 + 3), f"Expected (10, 11), got {cand_arg.shape}"
 
         # Derived features should be bounded [-1, 1]
         derived_train = X_train[:, 8:]
@@ -261,10 +260,12 @@ def test_classifier_k_feat_independent():
             )
             mock_clf = MagicMock()
             mock_lr_class.return_value = mock_clf
-            mock_clf.predict_proba.return_value = np.column_stack([
-                np.linspace(1, 0, 10),
-                np.linspace(0, 1, 10),
-            ])
+            mock_clf.predict_proba.return_value = np.column_stack(
+                [
+                    np.linspace(1, 0, 10),
+                    np.linspace(0, 1, 10),
+                ]
+            )
 
             rank_stories(stories, pos_emb, neg_emb, use_classifier=True)
 
@@ -279,8 +280,8 @@ def test_classifier_k_feat_independent():
     )
 
 
-def test_classifier_neg_sample_weight_independent():
-    """Negative sample weights in classifier training follow CLASSIFIER_NEG_SAMPLE_WEIGHT."""
+def test_classifier_negative_sample_weights_are_not_tuned():
+    """Negative rows use unit sample weights; hidden similarity is a feature, not a knob."""
     stories = _make_stories(10)
 
     rng = np.random.default_rng(42)
@@ -291,38 +292,32 @@ def test_classifier_neg_sample_weight_independent():
     cand_emb = rng.normal(size=(10, 8)).astype(np.float32)
     cand_emb /= np.linalg.norm(cand_emb, axis=1, keepdims=True) + 1e-9
 
-    neg_weights_seen = []
-
-    for neg_w in [0.5, 1.75]:
-        with (
-            patch("api.rerank.CLASSIFIER_NEG_SAMPLE_WEIGHT", neg_w),
-            patch("api.rerank.CLASSIFIER_USE_CENTROID_FEATURE", True),
-            patch("api.rerank.CLASSIFIER_USE_POS_KNN_FEATURE", True),
-            patch("api.rerank.CLASSIFIER_USE_NEG_KNN_FEATURE", True),
-            patch("api.rerank.get_embeddings", return_value=cand_emb),
-            patch("api.rerank.cluster_interests_with_labels") as mock_cluster,
-            patch("api.rerank.LogisticRegressionCV") as mock_lr_class,
-        ):
-            mock_cluster.return_value = (
-                np.zeros((2, 8)),
-                np.array([0, 0, 0, 1, 1]),
-            )
-            mock_clf = MagicMock()
-            mock_lr_class.return_value = mock_clf
-            mock_clf.predict_proba.return_value = np.column_stack([
+    with (
+        patch("api.rerank.CLASSIFIER_USE_CENTROID_FEATURE", True),
+        patch("api.rerank.CLASSIFIER_USE_POS_KNN_FEATURE", True),
+        patch("api.rerank.CLASSIFIER_USE_NEG_KNN_FEATURE", True),
+        patch("api.rerank.get_embeddings", return_value=cand_emb),
+        patch("api.rerank.cluster_interests_with_labels") as mock_cluster,
+        patch("api.rerank.LogisticRegressionCV") as mock_lr_class,
+    ):
+        mock_cluster.return_value = (
+            np.zeros((2, 8)),
+            np.array([0, 0, 0, 1, 1]),
+        )
+        mock_clf = MagicMock()
+        mock_lr_class.return_value = mock_clf
+        mock_clf.predict_proba.return_value = np.column_stack(
+            [
                 np.linspace(1, 0, 10),
                 np.linspace(0, 1, 10),
-            ])
+            ]
+        )
 
-            rank_stories(stories, pos_emb, neg_emb, use_classifier=True)
+        rank_stories(stories, pos_emb, neg_emb, use_classifier=True)
 
-            _, kwargs = mock_clf.fit.call_args
-            sample_weight = kwargs["sample_weight"]
-            neg_weights_seen.append(sample_weight[-len(neg_emb):].copy())
-
-    assert np.allclose(neg_weights_seen[0], 0.5)
-    assert np.allclose(neg_weights_seen[1], 1.75)
-    assert not np.allclose(neg_weights_seen[0], neg_weights_seen[1])
+        _, kwargs = mock_clf.fit.call_args
+        sample_weight = kwargs["sample_weight"]
+        assert np.allclose(sample_weight[-len(neg_emb) :], 1.0)
 
 
 def test_classifier_feature_ablation_disables_all_derived_columns():
@@ -350,10 +345,12 @@ def test_classifier_feature_ablation_disables_all_derived_columns():
         )
         mock_clf = MagicMock()
         mock_lr_class.return_value = mock_clf
-        mock_clf.predict_proba.return_value = np.column_stack([
-            np.linspace(1, 0, 10),
-            np.linspace(0, 1, 10),
-        ])
+        mock_clf.predict_proba.return_value = np.column_stack(
+            [
+                np.linspace(1, 0, 10),
+                np.linspace(0, 1, 10),
+            ]
+        )
 
         rank_stories(stories, pos_emb, neg_emb, use_classifier=True)
 
@@ -362,6 +359,208 @@ def test_classifier_feature_ablation_disables_all_derived_columns():
         cand_arg = mock_clf.predict_proba.call_args[0][0]
         assert X_train.shape == (10, 8)
         assert cand_arg.shape == (10, 8)
+
+
+def test_classifier_metadata_features_append_log_points_only():
+    stories = [
+        Story(
+            id=i,
+            title=f"Story {i}",
+            url=None,
+            score=i * 10,
+            time=1000,
+            text_content=f"Story {i}",
+            comment_count=i,
+        )
+        for i in range(10)
+    ]
+    pos_stories = [
+        Story(
+            id=100 + i,
+            title=f"Pos {i}",
+            url=None,
+            score=100 + i,
+            time=1000,
+            text_content=f"Pos {i}",
+            comment_count=10 + i,
+        )
+        for i in range(5)
+    ]
+    neg_stories = [
+        Story(
+            id=200 + i,
+            title=f"Neg {i}",
+            url=None,
+            score=20 + i,
+            time=1000,
+            text_content=f"Neg {i}",
+            comment_count=2 + i,
+        )
+        for i in range(5)
+    ]
+
+    rng = np.random.default_rng(8)
+    pos_emb = rng.normal(size=(5, 8)).astype(np.float32)
+    neg_emb = rng.normal(size=(5, 8)).astype(np.float32)
+    cand_emb = rng.normal(size=(10, 8)).astype(np.float32)
+    diagnostics: dict[str, object] = {}
+
+    with (
+        patch("api.rerank.CLASSIFIER_USE_CENTROID_FEATURE", False),
+        patch("api.rerank.CLASSIFIER_USE_POS_KNN_FEATURE", False),
+        patch("api.rerank.CLASSIFIER_USE_NEG_KNN_FEATURE", False),
+        patch("api.rerank.get_embeddings", return_value=cand_emb),
+        patch("api.rerank.cluster_interests_with_labels") as mock_cluster,
+        patch("api.rerank.LogisticRegressionCV") as mock_lr_class,
+    ):
+        mock_cluster.return_value = (
+            np.zeros((2, 8)),
+            np.array([0, 0, 0, 1, 1]),
+        )
+        mock_clf = MagicMock()
+        mock_lr_class.return_value = mock_clf
+        mock_clf.predict_proba.return_value = np.column_stack(
+            [
+                np.linspace(1, 0, 10),
+                np.linspace(0, 1, 10),
+            ]
+        )
+
+        rank_stories(
+            stories,
+            pos_emb,
+            neg_emb,
+            use_classifier=True,
+            diagnostics=diagnostics,
+            positive_stories=pos_stories,
+            negative_stories=neg_stories,
+        )
+
+        fit_args, _ = mock_clf.fit.call_args
+        X_train = fit_args[0]
+        cand_arg = mock_clf.predict_proba.call_args[0][0]
+        assert X_train.shape == (10, 9)
+        assert cand_arg.shape == (10, 9)
+        assert np.all(X_train[:, -1:] >= 0.0)
+        assert np.all(X_train[:, -1:] <= 1.0)
+        assert diagnostics["classifier_metadata_features_used"] is True
+        assert diagnostics["classifier_metadata_feature_dim"] == 1
+
+
+def test_classifier_metadata_features_skip_when_training_metadata_mismatches():
+    stories = _make_stories(10)
+    pos_stories = _make_stories(4)
+    neg_stories = _make_stories(5)
+
+    rng = np.random.default_rng(9)
+    pos_emb = rng.normal(size=(5, 8)).astype(np.float32)
+    neg_emb = rng.normal(size=(5, 8)).astype(np.float32)
+    cand_emb = rng.normal(size=(10, 8)).astype(np.float32)
+    diagnostics: dict[str, object] = {}
+
+    with (
+        patch("api.rerank.CLASSIFIER_USE_CENTROID_FEATURE", False),
+        patch("api.rerank.CLASSIFIER_USE_POS_KNN_FEATURE", False),
+        patch("api.rerank.CLASSIFIER_USE_NEG_KNN_FEATURE", False),
+        patch("api.rerank.get_embeddings", return_value=cand_emb),
+        patch("api.rerank.cluster_interests_with_labels") as mock_cluster,
+        patch("api.rerank.LogisticRegressionCV") as mock_lr_class,
+    ):
+        mock_cluster.return_value = (
+            np.zeros((2, 8)),
+            np.array([0, 0, 0, 1, 1]),
+        )
+        mock_clf = MagicMock()
+        mock_lr_class.return_value = mock_clf
+        mock_clf.predict_proba.return_value = np.column_stack(
+            [
+                np.linspace(1, 0, 10),
+                np.linspace(0, 1, 10),
+            ]
+        )
+
+        rank_stories(
+            stories,
+            pos_emb,
+            neg_emb,
+            use_classifier=True,
+            diagnostics=diagnostics,
+            positive_stories=pos_stories,
+            negative_stories=neg_stories,
+        )
+
+        fit_args, _ = mock_clf.fit.call_args
+        X_train = fit_args[0]
+        cand_arg = mock_clf.predict_proba.call_args[0][0]
+        assert X_train.shape == (10, 8)
+        assert cand_arg.shape == (10, 8)
+        assert diagnostics["classifier_metadata_features_used"] is False
+        assert diagnostics["classifier_metadata_feature_dim"] == 0
+
+
+def test_classifier_metadata_features_still_allow_tuned_hn_blend():
+    stories = [
+        Story(
+            id=1,
+            title="Relevant low points",
+            url=None,
+            score=1,
+            time=1000,
+            text_content="A",
+            comment_count=1,
+        ),
+        Story(
+            id=2,
+            title="Less relevant high points",
+            url=None,
+            score=10000,
+            time=1000,
+            text_content="B",
+            comment_count=1000,
+        ),
+    ]
+    pos_stories = _make_stories(5)
+    neg_stories = _make_stories(5)
+    for story in pos_stories:
+        story.comment_count = 10
+    for story in neg_stories:
+        story.comment_count = 1
+
+    rng = np.random.default_rng(10)
+    pos_emb = rng.normal(size=(5, 8)).astype(np.float32)
+    neg_emb = rng.normal(size=(5, 8)).astype(np.float32)
+    cand_emb = rng.normal(size=(2, 8)).astype(np.float32)
+
+    with (
+        patch("api.rerank.CLASSIFIER_USE_CENTROID_FEATURE", False),
+        patch("api.rerank.CLASSIFIER_USE_POS_KNN_FEATURE", False),
+        patch("api.rerank.CLASSIFIER_USE_NEG_KNN_FEATURE", False),
+        patch("api.rerank.FRESHNESS_ENABLED", False),
+        patch("api.rerank.get_embeddings", return_value=cand_emb),
+        patch("api.rerank.cluster_interests_with_labels") as mock_cluster,
+        patch("api.rerank.LogisticRegressionCV") as mock_lr_class,
+    ):
+        mock_cluster.return_value = (
+            np.zeros((2, 8)),
+            np.array([0, 0, 0, 1, 1]),
+        )
+        mock_clf = MagicMock()
+        mock_lr_class.return_value = mock_clf
+        probs = np.array([0.6, 0.5], dtype=np.float32)
+        mock_clf.predict_proba.return_value = np.column_stack([1.0 - probs, probs])
+
+        results = rank_stories(
+            stories,
+            pos_emb,
+            neg_emb,
+            use_classifier=True,
+            hn_weight=0.5,
+            positive_stories=pos_stories,
+            negative_stories=neg_stories,
+        )
+
+    assert [r.index for r in results] == [1, 0]
+    assert results[0].hybrid_score > 0.6
 
 
 def test_classifier_scores_are_not_post_penalized_by_hidden_similarity():
@@ -432,15 +631,22 @@ def test_evaluate_cv_parallel_matches_serial():
             patch("evaluate_quality.rank_stories") as mock_rank,
         ):
             mock_rank.return_value = [
-                RankResult(index=i, hybrid_score=1.0 - i * 0.1,
-                           best_fav_index=0, max_sim_score=0.5, knn_score=0.5)
+                RankResult(
+                    index=i,
+                    hybrid_score=1.0 - i * 0.1,
+                    best_fav_index=0,
+                    max_sim_score=0.5,
+                    knn_score=0.5,
+                )
                 for i in range(10)
             ]
 
             # Fix the random seed for deterministic folds
             np.random.seed(123)
             return evaluator.evaluate_cv(
-                n_folds=3, k_metrics=[10], report_each=False,
+                n_folds=3,
+                k_metrics=[10],
+                report_each=False,
                 parallel=parallel,
             )
 
@@ -493,8 +699,11 @@ def test_hidden_stories_excluded_from_candidates():
             # Return results that include the hidden story (index 5 = hidden_story)
             mock_rank.return_value = [
                 RankResult(
-                    index=i, hybrid_score=1.0 - i * 0.1,
-                    best_fav_index=0, max_sim_score=0.5, knn_score=0.5,
+                    index=i,
+                    hybrid_score=1.0 - i * 0.1,
+                    best_fav_index=0,
+                    max_sim_score=0.5,
+                    knn_score=0.5,
                 )
                 for i in range(len(candidates_with_leak) + 1)  # +1 for injected test
             ]
@@ -502,5 +711,7 @@ def test_hidden_stories_excluded_from_candidates():
             # The assertion inside evaluate_cv should catch the leak
             with pytest.raises(AssertionError, match="Hidden stories leaked"):
                 evaluator.evaluate_cv(
-                    n_folds=2, k_metrics=[10], report_each=False,
+                    n_folds=2,
+                    k_metrics=[10],
+                    report_each=False,
                 )
