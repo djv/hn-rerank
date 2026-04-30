@@ -25,6 +25,7 @@ from api.constants import (
     RSS_CACHE_DIR,
     RSS_CACHE_MAX_FILES,
     RSS_CURATED_NEWS_PER_FEED_LIMIT,
+    RSS_EXCLUDED_FEEDS,
     RSS_EXTRA_FEEDS,
     RSS_FEED_CACHE_TTL,
     RSS_FEED_CACHE_VERSION,
@@ -354,7 +355,10 @@ async def fetch_rss_stories(
 
         unique_feeds: list[str] = []
         seen = set()
+        excluded_feeds = set(RSS_EXCLUDED_FEEDS)
         for url in feed_urls:
+            if url in excluded_feeds:
+                continue
             if url not in seen:
                 unique_feeds.append(url)
                 seen.add(url)

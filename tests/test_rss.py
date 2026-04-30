@@ -310,6 +310,7 @@ async def test_fetch_rss_stories_filters_old_and_excluded_urls(monkeypatch):
     rss_xml = """
     <rss version="2.0">
       <channel>
+        <language>en</language>
         <item>
           <title>Recent Post</title>
           <link>https://example.com/recent</link>
@@ -377,6 +378,53 @@ async def test_fetch_rss_stories_uses_extra_feeds_when_opml_is_empty(monkeypatch
     assert stories[0].title == "Lobsters Post"
     assert stories[0].url == "https://example.com/post"
     assert stories[0].discussion_url == "https://lobste.rs/s/example/post"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_fetch_rss_stories_skips_excluded_feeds(monkeypatch):
+    opml_url = "https://example.com/feeds-with-exclusions.opml"
+    excluded_feed = "https://rachelbythebay.com/w/atom.xml"
+    allowed_feed = "https://example.com/allowed-feed.xml"
+    monkeypatch.setattr(rss, "RSS_EXTRA_FEEDS", [])
+    monkeypatch.setattr(rss, "RSS_EXCLUDED_FEEDS", {excluded_feed})
+
+    opml = f"""
+    <opml version="2.0">
+      <body>
+        <outline type="rss" text="Excluded" xmlUrl="{excluded_feed}"/>
+        <outline type="rss" text="Allowed" xmlUrl="{allowed_feed}"/>
+      </body>
+    </opml>
+    """
+    rss_xml = """
+    <rss version="2.0">
+      <channel>
+        <language>en</language>
+        <item>
+          <title>Allowed Post</title>
+          <link>https://example.com/post</link>
+          <pubDate>Mon, 02 Feb 2026 12:00:00 GMT</pubDate>
+          <description>Allowed summary</description>
+        </item>
+      </channel>
+    </rss>
+    """
+
+    respx.get(opml_url).mock(return_value=Response(200, text=opml))
+    excluded_route = respx.get(excluded_feed).mock(return_value=Response(500))
+    respx.get(allowed_feed).mock(return_value=Response(200, text=rss_xml))
+
+    stories = await fetch_rss_stories(
+        opml_url=opml_url,
+        days=3650,
+        max_feeds=5,
+        per_feed=10,
+        fetch_full_content=False,
+    )
+
+    assert [story.title for story in stories] == ["Allowed Post"]
+    assert not excluded_route.called
 
 
 
