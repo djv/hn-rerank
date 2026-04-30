@@ -3,6 +3,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 from api.rerank import rank_stories
 from api.models import Story
+from api.config import AppConfig, ClassifierConfig, RankingConfig
 
 
 def _make_stories(n: int) -> list[Story]:
@@ -27,10 +28,15 @@ def test_rank_stories_with_classifier():
     neg_emb = np.random.rand(5, 768).astype(np.float32)
     cand_emb = np.random.rand(10, 768).astype(np.float32)
 
+    config = AppConfig(
+        use_classifier=True,
+        classifier=ClassifierConfig(
+            use_centroid_feature=True,
+            use_pos_knn_feature=True,
+            use_neg_knn_feature=True,
+        ),
+    )
     with (
-        patch("api.rerank.CLASSIFIER_USE_CENTROID_FEATURE", True),
-        patch("api.rerank.CLASSIFIER_USE_POS_KNN_FEATURE", True),
-        patch("api.rerank.CLASSIFIER_USE_NEG_KNN_FEATURE", True),
         patch("api.rerank.get_embeddings", return_value=cand_emb),
         patch("api.rerank.cluster_interests_with_labels") as mock_cluster,
         patch("api.rerank.LogisticRegressionCV") as mock_lr_class,
@@ -41,7 +47,7 @@ def test_rank_stories_with_classifier():
         mock_clf.predict_proba.return_value = np.zeros((10, 2))
         mock_clf.predict_proba.return_value[:, 1] = np.linspace(0, 1, 10)
 
-        results = rank_stories(stories, pos_emb, neg_emb, use_classifier=True)
+        results = rank_stories(stories, pos_emb, neg_emb, config=config)
 
         mock_lr_class.assert_called_once()
         mock_clf.fit.assert_called_once()
@@ -62,11 +68,12 @@ def test_rank_stories_classifier_fallback():
     neg_emb = np.random.rand(1, 768).astype(np.float32)
     cand_emb = np.random.rand(1, 768).astype(np.float32)
 
+    config = AppConfig(use_classifier=True)
     with (
         patch("api.rerank.get_embeddings", return_value=cand_emb),
         patch("api.rerank.LogisticRegressionCV") as mock_lr_class,
     ):
-        results = rank_stories(stories, pos_emb, neg_emb, use_classifier=True)
+        results = rank_stories(stories, pos_emb, neg_emb, config=config)
         mock_lr_class.assert_not_called()
         assert len(results) == 1
 
@@ -79,10 +86,15 @@ def test_rank_stories_populates_classifier_diagnostics():
     cand_emb = np.random.rand(3, 8).astype(np.float32)
     diagnostics: dict[str, object] = {}
 
+    config = AppConfig(
+        use_classifier=True,
+        classifier=ClassifierConfig(
+            use_centroid_feature=True,
+            use_pos_knn_feature=True,
+            use_neg_knn_feature=False,
+        ),
+    )
     with (
-        patch("api.rerank.CLASSIFIER_USE_CENTROID_FEATURE", True),
-        patch("api.rerank.CLASSIFIER_USE_POS_KNN_FEATURE", True),
-        patch("api.rerank.CLASSIFIER_USE_NEG_KNN_FEATURE", False),
         patch("api.rerank.get_embeddings", return_value=cand_emb),
         patch("api.rerank.cluster_interests_with_labels") as mock_cluster,
         patch("api.rerank.LogisticRegressionCV") as mock_lr_class,
@@ -101,7 +113,7 @@ def test_rank_stories_populates_classifier_diagnostics():
             stories,
             pos_emb,
             neg_emb,
-            use_classifier=True,
+            config=config,
             diagnostics=diagnostics,
         )
 
@@ -124,12 +136,13 @@ def test_rank_stories_reports_insufficient_examples_diagnostics():
     cand_emb = np.random.rand(1, 8).astype(np.float32)
     diagnostics: dict[str, object] = {}
 
+    config = AppConfig(use_classifier=True)
     with patch("api.rerank.get_embeddings", return_value=cand_emb):
         rank_stories(
             stories,
             pos_emb,
             neg_emb,
-            use_classifier=True,
+            config=config,
             diagnostics=diagnostics,
         )
 
@@ -150,6 +163,7 @@ def test_classifier_probability_is_semantic_score_without_post_hidden_penalty():
 
     probs = np.array([0.8], dtype=np.float32)
 
+    config = AppConfig(use_classifier=True, ranking=RankingConfig(hn_weight=0.0))
     with (
         patch("api.rerank.get_embeddings", return_value=cand_emb),
         patch("api.rerank.cluster_interests_with_labels") as mock_cluster,
@@ -167,8 +181,7 @@ def test_classifier_probability_is_semantic_score_without_post_hidden_penalty():
             stories,
             pos_emb,
             neg_emb,
-            use_classifier=True,
-            hn_weight=0.0,
+            config=config,
             diagnostics=diagnostics,
         )
 
@@ -191,10 +204,15 @@ def test_classifier_feature_augmentation_shape():
     cand_emb = rng.normal(size=(10, 8)).astype(np.float32)
     cand_emb /= np.linalg.norm(cand_emb, axis=1, keepdims=True) + 1e-9
 
+    config = AppConfig(
+        use_classifier=True,
+        classifier=ClassifierConfig(
+            use_centroid_feature=True,
+            use_pos_knn_feature=True,
+            use_neg_knn_feature=True,
+        ),
+    )
     with (
-        patch("api.rerank.CLASSIFIER_USE_CENTROID_FEATURE", True),
-        patch("api.rerank.CLASSIFIER_USE_POS_KNN_FEATURE", True),
-        patch("api.rerank.CLASSIFIER_USE_NEG_KNN_FEATURE", True),
         patch("api.rerank.get_embeddings", return_value=cand_emb),
         patch("api.rerank.cluster_interests_with_labels") as mock_cluster,
         patch("api.rerank.LogisticRegressionCV") as mock_lr_class,
@@ -213,7 +231,7 @@ def test_classifier_feature_augmentation_shape():
             ]
         )
 
-        rank_stories(stories, pos_emb, neg_emb, use_classifier=True)
+        rank_stories(stories, pos_emb, neg_emb, config=config)
 
         # Check X_train shape: 10 samples, dim+3 features
         args, kwargs = mock_clf.fit.call_args
@@ -245,11 +263,16 @@ def test_classifier_k_feat_independent():
     fit_X_trains = []
 
     for k_feat_val in [1, 5]:
+        config = AppConfig(
+            use_classifier=True,
+            classifier=ClassifierConfig(
+                k_feat=k_feat_val,
+                use_centroid_feature=True,
+                use_pos_knn_feature=True,
+                use_neg_knn_feature=True,
+            ),
+        )
         with (
-            patch("api.rerank.CLASSIFIER_K_FEAT", k_feat_val),
-            patch("api.rerank.CLASSIFIER_USE_CENTROID_FEATURE", True),
-            patch("api.rerank.CLASSIFIER_USE_POS_KNN_FEATURE", True),
-            patch("api.rerank.CLASSIFIER_USE_NEG_KNN_FEATURE", True),
             patch("api.rerank.get_embeddings", return_value=cand_emb),
             patch("api.rerank.cluster_interests_with_labels") as mock_cluster,
             patch("api.rerank.LogisticRegressionCV") as mock_lr_class,
@@ -267,7 +290,7 @@ def test_classifier_k_feat_independent():
                 ]
             )
 
-            rank_stories(stories, pos_emb, neg_emb, use_classifier=True)
+            rank_stories(stories, pos_emb, neg_emb, config=config)
 
             args, _ = mock_clf.fit.call_args
             fit_X_trains.append(args[0].copy())
@@ -292,10 +315,15 @@ def test_classifier_negative_sample_weights_are_not_tuned():
     cand_emb = rng.normal(size=(10, 8)).astype(np.float32)
     cand_emb /= np.linalg.norm(cand_emb, axis=1, keepdims=True) + 1e-9
 
+    config = AppConfig(
+        use_classifier=True,
+        classifier=ClassifierConfig(
+            use_centroid_feature=True,
+            use_pos_knn_feature=True,
+            use_neg_knn_feature=True,
+        ),
+    )
     with (
-        patch("api.rerank.CLASSIFIER_USE_CENTROID_FEATURE", True),
-        patch("api.rerank.CLASSIFIER_USE_POS_KNN_FEATURE", True),
-        patch("api.rerank.CLASSIFIER_USE_NEG_KNN_FEATURE", True),
         patch("api.rerank.get_embeddings", return_value=cand_emb),
         patch("api.rerank.cluster_interests_with_labels") as mock_cluster,
         patch("api.rerank.LogisticRegressionCV") as mock_lr_class,
@@ -313,7 +341,7 @@ def test_classifier_negative_sample_weights_are_not_tuned():
             ]
         )
 
-        rank_stories(stories, pos_emb, neg_emb, use_classifier=True)
+        rank_stories(stories, pos_emb, neg_emb, config=config)
 
         _, kwargs = mock_clf.fit.call_args
         sample_weight = kwargs["sample_weight"]
@@ -331,10 +359,15 @@ def test_classifier_feature_ablation_disables_all_derived_columns():
     cand_emb = rng.normal(size=(10, 8)).astype(np.float32)
     cand_emb /= np.linalg.norm(cand_emb, axis=1, keepdims=True) + 1e-9
 
+    config = AppConfig(
+        use_classifier=True,
+        classifier=ClassifierConfig(
+            use_centroid_feature=False,
+            use_pos_knn_feature=False,
+            use_neg_knn_feature=False,
+        ),
+    )
     with (
-        patch("api.rerank.CLASSIFIER_USE_CENTROID_FEATURE", False),
-        patch("api.rerank.CLASSIFIER_USE_POS_KNN_FEATURE", False),
-        patch("api.rerank.CLASSIFIER_USE_NEG_KNN_FEATURE", False),
         patch("api.rerank.get_embeddings", return_value=cand_emb),
         patch("api.rerank.cluster_interests_with_labels") as mock_cluster,
         patch("api.rerank.LogisticRegressionCV") as mock_lr_class,
@@ -352,7 +385,7 @@ def test_classifier_feature_ablation_disables_all_derived_columns():
             ]
         )
 
-        rank_stories(stories, pos_emb, neg_emb, use_classifier=True)
+        rank_stories(stories, pos_emb, neg_emb, config=config)
 
         fit_args, _ = mock_clf.fit.call_args
         X_train = fit_args[0]
@@ -406,9 +439,6 @@ def test_classifier_metadata_features_append_log_points_only():
     diagnostics: dict[str, object] = {}
 
     with (
-        patch("api.rerank.CLASSIFIER_USE_CENTROID_FEATURE", False),
-        patch("api.rerank.CLASSIFIER_USE_POS_KNN_FEATURE", False),
-        patch("api.rerank.CLASSIFIER_USE_NEG_KNN_FEATURE", False),
         patch("api.rerank.get_embeddings", return_value=cand_emb),
         patch("api.rerank.cluster_interests_with_labels") as mock_cluster,
         patch("api.rerank.LogisticRegressionCV") as mock_lr_class,
@@ -426,11 +456,19 @@ def test_classifier_metadata_features_append_log_points_only():
             ]
         )
 
+        config = AppConfig(
+            use_classifier=True,
+            classifier=ClassifierConfig(
+                use_centroid_feature=False,
+                use_pos_knn_feature=False,
+                use_neg_knn_feature=False,
+            ),
+        )
         rank_stories(
             stories,
             pos_emb,
             neg_emb,
-            use_classifier=True,
+            config=config,
             diagnostics=diagnostics,
             positive_stories=pos_stories,
             negative_stories=neg_stories,
@@ -459,9 +497,6 @@ def test_classifier_metadata_features_skip_when_training_metadata_mismatches():
     diagnostics: dict[str, object] = {}
 
     with (
-        patch("api.rerank.CLASSIFIER_USE_CENTROID_FEATURE", False),
-        patch("api.rerank.CLASSIFIER_USE_POS_KNN_FEATURE", False),
-        patch("api.rerank.CLASSIFIER_USE_NEG_KNN_FEATURE", False),
         patch("api.rerank.get_embeddings", return_value=cand_emb),
         patch("api.rerank.cluster_interests_with_labels") as mock_cluster,
         patch("api.rerank.LogisticRegressionCV") as mock_lr_class,
@@ -479,11 +514,19 @@ def test_classifier_metadata_features_skip_when_training_metadata_mismatches():
             ]
         )
 
+        config = AppConfig(
+            use_classifier=True,
+            classifier=ClassifierConfig(
+                use_centroid_feature=False,
+                use_pos_knn_feature=False,
+                use_neg_knn_feature=False,
+            ),
+        )
         rank_stories(
             stories,
             pos_emb,
             neg_emb,
-            use_classifier=True,
+            config=config,
             diagnostics=diagnostics,
             positive_stories=pos_stories,
             negative_stories=neg_stories,
@@ -531,11 +574,18 @@ def test_classifier_metadata_features_still_allow_tuned_hn_blend():
     neg_emb = rng.normal(size=(5, 8)).astype(np.float32)
     cand_emb = rng.normal(size=(2, 8)).astype(np.float32)
 
+    from api.config import FreshnessConfig
+    config = AppConfig(
+        use_classifier=True,
+        ranking=RankingConfig(hn_weight=0.5),
+        freshness=FreshnessConfig(enabled=False),
+        classifier=ClassifierConfig(
+            use_centroid_feature=False,
+            use_pos_knn_feature=False,
+            use_neg_knn_feature=False,
+        ),
+    )
     with (
-        patch("api.rerank.CLASSIFIER_USE_CENTROID_FEATURE", False),
-        patch("api.rerank.CLASSIFIER_USE_POS_KNN_FEATURE", False),
-        patch("api.rerank.CLASSIFIER_USE_NEG_KNN_FEATURE", False),
-        patch("api.rerank.FRESHNESS_ENABLED", False),
         patch("api.rerank.get_embeddings", return_value=cand_emb),
         patch("api.rerank.cluster_interests_with_labels") as mock_cluster,
         patch("api.rerank.LogisticRegressionCV") as mock_lr_class,
@@ -553,8 +603,7 @@ def test_classifier_metadata_features_still_allow_tuned_hn_blend():
             stories,
             pos_emb,
             neg_emb,
-            use_classifier=True,
-            hn_weight=0.5,
+            config=config,
             positive_stories=pos_stories,
             negative_stories=neg_stories,
         )
@@ -576,6 +625,7 @@ def test_classifier_scores_are_not_post_penalized_by_hidden_similarity():
 
     probs = np.linspace(0.1, 0.9, 10, dtype=np.float32)
 
+    config = AppConfig(use_classifier=True, ranking=RankingConfig(hn_weight=0.0))
     with (
         patch("api.rerank.get_embeddings", return_value=cand_emb),
         patch("api.rerank.cluster_interests_with_labels") as mock_cluster,
@@ -593,8 +643,7 @@ def test_classifier_scores_are_not_post_penalized_by_hidden_similarity():
             stories,
             pos_emb,
             neg_emb,
-            use_classifier=True,
-            hn_weight=0.0,
+            config=config,
         )
 
         actual_scores = np.array([r.semantic_score for r in results])
@@ -645,6 +694,7 @@ def test_evaluate_cv_parallel_matches_serial():
             np.random.seed(123)
             return evaluator.evaluate_cv(
                 n_folds=3,
+                config=AppConfig(),
                 k_metrics=[10],
                 report_each=False,
                 parallel=parallel,
@@ -712,6 +762,7 @@ def test_hidden_stories_excluded_from_candidates():
             with pytest.raises(AssertionError, match="Hidden stories leaked"):
                 evaluator.evaluate_cv(
                     n_folds=2,
+                    config=AppConfig(),
                     k_metrics=[10],
                     report_each=False,
                 )

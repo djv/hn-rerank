@@ -626,7 +626,7 @@ def test_get_cluster_id_prefers_candidate_assignment():
     cluster_labels = np.array([3], dtype=np.int32)
     cand_cluster_map = {0: 7}
 
-    cid = get_cluster_id_for_result(result, cluster_labels, cand_cluster_map)
+    cid = get_cluster_id_for_result(result, cluster_labels, cand_cluster_map, 0.85)
     assert cid == 7
 
 
@@ -641,5 +641,5 @@ def test_get_cluster_id_falls_back_to_best_fav_when_candidate_unassigned():
     cluster_labels = np.array([3], dtype=np.int32)
     cand_cluster_map = {0: -1}
 
-    cid = get_cluster_id_for_result(result, cluster_labels, cand_cluster_map)
+    cid = get_cluster_id_for_result(result, cluster_labels, cand_cluster_map, 0.85)
     assert cid == 3

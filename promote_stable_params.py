@@ -20,7 +20,7 @@ import numpy as np
 from evaluate_quality import RankingEvaluator, _merge_rank_diagnostic_summaries
 from tuning_common import (
     average_seed_metrics as _average_seed_metrics,
-    patched_rerank_params,
+    tuned_config,
     render_promoted_toml as _render_promoted_toml,
     resolve_params as _resolved_params,
     score_metrics as _score_metrics,
@@ -157,18 +157,13 @@ def _eval_candidate_scores(
     scores: list[float] = []
     metrics_per_seed: list[dict[str, float]] = []
     diagnostics_per_seed: list[dict[str, object]] = []
-    with patched_rerank_params(params) as resolved:
-        ranking = resolved["ranking"]
-        semantic = resolved["semantic"]
+    with tuned_config(params) as (config, resolved):
         for seed in eval_seeds:
             np.random.seed(seed)
             diagnostics_summary: dict[str, object] = {}
             metrics = evaluator.evaluate_cv(
                 n_folds=cv_folds,
-                diversity=float(ranking["diversity_lambda"]),
-                knn=int(semantic["knn_neighbors"]),
-                neg_weight=float(ranking["negative_weight"]),
-                use_classifier=True,
+                config=config,
                 k_metrics=[10, 20, 30, 40],
                 report_each=False,
                 parallel=False,

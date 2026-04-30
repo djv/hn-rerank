@@ -67,7 +67,7 @@ ADAPTIVE_HN_DELTA = _tuning_common.ADAPTIVE_HN_DELTA
 _derive_adaptive_hn_max = _tuning_common.derive_adaptive_hn_max
 _derive_classifier_diversity_lambda = _tuning_common.derive_classifier_diversity_lambda
 _derive_hn_threshold_old = _tuning_common.derive_hn_threshold_old
-patched_rerank_params = _tuning_common.patched_rerank_params
+tuned_config = _tuning_common.tuned_config
 _score_metrics = _tuning_common.score_metrics
 _average_seed_metrics = _tuning_common.average_seed_metrics
 _validate_candidate_metrics = _tuning_common.validate_candidate_metrics
@@ -485,11 +485,7 @@ async def main():
             "classifier_k_feat": classifier_k_feat,
         }
 
-        with patched_rerank_params(trial_params):
-            resolved = _tuning_common.resolve_params(trial_params)
-            ranking = resolved["ranking"]
-            semantic = resolved["semantic"]
-
+        with tuned_config(trial_params) as (config, resolved):
             def report_callback(step: int, interim_metrics: dict[str, float]) -> None:
                 score = _score_metrics(interim_metrics, std_penalty=args.std_penalty)
                 trial.report(score, step)
@@ -498,10 +494,7 @@ async def main():
 
             metrics = evaluator.evaluate_cv(
                 n_folds=args.cv_folds,
-                diversity=float(ranking["diversity_lambda"]),
-                knn=int(semantic["knn_neighbors"]),
-                neg_weight=float(ranking["negative_weight"]),
-                use_classifier=True,
+                config=config,
                 k_metrics=[10, 20, 30, 40],
                 report_each=False,
                 report_callback=report_callback,
@@ -611,19 +604,14 @@ async def main():
     ) -> tuple[dict[str, float], dict[str, object]]:
         per_seed: list[dict[str, float]] = []
         per_seed_diagnostics: list[dict[str, object]] = []
-        with patched_rerank_params(params) as resolved:
-            ranking = resolved["ranking"]
-            semantic = resolved["semantic"]
+        with tuned_config(params) as (config, resolved):
             for validation_seed in validation_seeds:
                 np.random.seed(validation_seed)
                 diagnostics_summary: dict[str, object] = {}
                 per_seed.append(
                     evaluator.evaluate_cv(
                         n_folds=args.cv_folds,
-                        diversity=float(ranking["diversity_lambda"]),
-                        knn=int(semantic["knn_neighbors"]),
-                        neg_weight=float(ranking["negative_weight"]),
-                        use_classifier=True,
+                        config=config,
                         k_metrics=[10, 20, 30, 40],
                         report_each=False,
                         parallel=False,

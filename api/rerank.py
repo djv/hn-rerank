@@ -35,11 +35,6 @@ if TYPE_CHECKING:
     from transformers import BatchEncoding, PreTrainedTokenizerBase
 
 from api.constants import (  # noqa: E402
-    ADAPTIVE_HN_THRESHOLD_OLD,
-    ADAPTIVE_HN_THRESHOLD_YOUNG,
-    ADAPTIVE_HN_WEIGHT_MAX,
-    ADAPTIVE_HN_WEIGHT_MIN,
-    DEFAULT_CLUSTER_COUNT,
     DEFAULT_EMBEDDING_BATCH_SIZE,
     EMBEDDING_CACHE_DIR,
     EMBEDDING_CACHE_MAX_FILES,
@@ -48,39 +43,17 @@ from api.constants import (  # noqa: E402
     CLUSTER_EMBEDDING_CACHE_DIR,
     CLUSTER_EMBEDDING_MODEL_DIR,
     CLUSTER_EMBEDDING_MODEL_VERSION,
-    CLUSTER_ALGORITHM,
-    CLUSTER_AGGLOMERATIVE_LINKAGE,
-    CLUSTER_AGGLOMERATIVE_METRIC,
-    CLUSTER_AGGLOMERATIVE_THRESHOLD,
-    CLUSTER_REFINE_ITERS,
-    CLUSTER_SPECTRAL_NEIGHBORS,
-    FRESHNESS_ENABLED,
-    FRESHNESS_HALF_LIFE_HOURS,
-    FRESHNESS_MAX_BOOST,
-    HN_SCORE_NORMALIZATION_CAP,
-    KNN_NEIGHBORS,
-    CLUSTER_OUTLIER_SIMILARITY_THRESHOLD,
-    MAX_CLUSTERS,
-    MAX_CLUSTER_FRACTION,
-    MAX_CLUSTER_SIZE,
-    MIN_CLUSTERS,
-    MIN_SAMPLES_PER_CLUSTER,
-    RANKING_HN_WEIGHT,
-    RANKING_MAX_RESULTS,
-    RANKING_NEGATIVE_WEIGHT,
-    SEMANTIC_MAXSIM_WEIGHT,
-    SEMANTIC_MEANSIM_WEIGHT,
-    CLASSIFIER_K_FEAT,
-    CLASSIFIER_CV_SCORING,
-    CLASSIFIER_USE_BALANCED_CLASS_WEIGHT,
-    CLASSIFIER_USE_CENTROID_FEATURE,
-    CLASSIFIER_USE_POS_KNN_FEATURE,
-    CLASSIFIER_USE_NEG_KNN_FEATURE,
     SIMILARITY_MIN,
     TEXT_CONTENT_MAX_TOKENS,
 )
 from api.models import RankResult, Story, StoryDict  # noqa: E402
 from api.model_metadata import CURRENT_PRODUCTION_SPEC, load_model_spec  # noqa: E402
+from api.config import (  # noqa: E402
+    AppConfig,
+    ClusteringConfig,
+    ClassifierConfig,
+    AdaptiveHNConfig,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -99,21 +72,24 @@ def _combine_classifier_features(
     centroid_feature: NDArray[np.float32],
     pos_knn_feature: NDArray[np.float32],
     neg_knn_feature: NDArray[np.float32],
+    config: ClassifierConfig,
 ) -> NDArray[np.float32]:
     columns: list[NDArray[np.float32]] = []
-    if CLASSIFIER_USE_CENTROID_FEATURE:
+    if config.use_centroid_feature:
         columns.append(centroid_feature.reshape(-1, 1))
-    if CLASSIFIER_USE_POS_KNN_FEATURE:
+    if config.use_pos_knn_feature:
         columns.append(pos_knn_feature.reshape(-1, 1))
-    if CLASSIFIER_USE_NEG_KNN_FEATURE:
+    if config.use_neg_knn_feature:
         columns.append(neg_knn_feature.reshape(-1, 1))
     if not columns:
         return np.zeros((len(centroid_feature), 0), dtype=np.float32)
     return np.hstack(columns).astype(np.float32)
 
 
-def _classifier_metadata_features(stories: list[Story]) -> NDArray[np.float32]:
-    normalizer = np.log1p(HN_SCORE_NORMALIZATION_CAP)
+def _classifier_metadata_features(
+    stories: list[Story], config: AdaptiveHNConfig
+) -> NDArray[np.float32]:
+    normalizer = np.log1p(config.score_normalization_cap)
     points = np.array([max(float(s.score), 0.0) for s in stories], dtype=np.float32)
     return (np.log1p(points) / normalizer).reshape(-1, 1).astype(np.float32)
 
@@ -463,19 +439,19 @@ def get_cluster_embeddings(
 
 def cluster_interests(
     embeddings: NDArray[np.float32],
+    config: ClusteringConfig = ClusteringConfig(),
 ) -> NDArray[np.float32]:
     """
     Cluster user interest embeddings into K centroids.
     Returns centroids array of shape (n_clusters, embedding_dim).
     """
-    centroids, _ = cluster_interests_with_labels(embeddings)
+    centroids, _ = cluster_interests_with_labels(embeddings, config=config)
     return centroids
 
 
 def cluster_interests_with_labels(
     embeddings: NDArray[np.float32],
-    n_clusters: int = DEFAULT_CLUSTER_COUNT,
-    distance_threshold: float | None = CLUSTER_AGGLOMERATIVE_THRESHOLD,
+    config: ClusteringConfig = ClusteringConfig(),
 ) -> tuple[NDArray[np.float32], NDArray[np.int32]]:
     """
     Cluster user interest embeddings using a cosine-aware algorithm.
@@ -489,7 +465,7 @@ def cluster_interests_with_labels(
     if n_samples == 0:
         return embeddings, np.array([], dtype=np.int32)
 
-    if n_samples < MIN_SAMPLES_PER_CLUSTER * 2:
+    if n_samples < config.min_samples_per_cluster * 2:
         # Not enough for meaningful clustering
         labels = np.zeros(n_samples, dtype=np.int32)
         centroid = np.mean(embeddings, axis=0).reshape(1, -1)
@@ -497,8 +473,8 @@ def cluster_interests_with_labels(
 
     # Normalize embeddings for cosine-like behavior (unless metric is euclidean)
     if (
-        CLUSTER_AGGLOMERATIVE_METRIC == "euclidean"
-        and CLUSTER_ALGORITHM == "agglomerative"
+        config.metric == "euclidean"
+        and config.algorithm == "agglomerative"
     ):
         normalized = embeddings
     else:
@@ -506,12 +482,14 @@ def cluster_interests_with_labels(
 
     # Use fixed number of clusters or distance threshold
     effective_n_clusters = min(
-        n_clusters, MAX_CLUSTERS, n_samples // max(1, MIN_SAMPLES_PER_CLUSTER)
+        config.default_count,
+        config.max_clusters,
+        n_samples // max(1, config.min_samples_per_cluster),
     )
-    effective_n_clusters = max(effective_n_clusters, MIN_CLUSTERS)
+    effective_n_clusters = max(effective_n_clusters, config.min_clusters)
 
-    if CLUSTER_ALGORITHM == "spectral":
-        neighbors = min(CLUSTER_SPECTRAL_NEIGHBORS, max(2, n_samples - 1))
+    if config.algorithm == "spectral":
+        neighbors = min(config.spectral_neighbors, max(2, n_samples - 1))
         clustering = SpectralClustering(
             n_clusters=effective_n_clusters,
             affinity="nearest_neighbors",
@@ -520,17 +498,17 @@ def cluster_interests_with_labels(
             random_state=0,
         )
         labels = clustering.fit_predict(normalized).astype(np.int32)
-    elif CLUSTER_ALGORITHM == "agglomerative":
+    elif config.algorithm == "agglomerative":
         # If threshold is provided, use auto-k
-        use_n = effective_n_clusters if distance_threshold is None else None
+        use_n = effective_n_clusters if config.distance_threshold is None else None
         clustering = AgglomerativeClustering(
             n_clusters=use_n,
-            distance_threshold=distance_threshold,
-            metric=CLUSTER_AGGLOMERATIVE_METRIC,
-            linkage=CLUSTER_AGGLOMERATIVE_LINKAGE,
+            distance_threshold=config.distance_threshold,
+            metric=config.metric,
+            linkage=config.linkage,
         )
         labels = clustering.fit_predict(normalized).astype(np.int32)
-        if distance_threshold is not None:
+        if config.distance_threshold is not None:
             labels = _merge_closest_clusters_to_limit(
                 embeddings,
                 labels,
@@ -546,31 +524,31 @@ def cluster_interests_with_labels(
 
     # Bypass heuristic post-processing if using threshold-based agglomerative
     # (Ward linkage handles balance and coherence natively)
-    if not (CLUSTER_ALGORITHM == "agglomerative" and distance_threshold is not None):
-        labels = _refine_cluster_assignments(normalized, labels, CLUSTER_REFINE_ITERS)
-        labels = _merge_small_clusters(embeddings, labels, MIN_SAMPLES_PER_CLUSTER)
+    if not (config.algorithm == "agglomerative" and config.distance_threshold is not None):
+        labels = _refine_cluster_assignments(normalized, labels, config.refine_iters)
+        labels = _merge_small_clusters(embeddings, labels, config.min_samples_per_cluster)
 
         max_size = max(
-            MIN_SAMPLES_PER_CLUSTER,
+            config.min_samples_per_cluster,
             min(
-                MAX_CLUSTER_SIZE,
-                int(math.ceil(n_samples * MAX_CLUSTER_FRACTION)),
+                config.max_cluster_size,
+                int(math.ceil(n_samples * config.max_cluster_fraction)),
             ),
         )
-        max_clusters = min(MAX_CLUSTERS, n_samples // max(1, MIN_SAMPLES_PER_CLUSTER))
+        max_clusters = min(config.max_clusters, n_samples // max(1, config.min_samples_per_cluster))
         labels = _split_large_clusters(
             embeddings,
             labels,
-            min_size=MIN_SAMPLES_PER_CLUSTER,
+            min_size=config.min_samples_per_cluster,
             max_size=max_size,
             max_clusters=max_clusters,
         )
 
     centroids = _centroids_from_labels(embeddings, labels)
 
-    if not (CLUSTER_ALGORITHM == "agglomerative" and distance_threshold is not None):
+    if not (config.algorithm == "agglomerative" and config.distance_threshold is not None):
         centroids, labels, _ = split_outlier_clusters(
-            embeddings, labels, CLUSTER_OUTLIER_SIMILARITY_THRESHOLD
+            embeddings, labels, config.outlier_similarity_threshold
         )
     return centroids, labels
 
@@ -877,12 +855,7 @@ def rank_stories(
     stories: list[Story],
     positive_embeddings: NDArray[np.float32] | None,
     negative_embeddings: NDArray[np.float32] | None = None,
-    hn_weight: float = RANKING_HN_WEIGHT,
-    neg_weight: float = RANKING_NEGATIVE_WEIGHT,
-    diversity_lambda: float = 0.0,
-    use_classifier: bool = False,
-    use_contrastive: bool = False,
-    knn_k: int = KNN_NEIGHBORS,
+    config: AppConfig = AppConfig(),
     progress_callback: Callable[[int, int], None] | None = None,
     diagnostics: dict[str, object] | None = None,
     positive_stories: list[Story] | None = None,
@@ -896,6 +869,12 @@ def rank_stories(
     """
     if not stories:
         return []
+
+    # Map old parameter names to config values for internal compatibility
+    # but strictly from the passed config object.
+    use_classifier = config.use_classifier
+    knn_k = config.semantic.knn_neighbors
+    hn_weight = config.ranking.hn_weight
 
     cand_texts: list[str] = [s.text_content for s in stories]
     cand_emb: NDArray[np.float32] = get_embeddings(
@@ -950,7 +929,7 @@ def rank_stories(
             # Use inverse log weighting (1/log(1+N)) for even softer dampening.
             # This respects that large clusters represent confirmed, deep interest
             # while still preventing them from totally drowning out small niches.
-            centroids, labels = cluster_interests_with_labels(X_pos)
+            centroids, labels = cluster_interests_with_labels(X_pos, config=config.clustering)
             unique_labels, counts = np.unique(labels, return_counts=True)
             # Use log1p for soft dampening: 1/log(1+count)
             weight_map = {
@@ -970,8 +949,8 @@ def rank_stories(
             # --- Feature augmentation: append derived similarity features ---
             # Compute 3 features consistently for train and candidates to avoid
             # train/test distribution mismatch (no hardcoded zeros).
-            k_feat = min(len(X_pos), CLASSIFIER_K_FEAT)
-            k_neg_feat = min(len(X_neg), CLASSIFIER_K_FEAT)
+            k_feat = min(len(X_pos), config.classifier.k_feat)
+            k_neg_feat = min(len(X_neg), config.classifier.k_feat)
 
             def _derived_features(
                 embs: NDArray[np.float32],
@@ -1014,6 +993,7 @@ def rank_stories(
                     centroid_feature=f_centroid.astype(np.float32),
                     pos_knn_feature=f_knn_pos.astype(np.float32),
                     neg_knn_feature=f_knn_neg.astype(np.float32),
+                    config=config.classifier,
                 )
 
             pos_derived = _derived_features(
@@ -1057,9 +1037,9 @@ def rank_stories(
                 and len(positive_stories) == len(X_pos)
                 and len(negative_stories) == len(X_neg)
             ):
-                pos_metadata = _classifier_metadata_features(positive_stories)
-                neg_metadata = _classifier_metadata_features(negative_stories)
-                cand_metadata = _classifier_metadata_features(stories)
+                pos_metadata = _classifier_metadata_features(positive_stories, config=config.adaptive_hn)
+                neg_metadata = _classifier_metadata_features(negative_stories, config=config.adaptive_hn)
+                cand_metadata = _classifier_metadata_features(stories, config=config.adaptive_hn)
                 train_metadata = np.vstack([pos_metadata, neg_metadata])
                 X_train = np.hstack([X_train, train_metadata])
                 cand_features = np.hstack([cand_features, cand_metadata])
@@ -1078,11 +1058,11 @@ def rank_stories(
                 Cs=[0.01, 0.1, 1.0, 10.0],
                 cv=3,
                 class_weight=(
-                    "balanced" if CLASSIFIER_USE_BALANCED_CLASS_WEIGHT else None
+                    "balanced" if config.classifier.use_balanced_class_weight else None
                 ),
                 l1_ratios=(0.0,),
                 solver="liblinear",
-                scoring=CLASSIFIER_CV_SCORING,
+                scoring=config.classifier.cv_scoring,
                 use_legacy_attributes=False,
             )
             clf.fit(X_train, y_train, sample_weight=sample_weights)
@@ -1162,7 +1142,7 @@ def rank_stories(
             best_fav_indices = np.argmax(sim_matrix, axis=0)
 
             # 2. Cluster-max semantic scoring
-            cluster_centroids = cluster_interests(positive_embeddings)
+            cluster_centroids = cluster_interests(positive_embeddings, config=config.clustering)
             if len(cluster_centroids) > 0:
                 # Calculate similarity of each story to each centroid: (n_stories, n_centroids)
                 cluster_sim = cosine_similarity(cand_emb, cluster_centroids)
@@ -1174,10 +1154,16 @@ def rank_stories(
             # 2. Map raw similarity to semantic score [0, 1]
             # Blend cluster-max and k-NN scores
             blended = (
-                SEMANTIC_MAXSIM_WEIGHT * cluster_max_scores
-                + SEMANTIC_MEANSIM_WEIGHT * knn_scores
+                config.semantic.maxsim_weight * cluster_max_scores
+                + config.semantic.meansim_weight * knn_scores
             ).astype(np.float32)
-            semantic_scores = np.clip(blended, 0.0, 1.0)
+
+            # Map similarity [~0, 1] to a probability-like score in (0, 1) using a sigmoid.
+            # This allows semantic relevance to be linearly blended with log-scaled HN points.
+            k = config.semantic.sigmoid_k
+            t = config.semantic.sigmoid_threshold
+            semantic_scores = 1.0 / (1.0 + np.exp(-k * (blended - t)))
+            semantic_scores = semantic_scores.astype(np.float32)
 
     # 3. HN Gravity Score (Log-scaled)
     # We use a log scale so that high-point stories punch through without dominating
@@ -1185,7 +1171,7 @@ def rank_stories(
         [float(s.score) for s in stories], dtype=np.float32
     )
     hn_scores = np.log1p(points) / np.log1p(
-        max(points.max(), HN_SCORE_NORMALIZATION_CAP)
+        max(points.max(), config.adaptive_hn.score_normalization_cap)
     )
 
     # 4. Compute story ages for adaptive weighting
@@ -1200,11 +1186,11 @@ def rank_stories(
     if hn_weight > 0:
         # Young stories (<6h): trust semantic more (low HN weight)
         # Old stories (>48h): trust HN score more (higher HN weight)
-        young_hn_weight = min(ADAPTIVE_HN_WEIGHT_MIN, ADAPTIVE_HN_WEIGHT_MAX)
-        old_hn_weight = max(ADAPTIVE_HN_WEIGHT_MIN, ADAPTIVE_HN_WEIGHT_MAX)
+        young_hn_weight = min(config.adaptive_hn.weight_min, config.adaptive_hn.weight_max)
+        old_hn_weight = max(config.adaptive_hn.weight_min, config.adaptive_hn.weight_max)
         adaptive_t = np.clip(
-            (ages_hours - ADAPTIVE_HN_THRESHOLD_YOUNG)
-            / (ADAPTIVE_HN_THRESHOLD_OLD - ADAPTIVE_HN_THRESHOLD_YOUNG),
+            (ages_hours - config.adaptive_hn.threshold_young)
+            / (config.adaptive_hn.threshold_old - config.adaptive_hn.threshold_young),
             0.0,
             1.0,
         )
@@ -1218,20 +1204,20 @@ def rank_stories(
         ).astype(np.float32)
 
         # 7. Freshness boost (exponential decay)
-        # Newer stories get a boost; score halves every FRESHNESS_HALF_LIFE_HOURS
-        if FRESHNESS_ENABLED and FRESHNESS_MAX_BOOST > 0:
+        # Newer stories get a boost; score halves every config.freshness.half_life_hours
+        if config.freshness.enabled and config.freshness.max_boost > 0:
             freshness: NDArray[np.float64] = np.power(
-                2.0, -ages_hours / FRESHNESS_HALF_LIFE_HOURS
+                2.0, -ages_hours / config.freshness.half_life_hours
             )
             freshness = np.clip(freshness, 0.0, 1.0)
-            freshness_boost = (FRESHNESS_MAX_BOOST * freshness).astype(np.float32)
+            freshness_boost = (config.freshness.max_boost * freshness).astype(np.float32)
             hybrid_scores = hybrid_scores + freshness_boost
     else:
         # Pure semantic mode (hn_weight=0): no HN score, no freshness
         hybrid_scores = semantic_scores.astype(np.float32)
 
     ranked_indices = np.argsort(-hybrid_scores, kind="stable")[
-        : min(len(stories), RANKING_MAX_RESULTS)
+        : min(len(stories), config.ranking.max_results)
     ]
     return [
         RankResult(

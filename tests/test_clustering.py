@@ -19,12 +19,7 @@ from api.rerank import (
     _merge_small_clusters,
     _split_large_clusters,
 )
-from api.constants import (
-    MIN_SAMPLES_PER_CLUSTER,
-    MAX_CLUSTER_FRACTION,
-    MAX_CLUSTER_SIZE,
-    MAX_CLUSTERS,
-)
+from api.config import ClusteringConfig
 
 
 def make_story(story_id: int, title: str) -> StoryDict:
@@ -78,12 +73,10 @@ def test_single_sample_returns_single_cluster():
 @given(st.integers(min_value=1, max_value=5))
 def test_small_sample_fallback(n_samples: int):
     """n < MIN_SAMPLES*2 returns single cluster."""
-    if MIN_SAMPLES_PER_CLUSTER * 2 <= 1:
-        # If min samples is 0/1, this fallback might not trigger as intended for n=1
-        return
-    assume(n_samples < MIN_SAMPLES_PER_CLUSTER * 2)
+    config = ClusteringConfig(min_samples_per_cluster=3)
+    assume(n_samples < 6)
     embeddings = np.random.randn(n_samples, 384).astype(np.float32)
-    centroids, labels = cluster_interests_with_labels(embeddings)
+    centroids, labels = cluster_interests_with_labels(embeddings, config=config)
 
     assert len(centroids) == 1
     assert len(labels) == n_samples
@@ -144,10 +137,10 @@ def test_threshold_clustering_respects_cluster_cap():
     rng = np.random.default_rng(123)
     embeddings = rng.normal(size=(80, 32)).astype(np.float32)
 
+    config = ClusteringConfig(default_count=40, distance_threshold=0.0)
     centroids, labels = cluster_interests_with_labels(
         embeddings,
-        n_clusters=40,
-        distance_threshold=0.0,
+        config=config,
     )
 
     assert len(set(labels)) <= 40
@@ -207,10 +200,10 @@ def test_merge_small_clusters_removes_singletons():
     )
     labels = np.array([0, 0, 1, 1, 2, 3], dtype=np.int32)
 
-    merged = _merge_small_clusters(embeddings, labels, min_size=MIN_SAMPLES_PER_CLUSTER)
+    merged = _merge_small_clusters(embeddings, labels, min_size=2)
     counts = np.bincount(merged)
 
-    assert counts.min() >= MIN_SAMPLES_PER_CLUSTER
+    assert counts.min() >= 2
     assert sorted(set(merged)) == list(range(len(set(merged))))
 
 
@@ -234,24 +227,18 @@ def test_split_large_clusters_limits_max_size():
     labels = np.array([0] * 8 + [1] * 2, dtype=np.int32)
     desired_clusters = 6
 
-    max_size = max(
-        MIN_SAMPLES_PER_CLUSTER,
-        min(
-            MAX_CLUSTER_SIZE,
-            int(np.ceil(len(labels) * MAX_CLUSTER_FRACTION)),
-        ),
-    )
+    max_size = 4  # Literal for testing
 
     split = _split_large_clusters(
         embeddings,
         labels,
-        min_size=MIN_SAMPLES_PER_CLUSTER,
+        min_size=2,
         max_size=max_size,
         max_clusters=desired_clusters,
     )
     counts = np.bincount(split)
 
-    allowed_max = max_size + MIN_SAMPLES_PER_CLUSTER - 1
+    allowed_max = max_size + 2 - 1
     assert counts.max() <= allowed_max
     assert sorted(set(split)) == list(range(len(set(split))))
 
@@ -265,13 +252,13 @@ def test_split_large_clusters_respects_absolute_cap():
     split = _split_large_clusters(
         embeddings,
         labels,
-        min_size=MIN_SAMPLES_PER_CLUSTER,
-        max_size=MAX_CLUSTER_SIZE,
-        max_clusters=MAX_CLUSTERS,
+        min_size=1,
+        max_size=40,
+        max_clusters=40,
     )
     counts = np.bincount(split)
 
-    allowed_max = MAX_CLUSTER_SIZE + MIN_SAMPLES_PER_CLUSTER - 1
+    allowed_max = 40
     assert counts.max() <= allowed_max
 
 
@@ -280,8 +267,9 @@ def test_cluster_interests_returns_centroids_only():
     np.random.seed(42)
     embeddings = np.random.randn(20, 384).astype(np.float32)
 
-    centroids = cluster_interests(embeddings)
-    centroids_with_labels, _ = cluster_interests_with_labels(embeddings)
+    config = ClusteringConfig()
+    centroids = cluster_interests(embeddings, config=config)
+    centroids_with_labels, _ = cluster_interests_with_labels(embeddings, config=config)
 
     np.testing.assert_array_almost_equal(centroids, centroids_with_labels)
 
@@ -497,7 +485,8 @@ def test_clustering_stability_with_outlier(seed, n_base_samples):
     base_embeddings /= np.linalg.norm(base_embeddings, axis=1, keepdims=True) + 1e-9
     
     # 2. Cluster base points
-    _, labels_base = cluster_interests_with_labels(base_embeddings)
+    config = ClusteringConfig()
+    _, labels_base = cluster_interests_with_labels(base_embeddings, config=config)
     
     # 3. Add an outlier point (orthogonal to blobs)
     outlier = rng.normal(loc=0.0, scale=0.1, size=(1, 384)).astype(np.float32)
@@ -507,7 +496,7 @@ def test_clustering_stability_with_outlier(seed, n_base_samples):
     extended_embeddings = np.vstack([base_embeddings, outlier])
     
     # 4. Cluster extended set
-    _, labels_ext = cluster_interests_with_labels(extended_embeddings)
+    _, labels_ext = cluster_interests_with_labels(extended_embeddings, config=config)
     
     # 5. Compare base points' labels in both runs
     # Since cluster IDs can change (e.g., 0 becomes 1), we check the Rand Index 

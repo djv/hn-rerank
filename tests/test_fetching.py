@@ -24,6 +24,7 @@ from api.fetching import (
     story_from_bigquery_row,
 )
 from api.models import Story
+from api.config import AppConfig
 
 
 class TestCleanText:
@@ -134,7 +135,8 @@ async def test_get_best_stories_accepts_min_comment_length():
         mp.setattr("api.fetching.atomic_write_json", lambda p, d: None)
         mp.setattr("api.fetching.evict_old_cache_files", lambda *args, **kwargs: None)
 
-        stories = await get_best_stories(limit=1, days=1, include_rss=False)
+        config = AppConfig(days=1, no_rss=True)
+        stories = await get_best_stories(limit=1, config=config)
         assert len(stories) == 1
         assert stories[0].id == 42
 
@@ -380,8 +382,9 @@ async def test_get_best_stories_filtering():
         mp.setattr("api.fetching.atomic_write_json", lambda p, d: None)
         mp.setattr("api.fetching.evict_old_cache_files", lambda *args, **kwargs: None)
 
+        config = AppConfig(days=1, no_rss=True)
         stories = await get_best_stories(
-            limit=limit, exclude_ids=exclude, days=1, include_rss=False
+            limit=limit, exclude_ids=exclude, config=config
         )
 
         # The fetcher uses a buffer and minimum window size (20), so it may return more than limit
@@ -430,7 +433,8 @@ async def test_get_best_stories_caps_candidate_collection(monkeypatch):
         mp.setattr("api.fetching.atomic_write_json", lambda p, d: None)
         mp.setattr("api.fetching.evict_old_cache_files", lambda *args, **kwargs: None)
 
-        stories = await get_best_stories(limit=40, days=1, include_rss=False)
+        config = AppConfig(days=1, no_rss=True)
+        stories = await get_best_stories(limit=40, config=config)
 
     assert len(stories) <= 60
     assert len(stories) >= 40
@@ -499,7 +503,8 @@ async def test_get_best_stories_pagination():
         mp.setattr("api.fetching.atomic_write_json", lambda p, d: None)
         mp.setattr("api.fetching.evict_old_cache_files", lambda *args, **kwargs: None)
 
-        stories = await get_best_stories(limit=1100, days=4, include_rss=False)
+        config = AppConfig(days=4, no_rss=True)
+        stories = await get_best_stories(limit=1100, config=config)
         # We expect 1100 unique stories
         assert len(stories) >= 1100
 
@@ -521,7 +526,8 @@ async def test_get_best_stories_empty_response():
         mp.setattr("api.fetching.atomic_write_json", lambda p, d: None)
         mp.setattr("api.fetching.evict_old_cache_files", lambda *args, **kwargs: None)
 
-        stories = await get_best_stories(limit=10, days=1, include_rss=False)
+        config = AppConfig(days=1, no_rss=True)
+        stories = await get_best_stories(limit=10, config=config)
         assert stories == []
 
 
@@ -578,7 +584,8 @@ async def test_get_best_stories_partial_failure():
         mp.setattr("api.fetching.atomic_write_json", lambda p, d: None)
         mp.setattr("api.fetching.evict_old_cache_files", lambda *args, **kwargs: None)
 
-        stories = await get_best_stories(limit=10, days=1, include_rss=False)
+        config = AppConfig(days=1, no_rss=True)
+        stories = await get_best_stories(limit=10, config=config)
         # Should still return the stories from successful window
         assert len(stories) >= 1
 
@@ -650,7 +657,8 @@ async def test_get_best_stories_merges_algolia_live_and_bigquery_archive(
     )
     monkeypatch.setattr("api.fetching.fetch_full_text", fake_fetch_full_text)
 
-    stories = await get_best_stories(limit=10, days=10, include_rss=False)
+    config = AppConfig(days=10, no_rss=True)
+    stories = await get_best_stories(limit=10, config=config)
 
     assert [story.id for story in stories] == [1, 2]
     assert "archive article text" in stories[1].text_content
@@ -674,8 +682,9 @@ async def test_get_best_stories_raises_when_bigquery_archive_fails(monkeypatch):
         fake_query_bigquery_archive_sync,
     )
 
+    config = AppConfig(days=10, no_rss=True)
     with pytest.raises(RuntimeError, match="BigQuery unavailable"):
-        await get_best_stories(limit=10, days=10, include_rss=False)
+        await get_best_stories(limit=10, config=config)
 
 
 class TestWindowFilters:

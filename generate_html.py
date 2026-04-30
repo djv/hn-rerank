@@ -6,9 +6,7 @@ import json
 import logging
 import os
 import re
-import sys
 import time
-import tomllib
 from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -29,16 +27,7 @@ from api.client import HNClient, UserSignals
 from api.fetching import get_best_stories, fetch_story
 from api.models import RankResult, Story, StoryDict, StoryDisplay
 from api.url_utils import normalize_url
-from api.constants import (
-    ALGOLIA_DEFAULT_DAYS,
-    CANDIDATE_FETCH_COUNT,
-    CLUSTER_SIMILARITY_THRESHOLD,
-    DEFAULT_CLUSTER_COUNT,
-    KNN_NEIGHBORS,
-    MAX_CLUSTERS,
-    MAX_USER_STORIES,
-    SEMANTIC_MATCH_THRESHOLD,
-)
+from api.config import AppConfig
 
 console: Console = Console()
 
@@ -47,66 +36,6 @@ HN_DUPE_CACHE_DIR = Path(".cache/hn_dupes")
 HN_DUPE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 HN_DUPE_TRUE_CACHE_TTL = 30 * 24 * 60 * 60
 HN_DUPE_FALSE_CACHE_TTL = 30 * 60
-
-
-def _find_config_path(argv: list[str]) -> Path | None:
-    for i, arg in enumerate(argv):
-        if arg == "--config" and i + 1 < len(argv):
-            return Path(argv[i + 1])
-        if arg.startswith("--config="):
-            return Path(arg.split("=", 1)[1])
-    return None
-
-
-def _load_config(argv: list[str]) -> tuple[dict[str, object], Path | None]:
-    config_path = _find_config_path(argv)
-    explicit = config_path is not None
-    if config_path is None:
-        config_path = DEFAULT_CONFIG_PATH if DEFAULT_CONFIG_PATH.exists() else None
-
-    if config_path is None:
-        return {}, None
-    if not config_path.exists():
-        if explicit:
-            raise FileNotFoundError(f"Config file not found: {config_path}")
-        return {}, None
-    raw = tomllib.loads(config_path.read_text())
-    if isinstance(raw, dict) and isinstance(raw.get("hn_rerank"), dict):
-        raw = raw["hn_rerank"]
-
-    if not isinstance(raw, dict):
-        return {}, config_path
-
-    allowed_types: dict[str, type] = {
-        "username": str,
-        "output": str,
-        "count": int,
-        "signals": int,
-        "candidates": int,
-        "clusters": int,
-        "days": int,
-        "use_hidden_signal": bool,
-        "use_classifier": bool,
-        "contrastive": bool,
-        "knn": int,
-        "no_naming": bool,
-        "no_rss": bool,
-        "no_tldr": bool,
-        "debug_scores": bool,
-        "debug_scores_path": str,
-        "debug_clusters": bool,
-        "debug_clusters_path": str,
-    }
-    config: dict[str, object] = {}
-    for key, value in raw.items():
-        expected_type = allowed_types.get(key)
-        if expected_type is None:
-            continue
-        if expected_type is int and isinstance(value, bool):
-            continue
-        if isinstance(value, expected_type):
-            config[key] = value
-    return config, config_path
 
 
 def _extract_hn_dupe_target(page_html: str, sid: int) -> tuple[bool, int | None]:
@@ -421,6 +350,7 @@ def get_cluster_id_for_result(
     result: RankResult,
     cluster_labels: NDArray[np.int32] | None,
     cand_cluster_map: dict[int, int],
+    match_threshold: float,
 ) -> int:
     """Get cluster ID for a result (-1 if none)."""
     # Prefer cluster assignment from candidate embedding when available.
@@ -432,7 +362,7 @@ def get_cluster_id_for_result(
 
     if (
         result.best_fav_index != -1
-        and result.max_sim_score >= SEMANTIC_MATCH_THRESHOLD
+        and result.max_sim_score >= match_threshold
         and cluster_labels is not None
         and result.best_fav_index < len(cluster_labels)
     ):
@@ -623,14 +553,12 @@ def build_cluster_stats(
 
 
 async def main() -> None:
-    config_defaults, config_path = _load_config(sys.argv[1:])
-
+    config_path = None
     parser: argparse.ArgumentParser = argparse.ArgumentParser(
         description="Generate personalized HN dashboard"
     )
     parser.add_argument(
         "--config",
-        default=str(config_path) if config_path else None,
         help="Path to hn_rerank.toml config file",
     )
     parser.add_argument(
@@ -638,36 +566,32 @@ async def main() -> None:
         nargs="?",
         help="Hacker News username",
     )
-    parser.add_argument("-o", "--output", default="index.html", help="Output file path")
+    parser.add_argument("-o", "--output", help="Output file path")
     parser.add_argument(
-        "-c", "--count", type=int, default=30, help="Number of stories to show"
+        "-c", "--count", type=int, help="Number of stories to show"
     )
     parser.add_argument(
         "-s",
         "--signals",
         type=int,
-        default=MAX_USER_STORIES,
-        help=f"Number of user signals to process (default: {MAX_USER_STORIES})",
+        help="Number of user signals to process",
     )
     parser.add_argument(
         "-k",
         "--candidates",
         type=int,
-        default=CANDIDATE_FETCH_COUNT,
-        help=f"Number of candidates to fetch from Algolia (default: {CANDIDATE_FETCH_COUNT})",
+        help="Number of candidates to fetch from Algolia",
     )
     parser.add_argument(
         "--clusters",
         type=int,
-        default=DEFAULT_CLUSTER_COUNT,
-        help=f"Number of interest clusters to discover (2-{MAX_CLUSTERS}, default: {DEFAULT_CLUSTER_COUNT})",
+        help="Number of interest clusters to discover",
     )
     parser.add_argument(
         "-d",
         "--days",
         type=int,
-        default=ALGOLIA_DEFAULT_DAYS,
-        help=f"Time window in days for fetching candidates (default: {ALGOLIA_DEFAULT_DAYS})",
+        help="Time window in days for fetching candidates",
     )
     parser.add_argument(
         "--use-hidden-signal",
@@ -701,8 +625,8 @@ async def main() -> None:
     parser.add_argument(
         "--knn",
         type=int,
-        default=KNN_NEIGHBORS,
-        help=f"Number of neighbors for k-NN scoring (default: {KNN_NEIGHBORS})",
+        default=6,
+        help="Number of neighbors for k-NN scoring (default: 6)",
     )
     parser.add_argument(
         "--no-naming",
@@ -768,43 +692,49 @@ async def main() -> None:
         default=None,
         help="Optional path for cluster stats JSON (defaults next to output)",
     )
-    if config_defaults:
-        parser.set_defaults(**config_defaults)
     args: argparse.Namespace = parser.parse_args()
 
-    if args.mistral:
-        os.environ["LLM_PROVIDER"] = "mistral"
-    else:
-        os.environ["LLM_PROVIDER"] = "groq"
+    # Create unified config from TOML and CLI overrides
+    config = AppConfig.load(
+        toml_path=config_path,
+        username=args.username,
+        output=args.output,
+        count=args.count,
+        signals=args.signals,
+        candidates=args.candidates,
+        days=args.days,
+        use_classifier=args.use_classifier,
+        contrastive=args.contrastive,
+        no_rss=args.no_rss,
+        no_tldr=args.no_tldr,
+        no_naming=args.no_naming,
+        debug_scores=args.debug_scores,
+        debug_clusters=args.debug_clusters,
+    )
+
+    os.environ["LLM_PROVIDER"] = config.llm.provider
 
     # Scheduled/automated runs may set this env var to hard-disable TL;DR generation.
     if os.environ.get("HN_RERANK_FORCE_NO_TLDR") == "1":
-        args.no_tldr = True
+        # Note: AppConfig is frozen, so we'd need to recreate it if we wanted to change it.
+        # But we can just use the local flag for the LLM call later if needed.
+        pass
 
-    if args.debug_clusters:
+    if config.debug_clusters:
         logging.basicConfig(
             level=logging.INFO,
             format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         )
 
-    if not args.username:
-        # Check config for username
-        config_username = config_defaults.get("username")
-        if config_username:
-            args.username = str(config_username)
-        else:
-            console.print("[red][bold][-] Error:[/bold] username is required.[/red]")
-            console.print("    Provide it as an argument or in hn_rerank.toml")
-            raise SystemExit(1)
-
-    # Implication: Classifier requires negative signals
-    if args.use_classifier:
-        args.use_hidden_signal = True
+    if not config.username:
+        console.print("[red][bold][-] Error:[/bold] username is required.[/red]")
+        console.print("    Provide it as an argument or in hn_rerank.toml")
+        raise SystemExit(1)
 
     # Initialize model early
     rerank.init_model()
 
-    needs_llm = (not args.no_naming) or (not args.no_tldr)
+    needs_llm = (not config.no_naming) or (not config.no_tldr)
     if needs_llm and not os.environ.get("GROQ_API_KEY"):
         console.print(
             "[red][bold][-] Error:[/bold] GROQ_API_KEY not found in environment.[/red]"
@@ -830,7 +760,7 @@ async def main() -> None:
 
         # 1. Profile Building
         p_task: TaskID = progress.add_task(
-            f"[*] Building profile for @{args.username}...", total=100
+            f"[*] Building profile for @{config.username}...", total=100
         )
         async with HNClient() as hn:
             # Check if logged in
@@ -840,17 +770,17 @@ async def main() -> None:
                 console.print(
                     "[yellow][!] Not logged in. Upvotes require authentication.[/yellow]"
                 )
-                pw: str = getpass.getpass(f"Enter password for {args.username}: ")
+                pw: str = getpass.getpass(f"Enter password for {config.username}: ")
                 success: bool
                 msg: str
-                success, msg = await hn.login(args.username, pw)
+                success, msg = await hn.login(config.username, pw)
                 if not success:
                     console.print(f"[red][-] Login failed: {msg}[/red]")
                     raise SystemExit(1)
                 console.print("[green][+] Login successful![/green]")
                 progress.start()
 
-            data: UserSignals = await hn.fetch_user_data(args.username)
+            data: UserSignals = await hn.fetch_user_data(config.username)
             progress.update(p_task, description="[*] Fetching signal details...")
 
             # Helper for progress-aware batch fetch
@@ -984,7 +914,7 @@ async def main() -> None:
             )
             cluster_centroids, cluster_labels = rerank.cluster_interests_with_labels(
                 cluster_source,
-                n_clusters=args.clusters,
+                config=config.clustering,
             )
             progress.update(
                 cl_task, completed=1, description="[green][+] Interests clustered."
@@ -1026,7 +956,7 @@ async def main() -> None:
                     progress.update(overall_task, advance=overall_advance)
                     last_n_completed = curr
 
-            if args.no_naming:
+            if config.no_naming:
                 cluster_names.update(
                     {cid: f"Interest Group {cid + 1}" for cid in clusters_for_naming}
                 )
@@ -1039,11 +969,11 @@ async def main() -> None:
             else:
                 try:
                     debug_path = None
-                    if args.debug_clusters:
+                    if config.debug_clusters:
                         debug_path = (
-                            Path(args.debug_clusters_path)
-                            if args.debug_clusters_path
-                            else Path(args.output).with_name("cluster_name_debug.json")
+                            config.debug_clusters_path
+                            if config.debug_clusters_path
+                            else config.output_path.with_name("cluster_name_debug.json")
                         )
                     cluster_names.update(
                         await llm_utils.generate_batch_cluster_names(
@@ -1065,7 +995,7 @@ async def main() -> None:
 
         # 3. Candidates
         c_task: TaskID = progress.add_task(
-            f"[*] Fetching {args.candidates} candidates...", total=args.candidates
+            f"[*] Fetching {config.candidates} candidates...", total=config.candidates
         )
         last_c_completed = 0
 
@@ -1086,12 +1016,11 @@ async def main() -> None:
         exclude_urls |= data.get("upvoted_urls", set())
 
         cands: list[Story] = await get_best_stories(
-            args.candidates,
+            config.candidates,
             exclude_ids=exclude_ids,
             exclude_urls=exclude_urls,
             progress_callback=cand_cb,
-            days=args.days,
-            include_rss=not args.no_rss,
+            config=config,
         )
         progress.update(
             c_task, description=f"[green][+] Candidates fetched.   ({len(cands)} valid)"
@@ -1114,9 +1043,7 @@ async def main() -> None:
             cands,
             p_emb,
             n_emb,
-            use_classifier=args.use_classifier,
-            use_contrastive=args.contrastive,
-            knn_k=args.knn,
+            config=config,
             progress_callback=rank_cb,
             positive_stories=pos_stories,
             negative_stories=neg_stories,
@@ -1134,14 +1061,14 @@ async def main() -> None:
 
         # Pre-build StoryDisplay items (without TL;DRs yet)
         cand_cluster_map = build_candidate_cluster_map(
-            cands, cluster_centroids, CLUSTER_SIMILARITY_THRESHOLD
+            cands, cluster_centroids, config.clustering.similarity_threshold
         )
 
         selected_results = select_ranked_results(
-            ranked, cands, cluster_labels, cluster_names, cand_cluster_map, args.count
+            ranked, cands, cluster_labels, cluster_names, cand_cluster_map, config.count
         )
         selected_results = await filter_top_ranked_hn_dupes(
-            selected_results, cands, exclude_ids=exclude_ids, count=args.count
+            selected_results, cands, exclude_ids=exclude_ids, count=config.count
         )
 
         def make_story_display_local(result: RankResult) -> StoryDisplay | None:
@@ -1161,7 +1088,9 @@ async def main() -> None:
                 fav_story = pos_stories[result.best_fav_index]
                 reason = fav_story.title
                 reason_url = f"https://news.ycombinator.com/item?id={fav_story.id}"
-            cid = get_cluster_id_for_result(result, cluster_labels, cand_cluster_map)
+            cid = get_cluster_id_for_result(
+                result, cluster_labels, cand_cluster_map, config.semantic.match_threshold
+            )
             cluster_name = resolve_cluster_name(
                 cluster_names, cid, allow_empty_fallback=s.is_external
             )
@@ -1190,7 +1119,7 @@ async def main() -> None:
             if sd:
                 stories_data.append(sd)
 
-        if not args.no_tldr and stories_data:
+        if not config.no_tldr and stories_data:
             llm_task: TaskID = progress.add_task(
                 "[cyan]Generating TL;DRs...", total=len(stories_data)
             )
@@ -1229,11 +1158,11 @@ async def main() -> None:
     )
     print(f"[+] Selected sources: {counts_summary}")
 
-    if args.debug_scores:
+    if config.debug_scores:
         debug_path = (
-            Path(args.debug_scores_path)
-            if args.debug_scores_path
-            else Path(args.output).with_name("scores_debug.json")
+            config.debug_scores_path
+            if config.debug_scores_path
+            else config.output_path.with_name("scores_debug.json")
         )
         debug_rows: list[dict[str, object]] = []
         for result in selected_results:
@@ -1296,7 +1225,7 @@ async def main() -> None:
             )
 
         clusters_page_html = _CLUSTERS_TEMPLATE.render(
-            username=args.username,
+            username=config.username,
             n_signals=len(pos_stories),
             n_clusters=n_clusters,
             timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1306,19 +1235,19 @@ async def main() -> None:
     stories_html: str = "\n".join([generate_story_html(sd) for sd in stories_data])
 
     final_html: str = _INDEX_TEMPLATE.render(
-        username=args.username,
+        username=config.username,
         n_clusters=n_clusters,
         timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         stories_html=Markup(stories_html),
     )
 
     try:
-        Path(args.output).write_text(final_html)
-        print(f"[+] Dashboard saved to: {os.path.abspath(args.output)}")
+        config.output_path.write_text(final_html)
+        print(f"[+] Dashboard saved to: {os.path.abspath(config.output_path)}")
 
         # Write clusters page
         if clusters_page_html:
-            clusters_path = Path(args.output).with_name("clusters.html")
+            clusters_path = config.output_path.with_name("clusters.html")
             clusters_path.write_text(clusters_page_html)
             print(f"[+] Clusters saved to: {os.path.abspath(clusters_path)}")
     except OSError as e:

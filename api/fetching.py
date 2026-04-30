@@ -16,7 +16,6 @@ import httpx
 
 from api.cache_utils import atomic_write_json, evict_old_cache_files
 from api.constants import (
-    ALGOLIA_DEFAULT_DAYS,
     ALGOLIA_MIN_POINTS,
     CANDIDATE_CACHE_VERSION,
     EXTERNAL_REQUEST_SEMAPHORE,
@@ -39,6 +38,7 @@ from api.content import ARTICLE_SEM, compose_story_text, fetch_full_text, strip_
 from api.models import Story, StoryDict
 from api.rss import fetch_rss_stories
 from api.url_utils import normalize_url
+from api.config import AppConfig
 
 logger = logging.getLogger(__name__)
 
@@ -612,13 +612,15 @@ async def get_best_stories(
     exclude_ids: set[int] | None = None,
     exclude_urls: set[str] | None = None,
     progress_callback: Callable[[int, int], None] | None = None,
-    days: int = ALGOLIA_DEFAULT_DAYS,
-    include_rss: bool = True,
+    config: AppConfig = AppConfig(),
     cache_only: bool = False,
     allow_stale: bool = False,
 ) -> list[Story]:
     if exclude_ids is None:
         exclude_ids = set()
+
+    days = config.days
+    include_rss = not config.no_rss
 
     ALGOLIA_MAX_PER_QUERY = 1000
 

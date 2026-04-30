@@ -4,12 +4,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-from contextlib import ExitStack
 from pathlib import Path
 from statistics import fmean, pstdev
 from typing import cast
 import sys
-from unittest.mock import patch
 
 import numpy as np
 
@@ -17,15 +15,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import api.rerank  # noqa: E402
-from api.constants import (  # noqa: E402
-    CLASSIFIER_LOCAL_HIDDEN_PENALTY_K,
-    CLASSIFIER_LOCAL_HIDDEN_PENALTY_WEIGHT,
-    CLASSIFIER_K_FEAT,
-    CLASSIFIER_NEG_SAMPLE_WEIGHT,
-    KNN_NEIGHBORS,
-    RANKING_DIVERSITY_LAMBDA,
-    RANKING_NEGATIVE_WEIGHT,
+from api.config import (  # noqa: E402
+    AppConfig,
+    RankingConfig,
+    SemanticConfig,
+    ClassifierConfig,
 )
 from evaluate_quality import RankingEvaluator  # noqa: E402
 
@@ -114,31 +108,31 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--diversity",
         type=float,
-        default=RANKING_DIVERSITY_LAMBDA,
+        default=0.2396634418,
         help="Diversity lambda to evaluate",
     )
     parser.add_argument(
         "--neg-weight",
         type=float,
-        default=RANKING_NEGATIVE_WEIGHT,
+        default=0.5529047831,
         help="Negative penalty weight to evaluate",
     )
     parser.add_argument(
         "--knn",
         type=int,
-        default=KNN_NEIGHBORS,
+        default=6,
         help="k-NN neighbor count to evaluate",
     )
     parser.add_argument(
         "--classifier-k-feat",
         type=int,
-        default=CLASSIFIER_K_FEAT,
+        default=10,
         help="Classifier k_feat to evaluate",
     )
     parser.add_argument(
         "--classifier-neg-sample-weight",
         type=float,
-        default=CLASSIFIER_NEG_SAMPLE_WEIGHT,
+        default=1.0,
         help="Classifier negative sample weight to evaluate",
     )
     parser.add_argument(
@@ -161,13 +155,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--local-hidden-penalty-weight",
         type=float,
-        default=CLASSIFIER_LOCAL_HIDDEN_PENALTY_WEIGHT,
+        default=0.1,
         help="Local hidden penalty weight for the optional penalty variant.",
     )
     parser.add_argument(
         "--local-hidden-penalty-k",
         type=int,
-        default=CLASSIFIER_LOCAL_HIDDEN_PENALTY_K,
+        default=10,
         help="Local hidden penalty k for the optional penalty variant.",
     )
     return parser
@@ -223,65 +217,48 @@ async def main() -> int:
     for label, flags in variants:
         per_seed: list[dict[str, float]] = []
         per_seed_diagnostics: list[dict[str, object]] = []
-        with ExitStack() as stack:
-            stack.enter_context(
-                patch.object(api.rerank, "CLASSIFIER_K_FEAT", args.classifier_k_feat)
+        
+        # Prepare config for this variant
+        use_local_hidden_penalty = (
+            args.include_local_hidden_penalty
+            and label == "current_best_plus_local_hidden_penalty"
+        )
+        
+        config = AppConfig(
+            use_classifier=True,
+            ranking=RankingConfig(
+                diversity_lambda=args.diversity,
+                negative_weight=args.neg_weight,
+            ),
+            semantic=SemanticConfig(
+                knn_neighbors=args.knn,
+            ),
+            classifier=ClassifierConfig(
+                k_feat=args.classifier_k_feat,
+                use_centroid_feature=flags.get("CLASSIFIER_USE_CENTROID_FEATURE", True),
+                use_pos_knn_feature=flags.get("CLASSIFIER_USE_POS_KNN_FEATURE", True),
+                use_neg_knn_feature=flags.get("CLASSIFIER_USE_NEG_KNN_FEATURE", True),
+            ),
+        )
+
+        for seed in args.seeds:
+            np.random.seed(seed)
+            diagnostics_summary: dict[str, object] = {}
+            metrics = evaluator.evaluate_cv(
+                n_folds=args.cv_folds,
+                config=config,
+                report_each=False,
+                parallel=False,
+                final_list_count=args.count,
+                diagnostics_summary=diagnostics_summary,
             )
-            stack.enter_context(
-                patch.object(
-                    api.rerank,
-                    "CLASSIFIER_NEG_SAMPLE_WEIGHT",
-                    args.classifier_neg_sample_weight,
-                )
+            per_seed.append(metrics)
+            per_seed_diagnostics.append(
+                {
+                    "seed": seed,
+                    "diagnostics": diagnostics_summary,
+                }
             )
-            use_local_hidden_penalty = (
-                args.include_local_hidden_penalty
-                and label == "current_best_plus_local_hidden_penalty"
-            )
-            stack.enter_context(
-                patch.object(
-                    api.rerank,
-                    "CLASSIFIER_USE_LOCAL_HIDDEN_PENALTY",
-                    use_local_hidden_penalty,
-                )
-            )
-            stack.enter_context(
-                patch.object(
-                    api.rerank,
-                    "CLASSIFIER_LOCAL_HIDDEN_PENALTY_WEIGHT",
-                    args.local_hidden_penalty_weight,
-                )
-            )
-            stack.enter_context(
-                patch.object(
-                    api.rerank,
-                    "CLASSIFIER_LOCAL_HIDDEN_PENALTY_K",
-                    args.local_hidden_penalty_k,
-                )
-            )
-            for attr, value in flags.items():
-                stack.enter_context(patch.object(api.rerank, attr, value))
-            for seed in args.seeds:
-                np.random.seed(seed)
-                diagnostics_summary: dict[str, object] = {}
-                metrics = evaluator.evaluate_cv(
-                    n_folds=args.cv_folds,
-                    diversity=args.diversity,
-                    knn=args.knn,
-                    neg_weight=args.neg_weight,
-                    use_classifier=True,
-                    report_each=False,
-                    parallel=False,
-                    final_list_count=args.count,
-                    diagnostics_summary=diagnostics_summary,
-                )
-                per_seed.append(metrics)
-                per_seed_diagnostics.append(
-                    {
-                        "seed": seed,
-                        "diagnostics": diagnostics_summary,
-                    }
-                )
         summary = summarize(per_seed)
         results.append(
             {

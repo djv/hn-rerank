@@ -2,6 +2,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 from api import fetching
 from api.constants import CANDIDATE_CACHE_TTL_LONG, CANDIDATE_CACHE_TTL_SHORT
+from api.config import AppConfig
 
 
 @pytest.mark.asyncio
@@ -27,7 +28,8 @@ async def test_live_window_candidate_cache_uses_short_and_long_ttls():
         mock_client.get = mock_get
         mock_client_cls.return_value = mock_client
 
-        await fetching.get_best_stories(limit=10, days=4, include_rss=False)
+        config = AppConfig(days=4, no_rss=True)
+        await fetching.get_best_stories(limit=10, config=config)
 
         ttls = [call.args[1] for call in mock_get_cache.call_args_list]
         assert CANDIDATE_CACHE_TTL_SHORT in ttls
@@ -58,7 +60,8 @@ async def test_archive_window_uses_bigquery_instead_of_algolia_candidate_cache()
         mock_client.get = mock_get
         mock_client_cls.return_value = mock_client
 
-        await fetching.get_best_stories(limit=10, days=40, include_rss=False)
+        config = AppConfig(days=40, no_rss=True)
+        await fetching.get_best_stories(limit=10, config=config)
 
         mock_bq_archive.assert_called_once()
         assert all(

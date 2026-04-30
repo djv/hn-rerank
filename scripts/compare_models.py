@@ -340,11 +340,17 @@ async def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 evaluator.dataset = clone_dataset_for_model(eq, rerank, shared_dataset)
 
             per_seed: list[dict[str, Any]] = []
+            from api.config import AppConfig
             for seed in args.seeds:
                 np.random.seed(seed)
+                config = AppConfig(
+                    username=args.username or "snapshot",
+                    use_classifier=args.classifier,
+                    count=args.count,
+                )
                 metrics = evaluator.evaluate_cv(
                     n_folds=args.cv_folds,
-                    use_classifier=args.classifier,
+                    config=config,
                     report_each=False,
                     parallel=False,
                     final_list_count=args.count if args.final_list else None,

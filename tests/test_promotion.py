@@ -17,7 +17,7 @@ from promote_stable_params import (
     _score_metrics,
     SeedRun,
 )
-from tuning_common import build_patch_kwargs, validate_candidate_metrics
+from tuning_common import get_tuning_config, validate_candidate_metrics
 
 
 def test_parse_seed_list_dedups_preserves_order():
@@ -142,21 +142,22 @@ def test_render_promoted_toml_contains_expected_sections():
 
 
 def test_removed_knn_semantic_knobs_are_not_promoted_or_patched():
-    resolved = _resolved_params(
-        {
-            "knn_k": 2,
-            "knn_sigmoid_k": 4.5,
-            "knn_maxsim_weight": 0.25,
-        }
-    )
+    params = {
+        "knn_k": 2,
+        "knn_sigmoid_k": 4.5,
+        "knn_maxsim_weight": 0.25,
+    }
+    resolved = _resolved_params(params)
     text = _render_promoted_toml(resolved)
-    patch_kwargs = build_patch_kwargs(resolved)
+    config = get_tuning_config(params)
 
     assert "knn_neighbors = 2" in text
     assert "knn_sigmoid_k" not in text
     assert "knn_maxsim_weight" not in text
-    assert "KNN_SIGMOID_K" not in patch_kwargs
-    assert "KNN_MAXSIM_WEIGHT" not in patch_kwargs
+    # Verify the config object doesn't have these (they aren't even fields in the dataclass)
+    assert config.semantic.knn_neighbors == 2
+    assert not hasattr(config.semantic, "knn_sigmoid_k")
+    assert not hasattr(config.semantic, "knn_maxsim_weight")
 
 
 def test_validate_candidate_metrics_requires_score_gain_and_no_guard_regressions():

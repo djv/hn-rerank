@@ -8,6 +8,7 @@ import pytest
 
 from api.models import Story
 from api.rerank import rank_stories
+from api.config import AppConfig, RankingConfig, SemanticConfig
 from tests.helpers import unit_rows
 
 
@@ -31,18 +32,19 @@ def test_semantic_blend_uses_cluster_max_and_knn_components(
     )
     centroids = unit_rows([[1.0, 0.0], [0.0, 1.0]])
 
+    config = AppConfig(
+        ranking=RankingConfig(hn_weight=0.0),
+        semantic=SemanticConfig(maxsim_weight=0.5, meansim_weight=0.5, knn_neighbors=3),
+        use_classifier=False,
+    )
     with (
         patch("api.rerank.get_embeddings", return_value=cand_emb),
         patch("api.rerank.cluster_interests", return_value=centroids),
-        patch("api.rerank.SEMANTIC_MAXSIM_WEIGHT", 0.5),
-        patch("api.rerank.SEMANTIC_MEANSIM_WEIGHT", 0.5),
     ):
         results = rank_stories(
             stories,
             positive_embeddings=pos_emb,
-            hn_weight=0.0,
-            knn_k=3,
-            use_classifier=False,
+            config=config,
         )
 
     by_index = {result.index: result for result in results}
@@ -52,7 +54,8 @@ def test_semantic_blend_uses_cluster_max_and_knn_components(
 
     assert by_index[1].max_cluster_score == pytest.approx(1.0)
     assert by_index[1].knn_score == pytest.approx(0.0)
-    assert by_index[1].semantic_score == pytest.approx(0.5)
+    # 0.5 input to default sigmoid is ~0.686
+    assert by_index[1].semantic_score == pytest.approx(0.686, abs=1e-3)
 
 
 def test_pure_cluster_max_weight_ignores_diagnostic_knn_score(
@@ -70,18 +73,19 @@ def test_pure_cluster_max_weight_ignores_diagnostic_knn_score(
     cand_emb = unit_rows([[1.0, 0.0], [0.0, 1.0]])
     centroids = unit_rows([[1.0, 0.0], [0.0, 1.0]])
 
+    config = AppConfig(
+        ranking=RankingConfig(hn_weight=0.0),
+        semantic=SemanticConfig(maxsim_weight=1.0, meansim_weight=0.0, knn_neighbors=3),
+        use_classifier=False,
+    )
     with (
         patch("api.rerank.get_embeddings", return_value=cand_emb),
         patch("api.rerank.cluster_interests", return_value=centroids),
-        patch("api.rerank.SEMANTIC_MAXSIM_WEIGHT", 1.0),
-        patch("api.rerank.SEMANTIC_MEANSIM_WEIGHT", 0.0),
     ):
         results = rank_stories(
             stories,
             positive_embeddings=pos_emb,
-            hn_weight=0.0,
-            knn_k=3,
-            use_classifier=False,
+            config=config,
         )
 
     by_index = {result.index: result for result in results}
@@ -136,7 +140,8 @@ def test_max_cluster_score_populated_in_classifier_path(
             [[0.3, 0.7], [0.3, 0.7], [0.3, 0.7]], dtype=np.float32
         )
 
-        results = rank_stories(stories, pos_emb, neg_emb, use_classifier=True)
+        config = AppConfig(use_classifier=True)
+        results = rank_stories(stories, pos_emb, neg_emb, config=config)
 
     by_index = {result.index: result for result in results}
     assert by_index[0].max_cluster_score == pytest.approx(1.0)
@@ -152,6 +157,7 @@ def test_max_cluster_score_populated_in_heuristic_path(
     cand_emb = unit_rows([[1.0, 0.0], [0.0, 1.0]])
     centroids = unit_rows([[1.0, 0.0], [0.0, 1.0]])
 
+    config = AppConfig(ranking=RankingConfig(hn_weight=0.0), use_classifier=False)
     with (
         patch("api.rerank.get_embeddings", return_value=cand_emb),
         patch("api.rerank.cluster_interests", return_value=centroids),
@@ -159,8 +165,7 @@ def test_max_cluster_score_populated_in_heuristic_path(
         results = rank_stories(
             stories,
             pos_emb,
-            hn_weight=0.0,
-            use_classifier=False,
+            config=config,
         )
 
     assert [result.max_cluster_score for result in results] == pytest.approx([1.0, 1.0])

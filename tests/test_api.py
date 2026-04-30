@@ -5,6 +5,7 @@ from api.constants import STORY_CACHE_VERSION
 from api.rerank import rank_stories
 from api.fetching import fetch_story
 from api.models import Story
+from api.config import AppConfig, RankingConfig
 
 
 @pytest.mark.asyncio
@@ -87,7 +88,7 @@ def test_rank_stories_basic():
     pos_emb = np.array([[1.0] * 768])
     # rank_stories expects get_embeddings to work
     with patch("api.rerank.get_embeddings", return_value=np.array([[1.0] * 768])):
-        results = rank_stories(stories, pos_emb)
+        results = rank_stories(stories, pos_emb, config=AppConfig())
         assert len(results) == 1
         assert results[0].index == 0
 
@@ -120,7 +121,7 @@ def test_rank_stories_no_positive_signals():
     with patch(
         "api.rerank.get_embeddings", return_value=np.array([[0.5] * 768, [0.6] * 768])
     ):
-        results = rank_stories(stories, positive_embeddings=None)
+        results = rank_stories(stories, positive_embeddings=None, config=AppConfig())
 
         assert len(results) == 2
         # All should have 0 max_sim and -1 fav_idx when no positive signals
@@ -150,7 +151,7 @@ def test_rank_stories_empty_positive_embeddings():
 
     with patch("api.rerank.get_embeddings", return_value=np.array([[0.5] * 768])):
         # Empty array
-        results = rank_stories(stories, positive_embeddings=np.array([]))
+        results = rank_stories(stories, positive_embeddings=np.array([]), config=AppConfig())
 
         assert len(results) == 1
         result = results[0]
@@ -165,13 +166,11 @@ def test_rank_stories_disables_freshness_boost_when_configured():
     ]
     pos_emb = np.array([[1.0] * 768])
     cand_emb = np.array([[1.0] * 768, [1.0] * 768])
+    from api.config import FreshnessConfig
+    config = AppConfig(freshness=FreshnessConfig(enabled=False, max_boost=0.5))
 
-    with (
-        patch("api.rerank.get_embeddings", return_value=cand_emb),
-        patch("api.rerank.FRESHNESS_ENABLED", False),
-        patch("api.rerank.FRESHNESS_MAX_BOOST", 0.5),
-    ):
-        results = rank_stories(stories, pos_emb)
+    with patch("api.rerank.get_embeddings", return_value=cand_emb):
+        results = rank_stories(stories, pos_emb, config=config)
 
     assert len(results) == 2
     assert all(result.freshness_boost == 0.0 for result in results)
@@ -204,12 +203,11 @@ def test_rank_stories_applies_freshness_boost_to_external_stories():
     pos_emb = np.array([[1.0] * 768])
     cand_emb = np.array([[1.0] * 768, [1.0] * 768])
 
-    with (
-        patch("api.rerank.get_embeddings", return_value=cand_emb),
-        patch("api.rerank.FRESHNESS_ENABLED", True),
-        patch("api.rerank.FRESHNESS_MAX_BOOST", 0.5),
-    ):
-        results = rank_stories(stories, pos_emb)
+    from api.config import FreshnessConfig
+    config = AppConfig(freshness=FreshnessConfig(enabled=True, max_boost=0.5))
+
+    with patch("api.rerank.get_embeddings", return_value=cand_emb):
+        results = rank_stories(stories, pos_emb, config=config)
 
     assert len(results) == 2
     assert results[0].index == 0
@@ -253,9 +251,9 @@ def test_rank_stories_penalizes_external_stories():
     cand_emb = np.array([[0.8] * 768, [0.8] * 768])
 
     with patch("api.rerank.get_embeddings", return_value=cand_emb):
-        # We need to ensure RANKING_HN_WEIGHT > 0 for the test to be meaningful
-        with patch("api.rerank.RANKING_HN_WEIGHT", 0.05):
-            results = rank_stories(stories, pos_emb)
+        # We need to ensure ranking.hn_weight > 0 for the test to be meaningful
+        config = AppConfig(ranking=RankingConfig(hn_weight=0.05))
+        results = rank_stories(stories, pos_emb, config=config)
 
     assert len(results) == 2
     hn_res = next(r for r in results if r.index == 0)
@@ -269,8 +267,7 @@ def test_rank_stories_penalizes_external_stories():
     # Now test that an HN story with points beats the external story
     stories[0].score = 100
     with patch("api.rerank.get_embeddings", return_value=cand_emb):
-        with patch("api.rerank.RANKING_HN_WEIGHT", 0.05):
-            results = rank_stories(stories, pos_emb)
+        results = rank_stories(stories, pos_emb, config=config)
 
     hn_res = next(r for r in results if r.index == 0)
     ext_res = next(r for r in results if r.index == 1)

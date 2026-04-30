@@ -3,17 +3,15 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from typing import Any, TypeAlias
-from unittest.mock import patch
 
-import api.rerank
+from api.config import (
+    AppConfig,
+)
 from api.constants import (
     ADAPTIVE_HN_THRESHOLD_YOUNG,
     ADAPTIVE_HN_WEIGHT_MIN,
     CLASSIFIER_K_FEAT,
     CLASSIFIER_USE_BALANCED_CLASS_WEIGHT,
-    CLUSTER_OUTLIER_SIMILARITY_THRESHOLD,
-    CLUSTER_SPECTRAL_NEIGHBORS,
-    DEFAULT_CLUSTER_COUNT,
     FRESHNESS_HALF_LIFE_HOURS,
     FRESHNESS_MAX_BOOST,
     HN_SCORE_NORMALIZATION_CAP,
@@ -179,35 +177,43 @@ def resolve_params(params: Mapping[str, float | int]) -> ResolvedParams:
     }
 
 
-def build_patch_kwargs(resolved: ResolvedParams) -> dict[str, Any]:
-    adaptive_hn = resolved["adaptive_hn"]
-    freshness = resolved["freshness"]
-    semantic = resolved["semantic"]
-    classifier = resolved["classifier"]
-    return {
-        "ADAPTIVE_HN_WEIGHT_MIN": adaptive_hn["weight_min"],
-        "ADAPTIVE_HN_WEIGHT_MAX": adaptive_hn["weight_max"],
-        "ADAPTIVE_HN_THRESHOLD_YOUNG": adaptive_hn["threshold_young"],
-        "ADAPTIVE_HN_THRESHOLD_OLD": adaptive_hn["threshold_old"],
-        "HN_SCORE_NORMALIZATION_CAP": adaptive_hn["score_normalization_cap"],
-        "FRESHNESS_MAX_BOOST": freshness["max_boost"],
-        "FRESHNESS_HALF_LIFE_HOURS": freshness["half_life_hours"],
-        "KNN_NEIGHBORS": semantic["knn_neighbors"],
-        "CLASSIFIER_K_FEAT": classifier["k_feat"],
-        "CLASSIFIER_USE_BALANCED_CLASS_WEIGHT": classifier["use_balanced_class_weight"],
-        "CLUSTER_OUTLIER_SIMILARITY_THRESHOLD": CLUSTER_OUTLIER_SIMILARITY_THRESHOLD,
-        "DEFAULT_CLUSTER_COUNT": DEFAULT_CLUSTER_COUNT,
-        "CLUSTER_SPECTRAL_NEIGHBORS": CLUSTER_SPECTRAL_NEIGHBORS,
-    }
+def get_tuning_config(params: Mapping[str, float | int]) -> AppConfig:
+    """Create an AppConfig instance with overridden tuning parameters."""
+    resolved = resolve_params(params)
+    
+    # Load base config from file if it exists, otherwise use defaults
+    base = AppConfig.load()
+    
+    from dataclasses import replace
+    
+    # Create new config instances with overridden fields
+    ranking = replace(base.ranking, **resolved["ranking"])
+    adaptive_hn = replace(base.adaptive_hn, **resolved["adaptive_hn"])
+    freshness = replace(base.freshness, **resolved["freshness"])
+    semantic = replace(base.semantic, **resolved["semantic"])
+    classifier = replace(base.classifier, **resolved["classifier"])
+    
+    # Note: clustering params are not currently tuned in the common path
+    # but could be added to resolve_params and here if needed.
+    
+    return replace(
+        base,
+        ranking=ranking,
+        adaptive_hn=adaptive_hn,
+        freshness=freshness,
+        semantic=semantic,
+        classifier=classifier,
+    )
 
 
 @contextmanager
-def patched_rerank_params(
+def tuned_config(
     params: Mapping[str, float | int],
-) -> Iterator[ResolvedParams]:
+) -> Iterator[tuple[AppConfig, ResolvedParams]]:
+    """Context manager for tuning that provides a config object."""
     resolved = resolve_params(params)
-    with patch.multiple(api.rerank, **build_patch_kwargs(resolved)):
-        yield resolved
+    config = get_tuning_config(params)
+    yield config, resolved
 
 
 def render_promoted_toml(resolved: ResolvedParams) -> str:

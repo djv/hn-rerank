@@ -36,6 +36,7 @@ from api.fetching import (  # noqa: E402
     story_from_bigquery_row,
 )
 from api.models import Story  # noqa: E402
+from api.config import AppConfig  # noqa: E402
 
 DEFAULT_BIGQUERY_PROJECT = "gen-lang-client-0444855014"
 
@@ -144,7 +145,8 @@ async def fetch_algolia(
     use_existing_cache: bool,
 ) -> list[Story]:
     async def run() -> list[Story]:
-        return await get_best_stories(limit=limit, days=days, include_rss=False)
+        config = AppConfig(days=days, no_rss=True)
+        return await get_best_stories(limit=limit, config=config)
 
     return await _with_algolia_fetch_overrides(
         run,

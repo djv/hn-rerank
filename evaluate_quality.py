@@ -35,11 +35,7 @@ from api.fetching import fetch_story, get_best_stories  # noqa: E402
 from api.models import RankResult, Story, StoryDict  # noqa: E402
 from api.rerank import get_embeddings, rank_stories  # noqa: E402
 from api.url_utils import normalize_url  # noqa: E402
-from api.constants import (  # noqa: E402
-    KNN_NEIGHBORS,
-    RANKING_DIVERSITY_LAMBDA,
-    RANKING_NEGATIVE_WEIGHT,
-)
+from api.config import AppConfig  # noqa: E402
 
 
 BASELINE_DEFAULT_PATH = ".cache/metrics_baseline.json"
@@ -563,7 +559,6 @@ class RankingEvaluator:
 
             test_stories = pos_stories[:n_test]
             train_stories = pos_stories[n_test:]
-            train_ids = {s.id for s in train_stories}
             test_ids = {s.id for s in test_stories}
 
             print(f"Train: {len(train_stories)}, Test: {len(test_stories)}")
@@ -579,16 +574,18 @@ class RankingEvaluator:
                 neg_emb = get_embeddings(neg_texts)
 
             # Fetch candidates (exclude both train and hidden story IDs)
-            neg_ids = {s.id for s in neg_stories}
+            if self.dataset is None:
+                return False
+            exclude_ids = {s.id for s in self.dataset.train_stories} | {s.id for s in neg_stories}
             print(f"Fetching {candidate_count} candidates...")
             candidates = await get_best_stories(
-                limit=candidate_count,
-                exclude_ids=train_ids | neg_ids,
-                days=30,
-                include_rss=False,
+                candidate_count,
+                exclude_ids=exclude_ids,
+                config=AppConfig(days=int(holdout), no_rss=True),
                 cache_only=cache_only,
                 allow_stale=allow_stale,
             )
+
 
             if not candidates:
                 print("No candidates fetched")
@@ -697,10 +694,7 @@ class RankingEvaluator:
 
     def evaluate(
         self,
-        diversity: float = 0.45,
-        knn: int = 2,
-        neg_weight: float = 0.5,
-        use_classifier: bool = True,
+        config: AppConfig = AppConfig(),
         k_metrics: list[int] | None = None,
         final_list_count: int | None = None,
         diagnostics_summary: dict[str, object] | None = None,
@@ -720,10 +714,7 @@ class RankingEvaluator:
             dataset.candidates,
             positive_embeddings=dataset.train_embeddings,
             negative_embeddings=dataset.neg_embeddings,
-            use_classifier=use_classifier,
-            diversity_lambda=diversity,
-            knn_k=knn,
-            neg_weight=neg_weight,
+            config=config,
             diagnostics=rank_diagnostics,
             positive_stories=dataset.train_stories,
             negative_stories=dataset.neg_stories,
@@ -749,10 +740,7 @@ class RankingEvaluator:
     def evaluate_cv(
         self,
         n_folds: int = 5,
-        diversity: float = RANKING_DIVERSITY_LAMBDA,
-        knn: int = KNN_NEIGHBORS,
-        neg_weight: float = RANKING_NEGATIVE_WEIGHT,
-        use_classifier: bool = True,
+        config: AppConfig = AppConfig(),
         k_metrics: list[int] | None = None,
         report_each: bool = True,
         report_callback: Callable[[int, dict[str, float]], None] | None = None,
@@ -803,10 +791,7 @@ class RankingEvaluator:
                 fold_candidates,
                 positive_embeddings=train_emb,
                 negative_embeddings=dataset.neg_embeddings,
-                use_classifier=use_classifier,
-                diversity_lambda=diversity,
-                knn_k=knn,
-                neg_weight=neg_weight,
+                config=config,
                 diagnostics=rank_diagnostics,
                 positive_stories=[all_stories[i] for i in train_idx],
                 negative_stories=dataset.neg_stories,
@@ -886,16 +871,16 @@ async def main():
     parser.add_argument(
         "--diversity",
         type=float,
-        default=RANKING_DIVERSITY_LAMBDA,
+        default=0.2396634418,
         help="MMR diversity lambda",
     )
     parser.add_argument(
-        "--knn", type=int, default=KNN_NEIGHBORS, help="k-NN neighbors for scoring"
+        "--knn", type=int, default=6, help="k-NN neighbors for scoring"
     )
     parser.add_argument(
         "--neg-weight",
         type=float,
-        default=RANKING_NEGATIVE_WEIGHT,
+        default=0.5529047831,
         help="Weight for negative similarity penalty",
     )
     parser.add_argument(
@@ -939,6 +924,30 @@ async def main():
     )
     args = parser.parse_args()
 
+    # Create config for tuning/evaluation
+    config = AppConfig.load(
+        username=args.username,
+        count=args.count,
+        candidates=args.candidates,
+        use_classifier=args.classifier,
+    )
+    
+    # Apply CLI overrides to nested config objects
+    # This is a bit manual but preserves CLI flexibility for evaluation
+    from dataclasses import replace
+    config = replace(
+        config,
+        ranking=replace(
+            config.ranking,
+            diversity_lambda=args.diversity,
+            negative_weight=args.neg_weight,
+        ),
+        semantic=replace(
+            config.semantic,
+            knn_neighbors=args.knn,
+        ),
+    )
+
     evaluator = RankingEvaluator(args.username)
     success = await evaluator.load_data(
         holdout=args.holdout,
@@ -963,10 +972,7 @@ async def main():
         print(f"\nRunning {args.cv}-fold cross-validation...")
         metrics = evaluator.evaluate_cv(
             n_folds=args.cv,
-            diversity=args.diversity,
-            knn=args.knn,
-            neg_weight=args.neg_weight,
-            use_classifier=args.classifier,
+            config=config,
             k_metrics=k_metrics,
             report_each=True,
             final_list_count=args.count if args.final_list else None,
@@ -979,10 +985,7 @@ async def main():
         )
     else:
         metrics = evaluator.evaluate(
-            diversity=args.diversity,
-            knn=args.knn,
-            neg_weight=args.neg_weight,
-            use_classifier=args.classifier,
+            config=config,
             k_metrics=k_metrics,
             final_list_count=args.count if args.final_list else None,
         )
@@ -1019,10 +1022,7 @@ async def main():
         dataset.candidates,
         positive_embeddings=dataset.train_embeddings,
         negative_embeddings=dataset.neg_embeddings,
-        use_classifier=args.classifier,
-        diversity_lambda=args.diversity,
-        knn_k=args.knn,
-        neg_weight=args.neg_weight,
+        config=config,
         positive_stories=dataset.train_stories,
         negative_stories=dataset.neg_stories,
     )
