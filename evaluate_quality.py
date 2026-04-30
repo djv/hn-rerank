@@ -499,6 +499,7 @@ class RankingEvaluator:
         use_classifier: bool = True,
         cache_only: bool = False,
         allow_stale: bool = False,
+        age_matched: bool = False,
     ) -> bool:
         """Load and prepare data for evaluation. Returns True if successful."""
         async with HNClient() as client:
@@ -574,16 +575,21 @@ class RankingEvaluator:
                 neg_emb = get_embeddings(neg_texts)
 
             # Fetch candidates (exclude both train and hidden story IDs)
-            if self.dataset is None:
-                return False
-            exclude_ids = {s.id for s in self.dataset.train_stories} | {s.id for s in neg_stories}
+            exclude_ids = {s.id for s in train_stories} | {s.id for s in neg_stories}
+            
+            now_ts: int | None = None
+            if age_matched and test_stories:
+                now_ts = max(s.time for s in test_stories)
+                print(f"Age-matched mode: fetching candidates relative to test story time ({now_ts})")
+
             print(f"Fetching {candidate_count} candidates...")
             candidates = await get_best_stories(
                 candidate_count,
                 exclude_ids=exclude_ids,
-                config=AppConfig(days=int(holdout), no_rss=True),
+                config=AppConfig(days=30, no_rss=True),
                 cache_only=cache_only,
                 allow_stale=allow_stale,
+                now_ts=now_ts,
             )
 
 
@@ -615,6 +621,7 @@ class RankingEvaluator:
                 "use_classifier": use_classifier,
                 "cache_only": cache_only,
                 "allow_stale": allow_stale,
+                "age_matched": age_matched,
             }
             return True
 
@@ -917,6 +924,16 @@ async def main():
         help="Evaluate the final displayed list policy instead of raw rank_stories output",
     )
     parser.add_argument(
+        "--pure-semantic",
+        action="store_true",
+        help="Disable HN points and freshness to evaluate pure semantic matching",
+    )
+    parser.add_argument(
+        "--age-matched",
+        action="store_true",
+        help="Fetch candidates matching the age distribution of test stories to remove recency bias",
+    )
+    parser.add_argument(
         "--count",
         type=int,
         default=30,
@@ -948,6 +965,13 @@ async def main():
         ),
     )
 
+    if args.pure_semantic:
+        config = replace(
+            config,
+            ranking=replace(config.ranking, hn_weight=0.0),
+            freshness=replace(config.freshness, enabled=False),
+        )
+
     evaluator = RankingEvaluator(args.username)
     success = await evaluator.load_data(
         holdout=args.holdout,
@@ -955,6 +979,7 @@ async def main():
         use_classifier=args.classifier,
         cache_only=args.cache_only,
         allow_stale=args.cache_only,
+        age_matched=args.age_matched,
     )
 
     if not success:

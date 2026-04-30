@@ -615,6 +615,7 @@ async def get_best_stories(
     config: AppConfig = AppConfig(),
     cache_only: bool = False,
     allow_stale: bool = False,
+    now_ts: int | None = None,
 ) -> list[Story]:
     if exclude_ids is None:
         exclude_ids = set()
@@ -625,10 +626,10 @@ async def get_best_stories(
     ALGOLIA_MAX_PER_QUERY = 1000
 
     async with httpx.AsyncClient(timeout=30.0) as client:
-        now = datetime.now(UTC)
-        ts_now = int(now.timestamp() // 900 * 900)  # Round to 15m
-        cutoff_ts = int((now - timedelta(days=days)).timestamp())
-        live_start_ts = int((now - timedelta(days=HN_LIVE_WINDOW_DAYS)).timestamp())
+        now_dt = datetime.fromtimestamp(now_ts, UTC) if now_ts else datetime.now(UTC)
+        ts_now = int(now_dt.timestamp() // 900 * 900)  # Round to 15m
+        cutoff_ts = int((now_dt - timedelta(days=days)).timestamp())
+        live_start_ts = int((now_dt - timedelta(days=HN_LIVE_WINDOW_DAYS)).timestamp())
         algolia_start_ts = max(cutoff_ts, live_start_ts)
         archive_end_ts = min(live_start_ts, ts_now)
         has_archive_window = cutoff_ts < archive_end_ts
