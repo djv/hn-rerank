@@ -87,19 +87,26 @@ The clustering configuration is controlled by constants and nested TOML sections
 ### Ranking modes
 
 The ranking engine supports two modes:
-- classifier mode when both positive and negative signal sets have at least 5 embeddings
-- k-NN fallback otherwise
+- **Classifier mode**: used when both positive and negative signal sets have at least 5 examples. It supports standard logistic regression (probabilistic) or pairwise logistic regression (ranking-optimized).
+- **k-NN fallback**: used when history is insufficient.
 
-Classifier mode:
-- trains a `LogisticRegressionCV` model per run
-- augments embedding features with centroid similarity, positive k-NN, and negative k-NN features
-- applies cluster-balanced positive sample weights and configurable negative sample weights
-- still computes k-NN display scores and explicit negative penalties after classification
+### Classifier mode
 
-Fallback mode:
-- computes median top-k similarity against positive history for diagnostics
-- scores semantic relevance from cluster-max similarity, optionally blended with k-NN when configured
-- uses the best positive match for display reasoning
+The current production architecture uses **Pairwise Logistic Regression** with **Bottleneck Features**:
+- **Feature Engineering**: Instead of raw high-dimensional embeddings, the classifier operates on a "bottleneck" of derived features:
+    - `centroid_similarity`: Maximum cosine similarity to any user interest cluster centroid.
+    - `knn_pos_median`: Median similarity to the top-k nearest positive examples.
+    - `knn_neg_median`: Median similarity to the top-k nearest negative examples.
+    - `metadata_features`: Log-scaled story points and age-based freshness.
+- **Pairwise Training**: The model is trained on differences between positive and negative example feature vectors, optimized to correctly rank positives above negatives.
+- **Weighting**: Applies cluster-balanced positive sample weights to prevent large interest groups from drowning out smaller niches.
+- **Diagnostics**: Still computes k-NN display scores for the "Similar to..." UI reasons.
+
+### Fallback mode
+- Computes median top-k similarity against positive history for diagnostics.
+- Scores semantic relevance from cluster-max similarity, optionally blended with k-NN when configured.
+- Uses the best positive match for display reasoning.
+
 
 Final ranking behavior:
 - hybrid score blends semantic relevance, adaptive HN weighting, and freshness
