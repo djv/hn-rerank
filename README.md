@@ -121,14 +121,22 @@ diversity_lambda = 0.2397
 diversity_lambda_classifier = 0.30
 max_results = 500
 
+[hn_rerank.adaptive_hn]
+weight_min = 0.328
+weight_max = 0.652
+threshold_young = 39.45
+threshold_old = 720.0
+score_normalization_cap = 433.0
+
 [hn_rerank.semantic]
-knn_neighbors = 1
+knn_neighbors = 6
 
 [hn_rerank.classifier]
-k_feat = 5
-neg_sample_weight = 1.70
+k_feat = 10
+use_balanced_class_weight = true
 
 [hn_rerank.clustering]
+distance_threshold = 0.494
 similarity_threshold = 0.91
 outlier_similarity_threshold = 0.87
 min_samples_per_cluster = 2
