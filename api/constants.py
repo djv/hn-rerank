@@ -93,8 +93,8 @@ RSS_ALLOWED_SOURCE_LANGUAGES = ("en", "fr", "es")
 DEFAULT_EMBEDDING_BATCH_SIZE = 8
 EMBEDDING_MIN_CLIP = 1e-9
 # BGE-small CLS/query was selected by the local model bakeoff.
-EMBEDDING_MODEL_VERSION = "bge-small-cls-query-2026-04-30"
-CLUSTER_EMBEDDING_MODEL_VERSION = "bge-small-cls-query-2026-04-30"
+EMBEDDING_MODEL_VERSION = "bge-small-cls-query-all-2026-04-30"
+CLUSTER_EMBEDDING_MODEL_VERSION = "bge-small-cls-query-all-2026-04-30"
 CLUSTER_EMBEDDING_MODEL_DIR = "onnx_model"
 
 # Similarity Bounds
@@ -122,38 +122,43 @@ RANKING_DIVERSITY_LAMBDA = _get("ranking", "diversity_lambda", 0.2396634418)
 RANKING_MAX_RESULTS = _get("ranking", "max_results", 500)
 
 # Adaptive HN Weight (age-based)
-ADAPTIVE_HN_WEIGHT_MIN = _get("adaptive_hn", "weight_min", 0.328)
-ADAPTIVE_HN_WEIGHT_MAX = _get("adaptive_hn", "weight_max", 0.652)
-ADAPTIVE_HN_THRESHOLD_YOUNG = _get("adaptive_hn", "threshold_young", 39.45)
+ADAPTIVE_HN_WEIGHT_MIN = _get("adaptive_hn", "weight_min", 0.3963567514)
+ADAPTIVE_HN_WEIGHT_MAX = _get("adaptive_hn", "weight_max", 0.4454707212)
+ADAPTIVE_HN_THRESHOLD_YOUNG = _get("adaptive_hn", "threshold_young", 69.1427531319)
 ADAPTIVE_HN_THRESHOLD_OLD = _get("adaptive_hn", "threshold_old", 720.0)
 
 # Freshness Decay
 FRESHNESS_ENABLED = _get("freshness", "enabled", True)
-FRESHNESS_HALF_LIFE_HOURS = _get("freshness", "half_life_hours", 72.0)
-FRESHNESS_MAX_BOOST = _get("freshness", "max_boost", 0.2)
+FRESHNESS_HALF_LIFE_HOURS = _get("freshness", "half_life_hours", 168.0)
+FRESHNESS_MAX_BOOST = _get("freshness", "max_boost", 0.1)
 
 # Semantic Scoring
-SEMANTIC_MAXSIM_WEIGHT = _get("semantic", "maxsim_weight", 0.95)
-SEMANTIC_MEANSIM_WEIGHT = _get("semantic", "meansim_weight", 0.05)
+SEMANTIC_MAXSIM_WEIGHT = _get("semantic", "maxsim_weight", 1.0)
+SEMANTIC_MEANSIM_WEIGHT = _get("semantic", "meansim_weight", 0.0)
 SEMANTIC_SIGMOID_K = _get("semantic", "sigmoid_k", 31.2249293861)
 SEMANTIC_SIGMOID_THRESHOLD = _get("semantic", "sigmoid_threshold", 0.4749411784)
-HN_SCORE_NORMALIZATION_CAP = _get("adaptive_hn", "score_normalization_cap", 433.0)
+HN_SCORE_NORMALIZATION_CAP = _get("adaptive_hn", "score_normalization_cap", 212.4038210119)
 
 # Classifier Tuning
-CLASSIFIER_K_FEAT = _get("classifier", "k_feat", 10)
+CLASSIFIER_SCORING_MODE = _get("classifier", "scoring_mode", "pairwise_logistic")
+CLASSIFIER_FEATURE_MODE = _get("classifier", "feature_mode", "bottleneck")
+CLASSIFIER_PAIRWISE_NEGATIVES = _get("classifier", "pairwise_negatives", 15)
+CLASSIFIER_PAIRWISE_C = _get("classifier", "pairwise_c", 1.4700450168)
+CLASSIFIER_K_FEAT = _get("classifier", "k_feat", 7)
 CLASSIFIER_USE_BALANCED_CLASS_WEIGHT = _get(
-    "classifier", "use_balanced_class_weight", True
+    "classifier", "use_balanced_class_weight", False
 )
 CLASSIFIER_CV_SCORING = _get("classifier", "cv_scoring", "f1")
 CLASSIFIER_USE_CENTROID_FEATURE = _get("classifier", "use_centroid_feature", True)
 CLASSIFIER_USE_POS_KNN_FEATURE = _get("classifier", "use_pos_knn_feature", True)
 CLASSIFIER_USE_NEG_KNN_FEATURE = _get("classifier", "use_neg_knn_feature", True)
+CLASSIFIER_USE_LOG_POINTS_FEATURE = _get("classifier", "use_log_points_feature", False)
 
 # Clustering
 CLUSTER_ALGORITHM = _get("clustering", "algorithm", "agglomerative")
 CLUSTER_AGGLOMERATIVE_LINKAGE = _get("clustering", "linkage", "ward")
 CLUSTER_AGGLOMERATIVE_METRIC = _get("clustering", "metric", "euclidean")
-CLUSTER_AGGLOMERATIVE_THRESHOLD = _get("clustering", "distance_threshold", 0.494)
+CLUSTER_AGGLOMERATIVE_THRESHOLD = _get("clustering", "distance_threshold", 1.3282321556)
 CLUSTER_SPECTRAL_NEIGHBORS = _get("clustering", "spectral_neighbors", 15)
 
 # Comment Pool

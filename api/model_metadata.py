@@ -64,7 +64,7 @@ BGE_BASE_OFFICIAL_SPEC = EmbeddingModelSpec(
     text_mode="plain",
 )
 
-BGE_SMALL_CLS_QUERY_SPEC = EmbeddingModelSpec(
+BGE_SMALL_CLS_QUERY_ALL_SPEC = EmbeddingModelSpec(
     model_id="BAAI/bge-small-en-v1.5",
     pooling="cls",
     normalize=True,
@@ -90,7 +90,7 @@ E5_BASE_V2_SPEC = EmbeddingModelSpec(
 
 BIENCODER_BAKEOFF_SPECS: dict[str, EmbeddingModelSpec] = {
     "bge_base_official": BGE_BASE_OFFICIAL_SPEC,
-    "bge_small_cls_query": BGE_SMALL_CLS_QUERY_SPEC,
+    "bge_small_cls_query_all": BGE_SMALL_CLS_QUERY_ALL_SPEC,
     "gte_base_v15": GTE_BASE_V15_SPEC,
     "e5_base_v2": E5_BASE_V2_SPEC,
 }

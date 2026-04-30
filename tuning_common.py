@@ -164,6 +164,10 @@ def resolve_params(params: Mapping[str, float | int]) -> ResolvedParams:
             "knn_neighbors": int(round(float(params.get("knn_k", KNN_NEIGHBORS)))),
         },
         "classifier": {
+            "scoring_mode": str(params.get("scoring_mode", CLASSIFIER_SCORING_MODE)),
+            "feature_mode": str(params.get("feature_mode", CLASSIFIER_FEATURE_MODE)),
+            "pairwise_negatives": int(round(float(params.get("pairwise_negatives", CLASSIFIER_PAIRWISE_NEGATIVES)))),
+            "pairwise_c": float(params.get("pairwise_c", CLASSIFIER_PAIRWISE_C)),
             "k_feat": int(
                 round(float(params.get("classifier_k_feat", CLASSIFIER_K_FEAT)))
             ),
@@ -173,7 +177,13 @@ def resolve_params(params: Mapping[str, float | int]) -> ResolvedParams:
                     CLASSIFIER_USE_BALANCED_CLASS_WEIGHT,
                 )
             ),
+            "use_log_points_feature": bool(
+                params.get("use_log_points_feature", CLASSIFIER_USE_LOG_POINTS_FEATURE)
+            ),
         },
+        "clustering": {
+            "distance_threshold": float(params.get("cluster_distance_threshold", CLUSTER_AGGLOMERATIVE_THRESHOLD)),
+        }
     }
 
 
@@ -192,9 +202,7 @@ def get_tuning_config(params: Mapping[str, float | int]) -> AppConfig:
     freshness = replace(base.freshness, **resolved["freshness"])
     semantic = replace(base.semantic, **resolved["semantic"])
     classifier = replace(base.classifier, **resolved["classifier"])
-    
-    # Note: clustering params are not currently tuned in the common path
-    # but could be added to resolve_params and here if needed.
+    clustering = replace(base.clustering, **resolved["clustering"])
     
     return replace(
         base,
@@ -203,6 +211,7 @@ def get_tuning_config(params: Mapping[str, float | int]) -> AppConfig:
         freshness=freshness,
         semantic=semantic,
         classifier=classifier,
+        clustering=clustering,
     )
 
 
@@ -222,7 +231,9 @@ def render_promoted_toml(resolved: ResolvedParams) -> str:
     freshness = resolved["freshness"]
     semantic = resolved["semantic"]
     classifier = resolved["classifier"]
-    return (
+    clustering = resolved.get("clustering", {})
+    
+    toml = (
         "# Auto-generated promoted params.\n"
         "# Merge this into hn_rerank.toml under [hn_rerank.*] sections.\n\n"
         "[hn_rerank.ranking]\n"
@@ -243,6 +254,19 @@ def render_promoted_toml(resolved: ResolvedParams) -> str:
         "[hn_rerank.semantic]\n"
         f"knn_neighbors = {int(semantic['knn_neighbors'])}\n\n"
         "[hn_rerank.classifier]\n"
+        f"scoring_mode = \"{classifier['scoring_mode']}\"\n"
+        f"feature_mode = \"{classifier['feature_mode']}\"\n"
+        f"pairwise_negatives = {int(classifier['pairwise_negatives'])}\n"
+        f"pairwise_c = {float(classifier['pairwise_c']):.10f}\n"
         f"k_feat = {int(classifier['k_feat'])}\n"
         f"use_balanced_class_weight = {str(bool(classifier['use_balanced_class_weight'])).lower()}\n"
+        f"use_log_points_feature = {str(bool(classifier['use_log_points_feature'])).lower()}\n"
     )
+    
+    if clustering:
+        toml += (
+            "\n[hn_rerank.clustering]\n"
+            f"distance_threshold = {float(clustering['distance_threshold']):.10f}\n"
+        )
+        
+    return toml

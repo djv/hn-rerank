@@ -28,7 +28,7 @@ _ensure_joblib_settings()
 import numpy as np  # noqa: E402
 import onnxruntime as ort  # noqa: E402
 from numpy.typing import NDArray  # noqa: E402
-from sklearn.linear_model import LogisticRegressionCV  # noqa: E402
+from sklearn.linear_model import LogisticRegression, LogisticRegressionCV  # noqa: E402
 from sklearn.metrics.pairwise import cosine_similarity  # noqa: E402
 
 if TYPE_CHECKING:
@@ -73,8 +73,15 @@ def _combine_classifier_features(
     pos_knn_feature: NDArray[np.float32],
     neg_knn_feature: NDArray[np.float32],
     config: ClassifierConfig,
+    base_embeddings: NDArray[np.float32] | None = None,
 ) -> NDArray[np.float32]:
     columns: list[NDArray[np.float32]] = []
+    
+    # In "full" mode, we include the original embeddings. 
+    # In "bottleneck" mode, we only use derived similarity/metadata features.
+    if config.feature_mode == "full" and base_embeddings is not None:
+        columns.append(base_embeddings)
+
     if config.use_centroid_feature:
         columns.append(centroid_feature.reshape(-1, 1))
     if config.use_pos_knn_feature:
@@ -87,11 +94,29 @@ def _combine_classifier_features(
 
 
 def _classifier_metadata_features(
-    stories: list[Story], config: AdaptiveHNConfig
+    stories: list[Story], 
+    config: AppConfig,
+    now: float,
+    expected_len: int,
 ) -> NDArray[np.float32]:
-    normalizer = np.log1p(config.score_normalization_cap)
-    points = np.array([max(float(s.score), 0.0) for s in stories], dtype=np.float32)
-    return (np.log1p(points) / normalizer).reshape(-1, 1).astype(np.float32)
+    if not stories or len(stories) != expected_len:
+        # Return zeros if metadata is missing or mismatched
+        width = 0
+        if config.classifier.use_log_points_feature:
+            width += 1
+        return np.zeros((expected_len, width), dtype=np.float32)
+
+    columns: list[NDArray[np.float32]] = []
+    
+    if config.classifier.use_log_points_feature:
+        normalizer = np.log1p(config.adaptive_hn.score_normalization_cap)
+        points = np.array([max(float(s.score), 0.0) for s in stories], dtype=np.float32)
+        columns.append((np.log1p(points) / normalizer).reshape(-1, 1))
+
+    if not columns:
+        return np.zeros((expected_len, 0), dtype=np.float32)
+        
+    return np.hstack(columns).astype(np.float32)
 
 
 type ClusterItem = tuple[StoryDict, float]
@@ -1014,10 +1039,46 @@ def rank_stories(
                 k_neg_feat,
                 exclude_self_neg=True,
             )
-            if pos_derived.shape[1] > 0:
-                train_derived = np.vstack([pos_derived, neg_derived])
-                X_train = np.hstack([X_train, train_derived])
+            
+            now_for_features = time.time()
+            pos_metadata = _classifier_metadata_features(
+                positive_stories or [], config, now_for_features, len(X_pos)
+            )
+            neg_metadata = _classifier_metadata_features(
+                negative_stories or [], config, now_for_features, len(X_neg)
+            )
+            
+            metadata_used = bool(
+                positive_stories 
+                and len(positive_stories) == len(X_pos)
+                and negative_stories 
+                and len(negative_stories) == len(X_neg)
+                and (pos_metadata.shape[1] > 0 or neg_metadata.shape[1] > 0)
+            )
+            
+            # Combine based on feature_mode
+            X_train_pos = _combine_classifier_features(
+                centroid_feature=pos_derived[:, 0] if pos_derived.shape[1] > 0 else np.zeros(len(X_pos)),
+                pos_knn_feature=pos_derived[:, 1] if pos_derived.shape[1] > 1 else np.zeros(len(X_pos)),
+                neg_knn_feature=pos_derived[:, 2] if pos_derived.shape[1] > 2 else np.zeros(len(X_pos)),
+                config=config.classifier,
+                base_embeddings=X_pos,
+            )
+            if pos_metadata.shape[1] > 0:
+                X_train_pos = np.hstack([X_train_pos, pos_metadata])
 
+            X_train_neg = _combine_classifier_features(
+                centroid_feature=neg_derived[:, 0] if neg_derived.shape[1] > 0 else np.zeros(len(X_neg)),
+                pos_knn_feature=neg_derived[:, 1] if neg_derived.shape[1] > 1 else np.zeros(len(X_neg)),
+                neg_knn_feature=neg_derived[:, 2] if neg_derived.shape[1] > 2 else np.zeros(len(X_neg)),
+                config=config.classifier,
+                base_embeddings=X_neg,
+            )
+            if neg_metadata.shape[1] > 0:
+                X_train_neg = np.hstack([X_train_neg, neg_metadata])
+
+            X_train = np.vstack([X_train_pos, X_train_neg])
+            
             cand_derived = _derived_features(
                 cand_emb,
                 X_pos,
@@ -1026,50 +1087,81 @@ def rank_stories(
                 k_feat,
                 k_neg_feat,
             )
-            cand_features = (
-                np.hstack([cand_emb, cand_derived])
-                if cand_derived.shape[1] > 0
-                else cand_emb
+            cand_metadata = _classifier_metadata_features(stories, config, now_for_features, len(cand_emb))
+            
+            cand_features = _combine_classifier_features(
+                centroid_feature=cand_derived[:, 0] if cand_derived.shape[1] > 0 else np.zeros(len(cand_emb)),
+                pos_knn_feature=cand_derived[:, 1] if cand_derived.shape[1] > 1 else np.zeros(len(cand_emb)),
+                neg_knn_feature=cand_derived[:, 2] if cand_derived.shape[1] > 2 else np.zeros(len(cand_emb)),
+                config=config.classifier,
+                base_embeddings=cand_emb,
             )
-            if (
-                positive_stories is not None
-                and negative_stories is not None
-                and len(positive_stories) == len(X_pos)
-                and len(negative_stories) == len(X_neg)
-            ):
-                pos_metadata = _classifier_metadata_features(positive_stories, config=config.adaptive_hn)
-                neg_metadata = _classifier_metadata_features(negative_stories, config=config.adaptive_hn)
-                cand_metadata = _classifier_metadata_features(stories, config=config.adaptive_hn)
-                train_metadata = np.vstack([pos_metadata, neg_metadata])
-                X_train = np.hstack([X_train, train_metadata])
+            if cand_metadata.shape[1] > 0:
                 cand_features = np.hstack([cand_features, cand_metadata])
-                classifier_metadata_features_used = True
 
             _set_rank_diagnostics(
                 diagnostics,
                 derived_feature_dim=int(cand_derived.shape[1]),
-                classifier_metadata_features_used=classifier_metadata_features_used,
-                classifier_metadata_feature_dim=1
-                if classifier_metadata_features_used
-                else 0,
+                classifier_metadata_features_used=metadata_used,
+                classifier_metadata_feature_dim=int(cand_metadata.shape[1]),
             )
 
-            clf = LogisticRegressionCV(
-                Cs=[0.01, 0.1, 1.0, 10.0],
-                cv=3,
-                class_weight=(
-                    "balanced" if config.classifier.use_balanced_class_weight else None
-                ),
-                l1_ratios=(0.0,),
-                solver="liblinear",
-                scoring=config.classifier.cv_scoring,
-                use_legacy_attributes=False,
-            )
-            clf.fit(X_train, y_train, sample_weight=sample_weights)
+            if config.classifier.scoring_mode == "pairwise_logistic":
+                rng = np.random.default_rng(len(X_train))
+                negatives_per_positive = config.classifier.pairwise_negatives
+                diff_rows: list[np.ndarray] = []
+                pairwise_labels: list[int] = []
+                
+                if len(X_train_pos) > 0 and len(X_train_neg) > 0:
+                    for pos_feat in X_train_pos:
+                        neg_indices = rng.choice(
+                            len(X_train_neg),
+                            size=min(negatives_per_positive, len(X_train_neg)),
+                            replace=False,
+                        )
+                        diffs = pos_feat.reshape(1, -1) - X_train_neg[neg_indices]
+                        diff_rows.append(diffs)
+                        pairwise_labels.extend([1] * len(diffs))
+                        diff_rows.append(-diffs)
+                        pairwise_labels.extend([0] * len(diffs))
+                        
+                    pairwise_X = np.vstack(diff_rows).astype(np.float32)
+                    pairwise_y = np.asarray(pairwise_labels, dtype=np.int64)
+                    
+                    clf = LogisticRegression(
+                        C=config.classifier.pairwise_c,
+                        class_weight=("balanced" if config.classifier.use_balanced_class_weight else None),
+                        max_iter=1000,
+                        solver="liblinear",
+                    )
+                    clf.fit(pairwise_X, pairwise_y)
+                    
+                    raw_scores = cand_features @ clf.coef_[0]
+                    if float(np.ptp(raw_scores)) > 0.0:
+                        semantic_scores = (
+                            (raw_scores - np.min(raw_scores)) / np.ptp(raw_scores)
+                        ).astype(np.float32)
+                    else:
+                        semantic_scores = np.zeros(len(stories), dtype=np.float32)
+                else:
+                    semantic_scores = np.zeros(len(stories), dtype=np.float32)
+            else:
+                clf = LogisticRegressionCV(
+                    Cs=[0.01, 0.1, 1.0, 10.0],
+                    cv=3,
+                    class_weight=(
+                        "balanced" if config.classifier.use_balanced_class_weight else None
+                    ),
+                    l1_ratios=(0.0,),
+                    solver="liblinear",
+                    scoring=config.classifier.cv_scoring,
+                    use_legacy_attributes=False,
+                )
+                clf.fit(X_train, y_train, sample_weight=sample_weights)
 
-            # Predict probabilities (class 1 = positive interest)
-            probs = clf.predict_proba(cand_features)[:, 1]
-            semantic_scores = probs.astype(np.float32)
+                # Predict probabilities (class 1 = positive interest)
+                probs = clf.predict_proba(cand_features)[:, 1]
+                semantic_scores = probs.astype(np.float32)
 
             # We still need max_sim_scores for the UI "Similar to..."
             sim_pos_ui = cosine_similarity(X_pos, cand_emb)

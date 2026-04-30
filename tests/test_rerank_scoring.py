@@ -54,7 +54,9 @@ def test_semantic_blend_uses_cluster_max_and_knn_components(
 
     assert by_index[1].max_cluster_score == pytest.approx(1.0)
     assert by_index[1].knn_score == pytest.approx(0.0)
-    # 0.5 input to default sigmoid is ~0.686
+    # 0.5 input to default sigmoid (k=31.2, t=0.47) is ~0.686
+    # k * (x - t) = 31.2 * (0.5 - 0.4749) = 31.2 * 0.0251 = 0.78312
+    # sigmoid(0.78312) = 1 / (1 + exp(-0.78312)) = 1 / (1 + 0.4569) = 0.686
     assert by_index[1].semantic_score == pytest.approx(0.686, abs=1e-3)
 
 
@@ -140,7 +142,11 @@ def test_max_cluster_score_populated_in_classifier_path(
             [[0.3, 0.7], [0.3, 0.7], [0.3, 0.7]], dtype=np.float32
         )
 
-        config = AppConfig(use_classifier=True)
+        from api.config import ClassifierConfig
+        config = AppConfig(
+            use_classifier=True,
+            classifier=ClassifierConfig(scoring_mode="logistic_cv", feature_mode="full")
+        )
         results = rank_stories(stories, pos_emb, neg_emb, config=config)
 
     by_index = {result.index: result for result in results}

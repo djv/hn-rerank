@@ -20,18 +20,18 @@ class RankingConfig:
 @dataclass(frozen=True)
 class AdaptiveHNConfig:
     """Age-based HN weighting parameters."""
-    weight_min: float = 0.328
-    weight_max: float = 0.652
-    threshold_young: float = 39.45
+    weight_min: float = 0.3963567514
+    weight_max: float = 0.4454707212
+    threshold_young: float = 69.1427531319
     threshold_old: float = 720.0
-    score_normalization_cap: float = 433.0
+    score_normalization_cap: float = 212.4038210119
 
 @dataclass(frozen=True)
 class FreshnessConfig:
     """Freshness decay parameters."""
     enabled: bool = True
-    half_life_hours: float = 72.0
-    max_boost: float = 0.2
+    half_life_hours: float = 168.0
+    max_boost: float = 0.1
 
 @dataclass(frozen=True)
 class SemanticConfig:
@@ -46,12 +46,20 @@ class SemanticConfig:
 @dataclass(frozen=True)
 class ClassifierConfig:
     """Classifier training and feature parameters."""
-    k_feat: int = 10
-    use_balanced_class_weight: bool = True
+    scoring_mode: str = "pairwise_logistic"
+    feature_mode: str = "bottleneck"
+    pairwise_negatives: int = 15
+    pairwise_c: float = 1.4700450168
+    k_feat: int = 7
+    use_balanced_class_weight: bool = False
     cv_scoring: str = "f1"
+    use_local_hidden_penalty: bool = False
+    local_hidden_penalty_weight: float = 0.0
+    local_hidden_penalty_k: int = 3
     use_centroid_feature: bool = True
     use_pos_knn_feature: bool = True
     use_neg_knn_feature: bool = True
+    use_log_points_feature: bool = False
 
 @dataclass(frozen=True)
 class ClusteringConfig:
@@ -59,7 +67,7 @@ class ClusteringConfig:
     algorithm: str = "agglomerative"
     linkage: str = "ward"
     metric: str = "euclidean"
-    distance_threshold: float = 0.494
+    distance_threshold: float = 1.3282321556
     similarity_threshold: float = 0.93
     outlier_similarity_threshold: float = 0.0
     min_samples_per_cluster: int = 1
