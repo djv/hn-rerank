@@ -139,6 +139,22 @@ def test_deterministic_with_same_input():
     np.testing.assert_array_almost_equal(centroids1, centroids2)
 
 
+def test_threshold_clustering_respects_cluster_cap():
+    """Threshold-based agglomerative clustering is capped by n_clusters."""
+    rng = np.random.default_rng(123)
+    embeddings = rng.normal(size=(80, 32)).astype(np.float32)
+
+    centroids, labels = cluster_interests_with_labels(
+        embeddings,
+        n_clusters=40,
+        distance_threshold=0.0,
+    )
+
+    assert len(set(labels)) <= 40
+    assert len(centroids) == len(set(labels))
+    assert sorted(set(labels)) == list(range(len(set(labels))))
+
+
 def test_refine_cluster_assignments_moves_misassigned_point():
     """Refinement reassigns points to their closest centroid."""
     embeddings = np.array(
@@ -509,4 +525,3 @@ def test_clustering_stability_with_outlier(seed, n_base_samples):
     
     # We expect high agreement (e.g., > 80%) for a single outlier
     assert agreement > 0.8, f"Clustering was too unstable! Agreement: {agreement:.2%}"
-

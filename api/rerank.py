@@ -1,6 +1,7 @@
 from __future__ import annotations
 import os
 import hashlib
+import json
 import logging
 import math
 import threading
@@ -8,6 +9,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
+
 
 def _ensure_joblib_settings() -> None:
     # Disable joblib multiprocessing in this environment to avoid SemLock
@@ -69,19 +71,16 @@ from api.constants import (  # noqa: E402
     SEMANTIC_MAXSIM_WEIGHT,
     SEMANTIC_MEANSIM_WEIGHT,
     CLASSIFIER_K_FEAT,
-    CLASSIFIER_LOCAL_HIDDEN_PENALTY_K,
-    CLASSIFIER_LOCAL_HIDDEN_PENALTY_WEIGHT,
-    CLASSIFIER_NEG_SAMPLE_WEIGHT,
     CLASSIFIER_CV_SCORING,
     CLASSIFIER_USE_BALANCED_CLASS_WEIGHT,
     CLASSIFIER_USE_CENTROID_FEATURE,
-    CLASSIFIER_USE_LOCAL_HIDDEN_PENALTY,
     CLASSIFIER_USE_POS_KNN_FEATURE,
     CLASSIFIER_USE_NEG_KNN_FEATURE,
     SIMILARITY_MIN,
     TEXT_CONTENT_MAX_TOKENS,
 )
 from api.models import RankResult, Story, StoryDict  # noqa: E402
+from api.model_metadata import CURRENT_PRODUCTION_SPEC, load_model_spec  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -113,8 +112,10 @@ def _combine_classifier_features(
     return np.hstack(columns).astype(np.float32)
 
 
-
-
+def _classifier_metadata_features(stories: list[Story]) -> NDArray[np.float32]:
+    normalizer = np.log1p(HN_SCORE_NORMALIZATION_CAP)
+    points = np.array([max(float(s.score), 0.0) for s in stories], dtype=np.float32)
+    return (np.log1p(points) / normalizer).reshape(-1, 1).astype(np.float32)
 
 
 type ClusterItem = tuple[StoryDict, float]
@@ -165,6 +166,7 @@ class ONNXEmbeddingModel:
             raise FileNotFoundError(
                 f"Model not found in {model_dir}. Please run setup_model.py."
             )
+        self.spec = load_model_spec(model_dir)
 
         from transformers import AutoTokenizer
 
@@ -177,15 +179,27 @@ class ONNXEmbeddingModel:
         self.session: ort.InferenceSession = ort.InferenceSession(
             f"{model_dir}/model.onnx", providers=providers
         )
-        self.model_id: str = "bge-base-en-v1.5"
+        self.model_id: str = self.spec.cache_key
+        self.embedding_dim = self._infer_embedding_dim(model_dir)
         # Hugging Face fast tokenizers mutate internal padding/truncation state per call,
         # so tokenizer access must be serialized across threads.
         self._tokenizer_lock = threading.Lock()
         self._input_names: list[str] = [node.name for node in self.session.get_inputs()]
 
-    def truncate_to_token_budget(
-        self, text: str, max_tokens: int
-    ) -> tuple[str, bool]:
+    def _infer_embedding_dim(self, model_dir: str) -> int:
+        output_shape = self.session.get_outputs()[0].shape
+        if output_shape and isinstance(output_shape[-1], int):
+            return int(output_shape[-1])
+        try:
+            raw = json.loads((Path(model_dir) / "config.json").read_text())
+            hidden_size = raw.get("hidden_size")
+            if isinstance(hidden_size, int):
+                return hidden_size
+        except Exception:
+            pass
+        return 768
+
+    def truncate_to_token_budget(self, text: str, max_tokens: int) -> tuple[str, bool]:
         """Truncate text to token budget using tokenizer in a thread-safe way."""
         with self._tokenizer_lock:
             encoded = self.tokenizer(
@@ -196,7 +210,9 @@ class ONNXEmbeddingModel:
             )
             input_ids = encoded.get("input_ids", [])
             if isinstance(input_ids, list) and input_ids:
-                token_ids = input_ids[0] if isinstance(input_ids[0], list) else input_ids
+                token_ids = (
+                    input_ids[0] if isinstance(input_ids[0], list) else input_ids
+                )
             else:
                 return text, False
 
@@ -209,7 +225,7 @@ class ONNXEmbeddingModel:
     def encode(
         self,
         texts: list[str],
-        normalize_embeddings: bool = True,
+        normalize_embeddings: bool | None = None,
         batch_size: int = DEFAULT_EMBEDDING_BATCH_SIZE,
         progress_callback: Callable[[int, int], None] | None = None,
     ) -> NDArray[np.float32]:
@@ -231,11 +247,14 @@ class ONNXEmbeddingModel:
                 )
                 # Copy arrays while tokenizer internals are exclusively held.
                 attention_mask = cast(
-                    NDArray[np.int64], inputs["attention_mask"].astype(np.int64, copy=True)
+                    NDArray[np.int64],
+                    inputs["attention_mask"].astype(np.int64, copy=True),
                 )
 
                 ort_inputs: dict[str, NDArray[np.int64]] = {
-                    k: v.astype(np.int64) for k, v in inputs.items() if k in self._input_names
+                    k: v.astype(np.int64)
+                    for k, v in inputs.items()
+                    if k in self._input_names
                 }
 
             # InferenceSession.run is thread-safe; keep it outside tokenizer lock
@@ -245,19 +264,27 @@ class ONNXEmbeddingModel:
                 NDArray[np.float32], outputs[0]
             )
 
-            # Mean Pooling
-            mask_expanded: NDArray[np.float64] = np.expand_dims(
-                attention_mask, -1
-            ).astype(float)
-            sum_embeddings: NDArray[np.float32] = np.sum(
-                last_hidden_state * mask_expanded, axis=1
-            )
-            sum_mask: NDArray[np.float64] = np.clip(
-                mask_expanded.sum(axis=1), a_min=EMBEDDING_MIN_CLIP, a_max=None
-            )
-            batch_embeddings: NDArray[np.float32] = sum_embeddings / sum_mask
+            spec = getattr(self, "spec", CURRENT_PRODUCTION_SPEC)
+            if spec.pooling == "cls":
+                batch_embeddings = last_hidden_state[:, 0, :]
+            else:
+                mask_expanded: NDArray[np.float64] = np.expand_dims(
+                    attention_mask, -1
+                ).astype(float)
+                sum_embeddings: NDArray[np.float32] = np.sum(
+                    last_hidden_state * mask_expanded, axis=1
+                )
+                sum_mask: NDArray[np.float64] = np.clip(
+                    mask_expanded.sum(axis=1), a_min=EMBEDDING_MIN_CLIP, a_max=None
+                )
+                batch_embeddings = sum_embeddings / sum_mask
 
-            if normalize_embeddings:
+            should_normalize = (
+                spec.normalize
+                if normalize_embeddings is None
+                else normalize_embeddings
+            )
+            if should_normalize:
                 norm: NDArray[np.float64] = np.linalg.norm(
                     batch_embeddings, axis=1, keepdims=True
                 )
@@ -291,13 +318,16 @@ def init_model() -> ONNXEmbeddingModel:
 def get_model() -> ONNXEmbeddingModel:
     return init_model()
 
+
 def init_cluster_model() -> ONNXEmbeddingModel:
     global _cluster_model
     if _cluster_model is None:
         with _cluster_model_init_lock:
             if _cluster_model is None:
                 logger.info("Loading cluster embedding model (ONNX)...")
-                _cluster_model = ONNXEmbeddingModel(model_dir=CLUSTER_EMBEDDING_MODEL_DIR)
+                _cluster_model = ONNXEmbeddingModel(
+                    model_dir=CLUSTER_EMBEDDING_MODEL_DIR
+                )
     assert _cluster_model is not None
     return _cluster_model
 
@@ -313,17 +343,18 @@ def _get_embeddings_with_model(
     if not texts:
         return np.array([], dtype=np.float32)
 
-    # BGE-style prefix for queries only
-    prefix: str = (
-        "Represent this sentence for searching relevant passages: " if is_query else ""
-    )
     truncated_count = 0
     processed_texts: list[str] = []
+    model_spec = getattr(model, "spec", None)
 
     for t in texts:
-        text = f"{prefix}{t}"
+        text = model_spec.prepare_text(t, is_query=is_query) if model_spec else t
         truncated_text, was_truncated = model.truncate_to_token_budget(
-            text, TEXT_CONTENT_MAX_TOKENS
+            text,
+            min(
+                TEXT_CONTENT_MAX_TOKENS,
+                model_spec.max_tokens if model_spec else TEXT_CONTENT_MAX_TOKENS,
+            ),
         )
         if was_truncated:
             truncated_count += 1
@@ -339,7 +370,7 @@ def _get_embeddings_with_model(
     vectors: list[NDArray[np.float32] | None] = []
     to_compute_indices: list[int] = []
 
-    expected_dim: int = 768  # bge-base-en-v1.5
+    expected_dim = getattr(model, "embedding_dim", 768)
 
     for idx, text in enumerate(processed_texts):
         # Include model version in hash to invalidate cache on model change
@@ -362,7 +393,7 @@ def _get_embeddings_with_model(
             except Exception as e:
                 logger.debug(f"Failed to load embedding cache {cache_path_npy}: {e}")
 
-        if vec is not None and vec.shape == (expected_dim,):
+        if vec is not None and vec.ndim == 1:
             vectors.append(vec)
         else:
             vectors.append(None)
@@ -465,13 +496,18 @@ def cluster_interests_with_labels(
         return centroid.astype(np.float32), labels
 
     # Normalize embeddings for cosine-like behavior (unless metric is euclidean)
-    if CLUSTER_AGGLOMERATIVE_METRIC == "euclidean" and CLUSTER_ALGORITHM == "agglomerative":
+    if (
+        CLUSTER_AGGLOMERATIVE_METRIC == "euclidean"
+        and CLUSTER_ALGORITHM == "agglomerative"
+    ):
         normalized = embeddings
     else:
         normalized = _normalize_embeddings(embeddings)
 
     # Use fixed number of clusters or distance threshold
-    effective_n_clusters = min(n_clusters, MAX_CLUSTERS, n_samples // max(1, MIN_SAMPLES_PER_CLUSTER))
+    effective_n_clusters = min(
+        n_clusters, MAX_CLUSTERS, n_samples // max(1, MIN_SAMPLES_PER_CLUSTER)
+    )
     effective_n_clusters = max(effective_n_clusters, MIN_CLUSTERS)
 
     if CLUSTER_ALGORITHM == "spectral":
@@ -494,6 +530,12 @@ def cluster_interests_with_labels(
             linkage=CLUSTER_AGGLOMERATIVE_LINKAGE,
         )
         labels = clustering.fit_predict(normalized).astype(np.int32)
+        if distance_threshold is not None:
+            labels = _merge_closest_clusters_to_limit(
+                embeddings,
+                labels,
+                max_clusters=effective_n_clusters,
+            )
     else:
         kmeans = KMeans(
             n_clusters=effective_n_clusters,
@@ -505,9 +547,7 @@ def cluster_interests_with_labels(
     # Bypass heuristic post-processing if using threshold-based agglomerative
     # (Ward linkage handles balance and coherence natively)
     if not (CLUSTER_ALGORITHM == "agglomerative" and distance_threshold is not None):
-        labels = _refine_cluster_assignments(
-            normalized, labels, CLUSTER_REFINE_ITERS
-        )
+        labels = _refine_cluster_assignments(normalized, labels, CLUSTER_REFINE_ITERS)
         labels = _merge_small_clusters(embeddings, labels, MIN_SAMPLES_PER_CLUSTER)
 
         max_size = max(
@@ -527,7 +567,7 @@ def cluster_interests_with_labels(
         )
 
     centroids = _centroids_from_labels(embeddings, labels)
-    
+
     if not (CLUSTER_ALGORITHM == "agglomerative" and distance_threshold is not None):
         centroids, labels, _ = split_outlier_clusters(
             embeddings, labels, CLUSTER_OUTLIER_SIMILARITY_THRESHOLD
@@ -547,6 +587,44 @@ def _centroids_from_labels(
         centroid = embeddings[mask].mean(axis=0)
         centroids.append(centroid)
     return np.array(centroids, dtype=np.float32)
+
+
+def _relabel_consecutive(labels: NDArray[np.int32]) -> NDArray[np.int32]:
+    remap = {old: i for i, old in enumerate(sorted(set(labels)))}
+    return np.array([remap[int(lbl)] for lbl in labels], dtype=np.int32)
+
+
+def _merge_closest_clusters_to_limit(
+    embeddings: NDArray[np.float32],
+    labels: NDArray[np.int32],
+    max_clusters: int,
+) -> NDArray[np.int32]:
+    """Merge nearest centroid pairs until the cluster count is within the cap."""
+    if max_clusters <= 0 or len(labels) == 0:
+        return labels
+
+    current = _relabel_consecutive(labels)
+    while len(set(current)) > max_clusters:
+        centroids = _centroids_from_labels(embeddings, current)
+        if len(centroids) <= 1:
+            break
+
+        diff = centroids[:, None, :] - centroids[None, :, :]
+        distances = np.linalg.norm(diff, axis=2)
+        np.fill_diagonal(distances, np.inf)
+        source_idx, target_idx = np.unravel_index(
+            int(np.argmin(distances)),
+            distances.shape,
+        )
+        source_label = int(source_idx)
+        target_label = int(target_idx)
+        if source_label == target_label:
+            break
+
+        current[current == source_label] = target_label
+        current = _relabel_consecutive(current)
+
+    return current
 
 
 def _normalize_embeddings(
@@ -638,7 +716,9 @@ def _refine_cluster_assignments(
             break
 
         next_idx = np.where(move, best_idx, curr_idx)
-        next_labels = np.array([unique_labels[int(i)] for i in next_idx], dtype=np.int32)
+        next_labels = np.array(
+            [unique_labels[int(i)] for i in next_idx], dtype=np.int32
+        )
         if np.array_equal(next_labels, current):
             break
         current = next_labels
@@ -738,6 +818,7 @@ def _split_large_clusters(
 ) -> NDArray[np.int32]:
     """Split clusters larger than max_size, without exceeding max_clusters."""
     from sklearn.cluster import KMeans
+
     if max_clusters <= 0 or max_size <= 0:
         return labels
 
@@ -792,62 +873,6 @@ def _split_large_clusters(
             return labels
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def rank_stories(
     stories: list[Story],
     positive_embeddings: NDArray[np.float32] | None,
@@ -860,6 +885,8 @@ def rank_stories(
     knn_k: int = KNN_NEIGHBORS,
     progress_callback: Callable[[int, int], None] | None = None,
     diagnostics: dict[str, object] | None = None,
+    positive_stories: list[Story] | None = None,
+    negative_stories: list[Story] | None = None,
 ) -> list[RankResult]:
     """
     Rank candidate stories by relevance to user interests.
@@ -885,6 +912,8 @@ def rank_stories(
         negative_count=int(negative_count),
         base_feature_dim=int(cand_emb.shape[1]),
         derived_feature_dim=0,
+        classifier_metadata_features_used=False,
+        classifier_metadata_feature_dim=0,
         local_hidden_penalty_applied=False,
         local_hidden_penalty_mean=0.0,
         local_hidden_penalty_max=0.0,
@@ -895,6 +924,7 @@ def rank_stories(
     best_fav_indices: NDArray[np.int64] = np.full(len(stories), -1, dtype=np.int64)
     raw_knn_scores: NDArray[np.float32] = np.zeros(len(stories), dtype=np.float32)
     cluster_max_scores: NDArray[np.float32] = np.zeros(len(stories), dtype=np.float32)
+    classifier_metadata_features_used = False
 
     # Check if we can/should use classifier
     classifier_success = False
@@ -934,11 +964,7 @@ def rank_stories(
             norm_factor = len(X_pos) / np.sum(pos_sample_weights)
             pos_sample_weights *= norm_factor
 
-            # Scale negative-class weight to tune classifier decision boundary.
-            neg_sample_weights = (
-                np.ones(len(X_neg), dtype=np.float32) * CLASSIFIER_NEG_SAMPLE_WEIGHT
-            )
-
+            neg_sample_weights = np.ones(len(X_neg), dtype=np.float32)
             sample_weights = np.concatenate([pos_sample_weights, neg_sample_weights])
 
             # --- Feature augmentation: append derived similarity features ---
@@ -991,11 +1017,21 @@ def rank_stories(
                 )
 
             pos_derived = _derived_features(
-                X_pos, X_pos, X_neg, centroids, k_feat, k_neg_feat,
+                X_pos,
+                X_pos,
+                X_neg,
+                centroids,
+                k_feat,
+                k_neg_feat,
                 exclude_self_pos=True,
             )
             neg_derived = _derived_features(
-                X_neg, X_pos, X_neg, centroids, k_feat, k_neg_feat,
+                X_neg,
+                X_pos,
+                X_neg,
+                centroids,
+                k_feat,
+                k_neg_feat,
                 exclude_self_neg=True,
             )
             if pos_derived.shape[1] > 0:
@@ -1003,16 +1039,39 @@ def rank_stories(
                 X_train = np.hstack([X_train, train_derived])
 
             cand_derived = _derived_features(
-                cand_emb, X_pos, X_neg, centroids, k_feat, k_neg_feat,
+                cand_emb,
+                X_pos,
+                X_neg,
+                centroids,
+                k_feat,
+                k_neg_feat,
             )
             cand_features = (
                 np.hstack([cand_emb, cand_derived])
                 if cand_derived.shape[1] > 0
                 else cand_emb
             )
+            if (
+                positive_stories is not None
+                and negative_stories is not None
+                and len(positive_stories) == len(X_pos)
+                and len(negative_stories) == len(X_neg)
+            ):
+                pos_metadata = _classifier_metadata_features(positive_stories)
+                neg_metadata = _classifier_metadata_features(negative_stories)
+                cand_metadata = _classifier_metadata_features(stories)
+                train_metadata = np.vstack([pos_metadata, neg_metadata])
+                X_train = np.hstack([X_train, train_metadata])
+                cand_features = np.hstack([cand_features, cand_metadata])
+                classifier_metadata_features_used = True
+
             _set_rank_diagnostics(
                 diagnostics,
                 derived_feature_dim=int(cand_derived.shape[1]),
+                classifier_metadata_features_used=classifier_metadata_features_used,
+                classifier_metadata_feature_dim=1
+                if classifier_metadata_features_used
+                else 0,
             )
 
             clf = LogisticRegressionCV(
@@ -1031,31 +1090,6 @@ def rank_stories(
             # Predict probabilities (class 1 = positive interest)
             probs = clf.predict_proba(cand_features)[:, 1]
             semantic_scores = probs.astype(np.float32)
-
-            local_hidden_penalty = np.zeros(len(stories), dtype=np.float32)
-            if (
-                CLASSIFIER_USE_LOCAL_HIDDEN_PENALTY
-                and CLASSIFIER_LOCAL_HIDDEN_PENALTY_WEIGHT > 0
-                and len(X_neg) > 0
-            ):
-                penalty_k = min(len(X_neg), CLASSIFIER_LOCAL_HIDDEN_PENALTY_K)
-                if penalty_k > 0:
-                    hidden_sim = cosine_similarity(cand_emb, X_neg)
-                    local_hidden_penalty = np.median(
-                        np.partition(hidden_sim, -penalty_k, axis=1)[:, -penalty_k:],
-                        axis=1,
-                    ).astype(np.float32)
-                    local_hidden_penalty = np.clip(local_hidden_penalty, 0.0, None)
-                    local_hidden_penalty *= CLASSIFIER_LOCAL_HIDDEN_PENALTY_WEIGHT
-                    semantic_scores = np.clip(
-                        semantic_scores - local_hidden_penalty, 0.0, 1.0
-                    ).astype(np.float32)
-                    _set_rank_diagnostics(
-                        diagnostics,
-                        local_hidden_penalty_applied=True,
-                        local_hidden_penalty_mean=float(np.mean(local_hidden_penalty)),
-                        local_hidden_penalty_max=float(np.max(local_hidden_penalty)),
-                    )
 
             # We still need max_sim_scores for the UI "Similar to..."
             sim_pos_ui = cosine_similarity(X_pos, cand_emb)
@@ -1174,12 +1208,12 @@ def rank_stories(
             0.0,
             1.0,
         )
-        hn_weights: NDArray[np.float64] = (
-            young_hn_weight + adaptive_t * (old_hn_weight - young_hn_weight)
+        hn_weights: NDArray[np.float64] = young_hn_weight + adaptive_t * (
+            old_hn_weight - young_hn_weight
         )
 
         # 6. Hybrid Score (per-story adaptive weighting)
-        hybrid_scores: NDArray[np.float32] = (
+        hybrid_scores = (
             (1 - hn_weights) * semantic_scores + hn_weights * hn_scores
         ).astype(np.float32)
 
@@ -1196,7 +1230,9 @@ def rank_stories(
         # Pure semantic mode (hn_weight=0): no HN score, no freshness
         hybrid_scores = semantic_scores.astype(np.float32)
 
-    ranked_indices = np.argsort(-hybrid_scores, kind="stable")[: min(len(stories), RANKING_MAX_RESULTS)]
+    ranked_indices = np.argsort(-hybrid_scores, kind="stable")[
+        : min(len(stories), RANKING_MAX_RESULTS)
+    ]
     return [
         RankResult(
             index=int(best_idx),
