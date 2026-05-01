@@ -272,7 +272,7 @@ CLUSTER_CARD_TEMPLATE: str = """
         <span class="text-xs text-stone-400">{{ count }} stories</span>
     </div>
     {% if keywords %}
-    <div class="px-3 py-1 bg-stone-50 border-b border-stone-100 text-xs text-stone-500 font-mono italic truncate" title="{{ keywords }}">
+    <div class="px-3 py-1 bg-stone-50 border-b border-stone-100 text-xs text-stone-500 font-mono italic line-clamp-2" title="{{ keywords }}">
         {{ keywords }}
     </div>
     {% endif %}
