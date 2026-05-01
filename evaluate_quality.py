@@ -717,6 +717,7 @@ class RankingEvaluator:
         rank_diagnostics: dict[str, object] | None = (
             {} if diagnostics_summary is not None else None
         )
+        
         results = rank_stories(
             dataset.candidates,
             positive_embeddings=dataset.train_embeddings,
@@ -726,6 +727,7 @@ class RankingEvaluator:
             positive_stories=dataset.train_stories,
             negative_stories=dataset.neg_stories,
             cluster_names=None,
+            cluster_keywords=None,
         )
 
         summary = (
@@ -804,6 +806,7 @@ class RankingEvaluator:
                 positive_stories=[all_stories[i] for i in train_idx],
                 negative_stories=dataset.neg_stories,
                 cluster_names=None,
+                cluster_keywords=None,
             )
 
             ranked_ids = [fold_candidates[r.index].id for r in results]
@@ -1053,6 +1056,7 @@ async def main():
         positive_stories=dataset.train_stories,
         negative_stories=dataset.neg_stories,
         cluster_names=None,
+        cluster_keywords=None,
     )
     if args.final_list:
         final_results = _finalize_ranked_results(
