@@ -24,6 +24,9 @@ from api.constants import (
     CLASSIFIER_PAIRWISE_C,
     CLASSIFIER_USE_LOG_POINTS_FEATURE,
     CLUSTER_AGGLOMERATIVE_THRESHOLD,
+    CROSS_ENCODER_ENABLED,
+    CROSS_ENCODER_TOP_N,
+    CROSS_ENCODER_WEIGHT,
 )
 
 OBJECTIVE_WEIGHTS: dict[str, float] = {
@@ -189,7 +192,12 @@ def resolve_params(params: Mapping[str, float | int]) -> ResolvedParams:
         },
         "clustering": {
             "distance_threshold": float(params.get("cluster_distance_threshold", CLUSTER_AGGLOMERATIVE_THRESHOLD)),
-        }
+        },
+        "cross_encoder": {
+            "enabled": bool(params.get("ce_enabled", CROSS_ENCODER_ENABLED)),
+            "top_n": int(round(float(params.get("ce_top_n", CROSS_ENCODER_TOP_N)))),
+            "weight": float(params.get("ce_weight", CROSS_ENCODER_WEIGHT)),
+        },
     }
 
 
@@ -209,6 +217,7 @@ def get_tuning_config(params: Mapping[str, float | int]) -> AppConfig:
     semantic = replace(base.semantic, **resolved["semantic"])
     classifier = replace(base.classifier, **resolved["classifier"])
     clustering = replace(base.clustering, **resolved["clustering"])
+    cross_encoder = replace(base.cross_encoder, **resolved["cross_encoder"])
     
     return replace(
         base,
@@ -218,6 +227,7 @@ def get_tuning_config(params: Mapping[str, float | int]) -> AppConfig:
         semantic=semantic,
         classifier=classifier,
         clustering=clustering,
+        cross_encoder=cross_encoder,
     )
 
 
@@ -238,6 +248,7 @@ def render_promoted_toml(resolved: ResolvedParams) -> str:
     semantic = resolved["semantic"]
     classifier = resolved["classifier"]
     clustering = resolved.get("clustering", {})
+    cross_encoder = resolved.get("cross_encoder", {})
     
     toml = (
         "# Auto-generated promoted params.\n"
@@ -273,6 +284,14 @@ def render_promoted_toml(resolved: ResolvedParams) -> str:
         toml += (
             "\n[hn_rerank.clustering]\n"
             f"distance_threshold = {float(clustering['distance_threshold']):.10f}\n"
+        )
+
+    if cross_encoder:
+        toml += (
+            "\n[hn_rerank.cross_encoder]\n"
+            f"enabled = {str(bool(cross_encoder['enabled'])).lower()}\n"
+            f"top_n = {int(cross_encoder['top_n'])}\n"
+            f"weight = {float(cross_encoder['weight']):.10f}\n"
         )
         
     return toml

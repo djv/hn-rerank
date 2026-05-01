@@ -705,6 +705,7 @@ class RankingEvaluator:
         k_metrics: list[int] | None = None,
         final_list_count: int | None = None,
         diagnostics_summary: dict[str, object] | None = None,
+        cluster_keywords: dict[int, str] | None = None,
     ) -> dict[str, float]:
         """Run ranking and return metrics."""
         if self.dataset is None:
@@ -727,7 +728,7 @@ class RankingEvaluator:
             positive_stories=dataset.train_stories,
             negative_stories=dataset.neg_stories,
             cluster_names=None,
-            cluster_keywords=None,
+            cluster_keywords=cluster_keywords,
         )
 
         summary = (

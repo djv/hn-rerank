@@ -191,7 +191,7 @@ LLM_CLUSTER_MAX_TOTAL_SECONDS = 600.0  # Fail fast if naming stalls too long
 CROSS_ENCODER_ENABLED = _get("cross_encoder", "enabled", True)
 CROSS_ENCODER_TOP_N = _get("cross_encoder", "top_n", 50)
 CROSS_ENCODER_MODEL_DIR = _get("cross_encoder", "model_dir", "onnx_ce_model")
-CROSS_ENCODER_WEIGHT = _get("cross_encoder", "weight", 0.5)
+CROSS_ENCODER_WEIGHT = _get("cross_encoder", "weight", 0.8)
 
 # Rate Limiting (Token Bucket)
 RATE_LIMIT_REFILL_RATE = 0.25  # Tokens per second (1 call per 4 seconds)

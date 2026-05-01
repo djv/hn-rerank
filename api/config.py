@@ -97,7 +97,7 @@ class CrossEncoderConfig:
     enabled: bool = True
     top_n: int = 50
     model_dir: str = "onnx_ce_model"
-    weight: float = 0.5
+    weight: float = 0.8
 
 @dataclass(frozen=True)
 class AppConfig:
