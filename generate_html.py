@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import time
+from typing import cast
 from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -270,6 +271,11 @@ CLUSTER_CARD_TEMPLATE: str = """
         <h2 class="font-bold text-stone-700">{{ cluster_name }}</h2>
         <span class="text-xs text-stone-400">{{ count }} stories</span>
     </div>
+    {% if keywords %}
+    <div class="px-3 py-1 bg-stone-50 border-b border-stone-100 text-xs text-stone-500 font-mono italic truncate" title="{{ keywords }}">
+        {{ keywords }}
+    </div>
+    {% endif %}
     <ul class="divide-y divide-stone-100">
         {{ stories_html | safe }}
     </ul>
@@ -999,8 +1005,9 @@ async def main() -> None:
                         debug_path=debug_path,
                     )
                     for cid, profile in cluster_profiles.items():
-                        cluster_names[cid] = profile["name"]
-                        cluster_keywords[cid] = profile["keywords"]
+                        profile_dict = cast(dict[str, str], profile)
+                        cluster_names[cid] = profile_dict["name"]
+                        cluster_keywords[cid] = profile_dict["keywords"]
                     
                     progress.update(name_task, description="[green][+] Clusters named.")
                 except RuntimeError as exc:
@@ -1243,6 +1250,7 @@ async def main() -> None:
             cluster_cards.append(
                 _CLUSTER_CARD_TEMPLATE.render(
                     cluster_name=resolve_cluster_name(cluster_names, cid),
+                    keywords=cluster_keywords.get(cid, ""),
                     count=len(items),
                     stories_html=Markup(stories_in_cluster),
                 )
