@@ -14,26 +14,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-def _load_config() -> dict[str, Any]:
-    """Load configuration from hn_rerank.toml."""
-    config_path = Path("hn_rerank.toml")
-    if not config_path.exists():
-        return {}
-    try:
-        with open(config_path, "rb") as f:
-            data = tomllib.load(f)
-        return data.get("hn_rerank", {})
-    except Exception as e:
-        print(f"Warning: Failed to load config: {e}", file=sys.stderr)
-        return {}
+from api.config import AppConfig
 
-
-_CONFIG = _load_config()
-
-
-def _get(section: str, key: str, default: Any) -> Any:
-    """Get config value with fallback to default."""
-    return _CONFIG.get(section, {}).get(key, default)
+_config = AppConfig.load()
 
 
 # Content Limits
@@ -100,66 +83,62 @@ CLUSTER_EMBEDDING_MODEL_DIR = "onnx_model"
 # Similarity Bounds
 SIMILARITY_MIN = -1.0
 SEMANTIC_MATCH_THRESHOLD = 0.85
-KNN_NEIGHBORS = _get("semantic", "knn_neighbors", 6)
+KNN_NEIGHBORS = _config.semantic.knn_neighbors
 
 # Multi-Interest Clustering
 DEFAULT_CLUSTER_COUNT = 30
 MIN_CLUSTERS = 2
 MAX_CLUSTERS = 40
-MIN_SAMPLES_PER_CLUSTER = _get("clustering", "min_samples_per_cluster", 1)
-MAX_CLUSTER_FRACTION = _get("clustering", "max_cluster_fraction", 0.25)
-MAX_CLUSTER_SIZE = _get("clustering", "max_cluster_size", 40)
-CLUSTER_REFINE_ITERS = _get("clustering", "refine_iters", 2)
-CLUSTER_SIMILARITY_THRESHOLD = _get("clustering", "similarity_threshold", 0.93)
-CLUSTER_OUTLIER_SIMILARITY_THRESHOLD = _get(
-    "clustering", "outlier_similarity_threshold", 0.0
-)
+MIN_SAMPLES_PER_CLUSTER = _config.clustering.min_samples_per_cluster
+MAX_CLUSTER_FRACTION = _config.clustering.max_cluster_fraction
+MAX_CLUSTER_SIZE = _config.clustering.max_cluster_size
+CLUSTER_REFINE_ITERS = _config.clustering.refine_iters
+CLUSTER_SIMILARITY_THRESHOLD = _config.clustering.similarity_threshold
+CLUSTER_OUTLIER_SIMILARITY_THRESHOLD = _config.clustering.outlier_similarity_threshold
 
 # Ranking Weights
 RANKING_HN_WEIGHT = 0.05
-RANKING_NEGATIVE_WEIGHT = _get("ranking", "negative_weight", 0.5529047831)
-RANKING_DIVERSITY_LAMBDA = _get("ranking", "diversity_lambda", 0.2396634418)
-RANKING_MAX_RESULTS = _get("ranking", "max_results", 500)
+RANKING_NEGATIVE_WEIGHT = _config.ranking.negative_weight
+RANKING_DIVERSITY_LAMBDA = _config.ranking.diversity_lambda
+RANKING_MAX_RESULTS = _config.ranking.max_results
 
 # Adaptive HN Weight (age-based)
-ADAPTIVE_HN_WEIGHT_MIN = _get("adaptive_hn", "weight_min", 0.3963567514)
-ADAPTIVE_HN_WEIGHT_MAX = _get("adaptive_hn", "weight_max", 0.4454707212)
-ADAPTIVE_HN_THRESHOLD_YOUNG = _get("adaptive_hn", "threshold_young", 69.1427531319)
-ADAPTIVE_HN_THRESHOLD_OLD = _get("adaptive_hn", "threshold_old", 720.0)
+ADAPTIVE_HN_WEIGHT_MIN = _config.adaptive_hn.weight_min
+ADAPTIVE_HN_WEIGHT_MAX = _config.adaptive_hn.weight_max
+ADAPTIVE_HN_THRESHOLD_YOUNG = _config.adaptive_hn.threshold_young
+ADAPTIVE_HN_THRESHOLD_OLD = _config.adaptive_hn.threshold_old
 
 # Freshness Decay
-FRESHNESS_ENABLED = _get("freshness", "enabled", True)
-FRESHNESS_HALF_LIFE_HOURS = _get("freshness", "half_life_hours", 168.0)
-FRESHNESS_MAX_BOOST = _get("freshness", "max_boost", 0.1)
+FRESHNESS_ENABLED = _config.freshness.enabled
+FRESHNESS_HALF_LIFE_HOURS = _config.freshness.half_life_hours
+FRESHNESS_MAX_BOOST = _config.freshness.max_boost
 
 # Semantic Scoring
-SEMANTIC_MAXSIM_WEIGHT = _get("semantic", "maxsim_weight", 1.0)
-SEMANTIC_MEANSIM_WEIGHT = _get("semantic", "meansim_weight", 0.0)
-SEMANTIC_SIGMOID_K = _get("semantic", "sigmoid_k", 31.2249293861)
-SEMANTIC_SIGMOID_THRESHOLD = _get("semantic", "sigmoid_threshold", 0.4749411784)
-HN_SCORE_NORMALIZATION_CAP = _get("adaptive_hn", "score_normalization_cap", 212.4038210119)
+SEMANTIC_MAXSIM_WEIGHT = _config.semantic.maxsim_weight
+SEMANTIC_MEANSIM_WEIGHT = _config.semantic.meansim_weight
+SEMANTIC_SIGMOID_K = _config.semantic.sigmoid_k
+SEMANTIC_SIGMOID_THRESHOLD = _config.semantic.sigmoid_threshold
+HN_SCORE_NORMALIZATION_CAP = _config.adaptive_hn.score_normalization_cap
 
 # Classifier Tuning
-CLASSIFIER_SCORING_MODE = _get("classifier", "scoring_mode", "pairwise_logistic")
-CLASSIFIER_FEATURE_MODE = _get("classifier", "feature_mode", "bottleneck")
-CLASSIFIER_PAIRWISE_NEGATIVES = _get("classifier", "pairwise_negatives", 15)
-CLASSIFIER_PAIRWISE_C = _get("classifier", "pairwise_c", 1.4700450168)
-CLASSIFIER_K_FEAT = _get("classifier", "k_feat", 7)
-CLASSIFIER_USE_BALANCED_CLASS_WEIGHT = _get(
-    "classifier", "use_balanced_class_weight", False
-)
-CLASSIFIER_CV_SCORING = _get("classifier", "cv_scoring", "f1")
-CLASSIFIER_USE_CENTROID_FEATURE = _get("classifier", "use_centroid_feature", True)
-CLASSIFIER_USE_POS_KNN_FEATURE = _get("classifier", "use_pos_knn_feature", True)
-CLASSIFIER_USE_NEG_KNN_FEATURE = _get("classifier", "use_neg_knn_feature", True)
-CLASSIFIER_USE_LOG_POINTS_FEATURE = _get("classifier", "use_log_points_feature", False)
+CLASSIFIER_SCORING_MODE = _config.classifier.scoring_mode
+CLASSIFIER_FEATURE_MODE = _config.classifier.feature_mode
+CLASSIFIER_PAIRWISE_NEGATIVES = _config.classifier.pairwise_negatives
+CLASSIFIER_PAIRWISE_C = _config.classifier.pairwise_c
+CLASSIFIER_K_FEAT = _config.classifier.k_feat
+CLASSIFIER_USE_BALANCED_CLASS_WEIGHT = _config.classifier.use_balanced_class_weight
+CLASSIFIER_CV_SCORING = _config.classifier.cv_scoring
+CLASSIFIER_USE_CENTROID_FEATURE = _config.classifier.use_centroid_feature
+CLASSIFIER_USE_POS_KNN_FEATURE = _config.classifier.use_pos_knn_feature
+CLASSIFIER_USE_NEG_KNN_FEATURE = _config.classifier.use_neg_knn_feature
+CLASSIFIER_USE_LOG_POINTS_FEATURE = _config.classifier.use_log_points_feature
 
 # Clustering
-CLUSTER_ALGORITHM = _get("clustering", "algorithm", "agglomerative")
-CLUSTER_AGGLOMERATIVE_LINKAGE = _get("clustering", "linkage", "ward")
-CLUSTER_AGGLOMERATIVE_METRIC = _get("clustering", "metric", "euclidean")
-CLUSTER_AGGLOMERATIVE_THRESHOLD = _get("clustering", "distance_threshold", 1.3282321556)
-CLUSTER_SPECTRAL_NEIGHBORS = _get("clustering", "spectral_neighbors", 15)
+CLUSTER_ALGORITHM = _config.clustering.algorithm
+CLUSTER_AGGLOMERATIVE_LINKAGE = _config.clustering.linkage
+CLUSTER_AGGLOMERATIVE_METRIC = _config.clustering.metric
+CLUSTER_AGGLOMERATIVE_THRESHOLD = _config.clustering.distance_threshold
+CLUSTER_SPECTRAL_NEIGHBORS = _config.clustering.spectral_neighbors
 
 # Comment Pool
 MIN_STORY_COMMENTS = 20  # Historical threshold kept for tests/tuning context
@@ -170,7 +149,7 @@ TOP_COMMENTS_FOR_UI = 10
 MIN_COMMENT_LENGTH = 30  # Filter short low-value comments (relaxed)
 
 # LLM Configuration
-LLM_PROVIDER = _get("llm", "provider", "mistral")
+LLM_PROVIDER = _config.llm.provider
 LLM_CLUSTER_NAME_MODEL_PRIMARY = "llama-3.3-70b-versatile"
 LLM_CLUSTER_NAME_MODEL_FALLBACK = "llama-3.1-8b-instant"
 LLM_MISTRAL_MODEL = "mistral-small-latest"
@@ -188,10 +167,10 @@ LLM_CLUSTER_MAX_ROUNDS = 2
 LLM_CLUSTER_MAX_TOTAL_SECONDS = 600.0  # Fail fast if naming stalls too long
 
 # Cross-Encoder Configuration
-CROSS_ENCODER_ENABLED = _get("cross_encoder", "enabled", True)
-CROSS_ENCODER_TOP_N = _get("cross_encoder", "top_n", 50)
-CROSS_ENCODER_MODEL_DIR = _get("cross_encoder", "model_dir", "onnx_ce_model")
-CROSS_ENCODER_WEIGHT = _get("cross_encoder", "weight", 0.8)
+CROSS_ENCODER_ENABLED = _config.cross_encoder.enabled
+CROSS_ENCODER_TOP_N = _config.cross_encoder.top_n
+CROSS_ENCODER_MODEL_DIR = _config.cross_encoder.model_dir
+CROSS_ENCODER_WEIGHT = _config.cross_encoder.weight
 
 # Rate Limiting (Token Bucket)
 RATE_LIMIT_REFILL_RATE = 0.25  # Tokens per second (1 call per 4 seconds)
