@@ -18,6 +18,12 @@ from api.constants import (
     KNN_NEIGHBORS,
     RANKING_DIVERSITY_LAMBDA,
     RANKING_NEGATIVE_WEIGHT,
+    CLASSIFIER_SCORING_MODE,
+    CLASSIFIER_FEATURE_MODE,
+    CLASSIFIER_PAIRWISE_NEGATIVES,
+    CLASSIFIER_PAIRWISE_C,
+    CLASSIFIER_USE_LOG_POINTS_FEATURE,
+    CLUSTER_AGGLOMERATIVE_THRESHOLD,
 )
 
 OBJECTIVE_WEIGHTS: dict[str, float] = {
@@ -31,7 +37,7 @@ VALIDATION_GUARD_METRICS: tuple[str, ...] = ("ndcg@30", "precision@20", "recall@
 HN_THRESHOLD_GAP = 42.0
 ADAPTIVE_HN_DELTA = 0.035
 
-ResolvedSection: TypeAlias = dict[str, float | int]
+ResolvedSection: TypeAlias = dict[str, float | int | str]
 ResolvedParams: TypeAlias = dict[str, ResolvedSection]
 ValidationResult: TypeAlias = dict[str, Any]
 

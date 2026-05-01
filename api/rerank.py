@@ -45,6 +45,7 @@ from api.constants import (  # noqa: E402
     CLUSTER_EMBEDDING_MODEL_VERSION,
     SIMILARITY_MIN,
     TEXT_CONTENT_MAX_TOKENS,
+    CROSS_ENCODER_MODEL_DIR,
 )
 from api.models import RankResult, Story, StoryDict  # noqa: E402
 from api.model_metadata import CURRENT_PRODUCTION_SPEC, load_model_spec  # noqa: E402
@@ -52,8 +53,8 @@ from api.config import (  # noqa: E402
     AppConfig,
     ClusteringConfig,
     ClassifierConfig,
-    AdaptiveHNConfig,
 )
+from api.cross_encoder import CrossEncoderModel  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -125,8 +126,10 @@ type ClusterItem = tuple[StoryDict, float]
 # Global singleton for the model
 _model: ONNXEmbeddingModel | None = None
 _cluster_model: ONNXEmbeddingModel | None = None
+_ce_model: CrossEncoderModel | None = None
 _model_init_lock = threading.Lock()
 _cluster_model_init_lock = threading.Lock()
+_ce_model_init_lock = threading.Lock()
 
 CACHE_DIR: Path = Path(EMBEDDING_CACHE_DIR)
 CLUSTER_CACHE_DIR: Path = Path(CLUSTER_EMBEDDING_CACHE_DIR)
@@ -331,6 +334,17 @@ def init_cluster_model() -> ONNXEmbeddingModel:
                 )
     assert _cluster_model is not None
     return _cluster_model
+
+
+def init_ce_model(model_dir: str = CROSS_ENCODER_MODEL_DIR) -> CrossEncoderModel:
+    global _ce_model
+    if _ce_model is None:
+        with _ce_model_init_lock:
+            if _ce_model is None:
+                logger.info("Loading Cross-Encoder model (ONNX) from %s...", model_dir)
+                _ce_model = CrossEncoderModel(model_dir=model_dir)
+    assert _ce_model is not None
+    return _ce_model
 
 
 def _get_embeddings_with_model(
@@ -885,6 +899,7 @@ def rank_stories(
     diagnostics: dict[str, object] | None = None,
     positive_stories: list[Story] | None = None,
     negative_stories: list[Story] | None = None,
+    cluster_names: dict[int, str] | None = None,
 ) -> list[RankResult]:
     """
     Rank candidate stories by relevance to user interests.
@@ -928,7 +943,7 @@ def rank_stories(
     best_fav_indices: NDArray[np.int64] = np.full(len(stories), -1, dtype=np.int64)
     raw_knn_scores: NDArray[np.float32] = np.zeros(len(stories), dtype=np.float32)
     cluster_max_scores: NDArray[np.float32] = np.zeros(len(stories), dtype=np.float32)
-    classifier_metadata_features_used = False
+    interest_centroids: NDArray[np.float32] | None = None
 
     # Check if we can/should use classifier
     classifier_success = False
@@ -960,6 +975,7 @@ def rank_stories(
             weight_map = {
                 lbl: 1.0 / np.log1p(count) for lbl, count in zip(unique_labels, counts)
             }
+            interest_centroids = centroids
 
             # Base weights from clustering
             pos_sample_weights = np.array([weight_map[label] for label in labels])
@@ -1058,9 +1074,9 @@ def rank_stories(
             
             # Combine based on feature_mode
             X_train_pos = _combine_classifier_features(
-                centroid_feature=pos_derived[:, 0] if pos_derived.shape[1] > 0 else np.zeros(len(X_pos)),
-                pos_knn_feature=pos_derived[:, 1] if pos_derived.shape[1] > 1 else np.zeros(len(X_pos)),
-                neg_knn_feature=pos_derived[:, 2] if pos_derived.shape[1] > 2 else np.zeros(len(X_pos)),
+                centroid_feature=pos_derived[:, 0] if pos_derived.shape[1] > 0 else np.zeros(len(X_pos), dtype=np.float32),
+                pos_knn_feature=pos_derived[:, 1] if pos_derived.shape[1] > 1 else np.zeros(len(X_pos), dtype=np.float32),
+                neg_knn_feature=pos_derived[:, 2] if pos_derived.shape[1] > 2 else np.zeros(len(X_pos), dtype=np.float32),
                 config=config.classifier,
                 base_embeddings=X_pos,
             )
@@ -1068,9 +1084,9 @@ def rank_stories(
                 X_train_pos = np.hstack([X_train_pos, pos_metadata])
 
             X_train_neg = _combine_classifier_features(
-                centroid_feature=neg_derived[:, 0] if neg_derived.shape[1] > 0 else np.zeros(len(X_neg)),
-                pos_knn_feature=neg_derived[:, 1] if neg_derived.shape[1] > 1 else np.zeros(len(X_neg)),
-                neg_knn_feature=neg_derived[:, 2] if neg_derived.shape[1] > 2 else np.zeros(len(X_neg)),
+                centroid_feature=neg_derived[:, 0] if neg_derived.shape[1] > 0 else np.zeros(len(X_neg), dtype=np.float32),
+                pos_knn_feature=neg_derived[:, 1] if neg_derived.shape[1] > 1 else np.zeros(len(X_neg), dtype=np.float32),
+                neg_knn_feature=neg_derived[:, 2] if neg_derived.shape[1] > 2 else np.zeros(len(X_neg), dtype=np.float32),
                 config=config.classifier,
                 base_embeddings=X_neg,
             )
@@ -1090,9 +1106,9 @@ def rank_stories(
             cand_metadata = _classifier_metadata_features(stories, config, now_for_features, len(cand_emb))
             
             cand_features = _combine_classifier_features(
-                centroid_feature=cand_derived[:, 0] if cand_derived.shape[1] > 0 else np.zeros(len(cand_emb)),
-                pos_knn_feature=cand_derived[:, 1] if cand_derived.shape[1] > 1 else np.zeros(len(cand_emb)),
-                neg_knn_feature=cand_derived[:, 2] if cand_derived.shape[1] > 2 else np.zeros(len(cand_emb)),
+                centroid_feature=cand_derived[:, 0] if cand_derived.shape[1] > 0 else np.zeros(len(cand_emb), dtype=np.float32),
+                pos_knn_feature=cand_derived[:, 1] if cand_derived.shape[1] > 1 else np.zeros(len(cand_emb), dtype=np.float32),
+                neg_knn_feature=cand_derived[:, 2] if cand_derived.shape[1] > 2 else np.zeros(len(cand_emb), dtype=np.float32),
                 config=config.classifier,
                 base_embeddings=cand_emb,
             )
@@ -1182,6 +1198,7 @@ def rank_stories(
                 raw_knn_scores = np.zeros(len(stories), dtype=np.float32)
 
             classifier_success = True
+            interest_centroids = centroids
             _set_rank_diagnostics(
                 diagnostics,
                 classifier_used=True,
@@ -1201,6 +1218,9 @@ def rank_stories(
         )
 
     if not classifier_success:
+        if positive_embeddings is not None and len(positive_embeddings) > 0:
+             interest_centroids = cluster_interests(positive_embeddings, config=config.clustering)
+
         if positive_embeddings is None or len(positive_embeddings) == 0:
             # If no positive signals, use HN scores primarily
             semantic_scores = np.zeros(len(stories), dtype=np.float32)
@@ -1234,7 +1254,7 @@ def rank_stories(
             best_fav_indices = np.argmax(sim_matrix, axis=0)
 
             # 2. Cluster-max semantic scoring
-            cluster_centroids = cluster_interests(positive_embeddings, config=config.clustering)
+            cluster_centroids = interest_centroids if interest_centroids is not None else []
             if len(cluster_centroids) > 0:
                 # Calculate similarity of each story to each centroid: (n_stories, n_centroids)
                 cluster_sim = cosine_similarity(cand_emb, cluster_centroids)
@@ -1311,6 +1331,88 @@ def rank_stories(
     ranked_indices = np.argsort(-hybrid_scores, kind="stable")[
         : min(len(stories), config.ranking.max_results)
     ]
+
+    # --- Second Stage: Cross-Encoder Reranking ---
+    idx_to_ce: dict[int, float] = {}
+    if (
+        config.cross_encoder.enabled
+        and positive_stories is not None
+        and len(positive_stories) > 0
+        and interest_centroids is not None
+        and len(interest_centroids) > 0
+    ):
+        top_n_ce = min(len(ranked_indices), config.cross_encoder.top_n)
+        if top_n_ce > 0:
+            logger.info("Running Cross-Encoder reranking for top %d candidates...", top_n_ce)
+            ce_indices = ranked_indices[:top_n_ce]
+
+            # Identify representative stories for centroids
+            X_pos = positive_embeddings
+            if X_pos is not None:
+                centroid_sims = cosine_similarity(interest_centroids, X_pos)
+                rep_indices = np.argmax(centroid_sims, axis=1)
+                
+                # Use Cluster Name + Rep Story Content for maximum signal
+                queries_text = []
+                for i, idx in enumerate(rep_indices):
+                    content = positive_stories[idx].text_content
+                    # Use the provided name if it's not a generic fallback
+                    name = cluster_names.get(i) if cluster_names else None
+                    if name and not name.startswith("Group") and not name.startswith("Interest Group"):
+                        queries_text.append(f"{name}: {content}")
+                    else:
+                        queries_text.append(content)
+
+                if queries_text:
+                    try:
+                        ce_model = init_ce_model(config.cross_encoder.model_dir)
+                        ce_scores_list = []
+                        for idx in ce_indices:
+                            cand_text = stories[idx].text_content
+                            # Score candidate against all interest centroids
+                            pair_scores = ce_model.score(
+                                [cand_text] * len(queries_text), queries_text
+                            )
+                            # Take the max score across centroids
+                            max_ce = float(np.max(pair_scores))
+                            ce_scores_list.append(max_ce)
+                        # Sigmoid to normalize CE scores (logits) to [0, 1]
+                        # Shift center to -8.0 based on observed negative logits
+                        ce_scores_normalized = 1.0 / (1.0 + np.exp(-(np.array(ce_scores_list, dtype=np.float32) + 8.0)))
+                        
+                        # Store normalized scores for display
+                        for i, idx in enumerate(ce_indices):
+                            idx_to_ce[int(idx)] = float(ce_scores_normalized[i])
+
+                        # Re-sort top_n indices by blended score
+                        # We use a blend of the first-stage hybrid score and the CE score
+                        top_hybrid_scores = hybrid_scores[ce_indices]
+                        # Normalize hybrid scores to [0, 1] for blending if they aren't already
+                        # (hybrid_scores are usually 0-1.1 range)
+                        h_min = np.min(top_hybrid_scores)
+                        h_max = np.max(top_hybrid_scores)
+                        h_range = h_max - h_min if h_max > h_min else 1.0
+                        h_norm = (top_hybrid_scores - h_min) / h_range
+                        
+                        ce_weight = config.cross_encoder.weight
+                        blended_top_scores = (1.0 - ce_weight) * h_norm + ce_weight * ce_scores_normalized
+                        
+                        reranked_top = [
+                            ce_indices[i]
+                            for i in np.argsort(
+                                -blended_top_scores,
+                                kind="stable",
+                            )
+                        ]
+                        ranked_indices = np.concatenate(
+                            [
+                                np.array(reranked_top, dtype=np.int64),
+                                ranked_indices[top_n_ce:],
+                            ]
+                        )
+                    except Exception as e:
+                        logger.warning(f"Cross-encoder reranking failed: {e}")
+
     return [
         RankResult(
             index=int(best_idx),
@@ -1322,6 +1424,7 @@ def rank_stories(
             semantic_score=float(semantic_scores[best_idx]),
             hn_score=float(hn_scores[best_idx]),
             freshness_boost=float(freshness_boost[best_idx]),
+            cross_encoder_score=float(idx_to_ce.get(int(best_idx), 0.0)),
         )
         for best_idx in ranked_indices
     ]

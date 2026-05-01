@@ -92,6 +92,14 @@ class LLMConfig:
     max_total_seconds: float = 600.0
 
 @dataclass(frozen=True)
+class CrossEncoderConfig:
+    """Cross-encoder reranking parameters."""
+    enabled: bool = True
+    top_n: int = 50
+    model_dir: str = "onnx_ce_model"
+    weight: float = 0.5
+
+@dataclass(frozen=True)
 class AppConfig:
     """Root configuration object."""
     username: str = field(default_factory=lambda: os.getlogin() if os.name != "nt" else "user")
@@ -117,6 +125,7 @@ class AppConfig:
     classifier: ClassifierConfig = field(default_factory=ClassifierConfig)
     clustering: ClusteringConfig = field(default_factory=ClusteringConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
+    cross_encoder: CrossEncoderConfig = field(default_factory=CrossEncoderConfig)
 
     @classmethod
     def load(cls, toml_path: Path | str | None = None, **overrides: Any) -> Self:
@@ -141,6 +150,7 @@ class AppConfig:
         classifier = ClassifierConfig(**_get_section("classifier"))
         clustering = ClusteringConfig(**_get_section("clustering"))
         llm = LLMConfig(**_get_section("llm"))
+        cross_encoder = CrossEncoderConfig(**_get_section("cross_encoder"))
 
         def _get_root(key: str, default: Any) -> Any:
             val = overrides.get(key)
@@ -172,4 +182,6 @@ class AppConfig:
             classifier=classifier,
             clustering=clustering,
             llm=llm,
+            cross_encoder=cross_encoder,
         )
+
