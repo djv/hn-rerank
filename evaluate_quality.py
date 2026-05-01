@@ -725,6 +725,7 @@ class RankingEvaluator:
             diagnostics=rank_diagnostics,
             positive_stories=dataset.train_stories,
             negative_stories=dataset.neg_stories,
+            cluster_names=None,
         )
 
         summary = (
@@ -802,6 +803,7 @@ class RankingEvaluator:
                 diagnostics=rank_diagnostics,
                 positive_stories=[all_stories[i] for i in train_idx],
                 negative_stories=dataset.neg_stories,
+                cluster_names=None,
             )
 
             ranked_ids = [fold_candidates[r.index].id for r in results]
@@ -1050,6 +1052,7 @@ async def main():
         config=config,
         positive_stories=dataset.train_stories,
         negative_stories=dataset.neg_stories,
+        cluster_names=None,
     )
     if args.final_list:
         final_results = _finalize_ranked_results(

@@ -1,0 +1,100 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HN Rerank | pure_coder</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        hn: '#ff6600',
+                    }
+                }
+            }
+        }
+        
+    </script>
+    <style type="text/tailwindcss">
+        @layer base {
+            body { @apply bg-stone-50 text-stone-800 antialiased; }
+        }
+        .story-card { @apply bg-white border border-stone-200 rounded-lg p-2.5 shadow-sm transition-all hover:border-hn hover:shadow-md h-full flex flex-col; }
+        .story-card.rss-story { @apply border-amber-200 bg-amber-50/50; }
+        .rss-badge { @apply px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 text-[10px] font-bold; }
+        .cluster-chip { @apply px-1.5 py-0.5 bg-stone-50 border border-stone-200 rounded text-[10px] font-medium text-stone-600 hover:border-hn hover:text-hn transition-colors cursor-default whitespace-nowrap; }
+    </style>
+</head>
+<body class="p-2 md:p-4 bg-stone-100">
+    <div class="max-w-7xl mx-auto">
+        <header class="mb-4 border-b border-stone-300 pb-3 flex items-end justify-between bg-white p-4 rounded-lg shadow-sm">
+            <div>
+                <h1 class="text-2xl font-black text-stone-900 tracking-tight">
+                    HN <span class="text-hn">Rerank</span>
+                </h1>
+                <p class="text-stone-500 text-xs">@pure_coder &bull; <a href="clusters.html" class="text-hn hover:underline">27 interest clusters</a></p>
+            </div>
+            <p class="text-[10px] text-stone-400 font-mono">2026-04-30 20:02:05</p>
+        </header>
+
+        <div class="grid gap-3 items-start grid-cols-[repeat(auto-fit,minmax(280px,1fr))]">
+            
+<div class="story-card group">
+    <div class="flex items-center gap-2 mb-0.5 flex-wrap">
+        <span class="px-1.5 py-0.5 rounded bg-hn/10 text-hn text-[10px] font-bold" title="Hybrid Match Score">
+            87%
+        </span>
+        
+        <span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 text-[10px] font-bold" title="Cross-Encoder Semantic Score (Higher is better)">
+            CE: 0.95
+        </span>
+        
+        
+        
+        <span class="cluster-chip">Global Financial Shifts</span>
+        
+        <span class="text-[10px] text-stone-400 font-mono">96 pts</span>
+        <span class="text-[10px] text-stone-400 font-mono">6h</span>
+    </div>
+    <h2 class="text-sm font-semibold text-stone-900 leading-snug mb-1">
+        <a href="https://www.wsj.com/economy/u-s-debt-tops-100-of-gdp-81c013d7" target="_blank" class="hover:text-hn transition-colors">U.S. Debt Tops 100% of GDP</a>
+        
+        <a href="https://news.ycombinator.com/item?id=47961804" target="_blank" class="ml-2 text-xs font-medium text-stone-900 hover:text-hn transition-colors" title="Comments">💬 114</a>
+        
+    </h2>
+    
+</div>
+
+<div class="story-card group">
+    <div class="flex items-center gap-2 mb-0.5 flex-wrap">
+        <span class="px-1.5 py-0.5 rounded bg-hn/10 text-hn text-[10px] font-bold" title="Hybrid Match Score">
+            84%
+        </span>
+        
+        <span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 text-[10px] font-bold" title="Cross-Encoder Semantic Score (Higher is better)">
+            CE: 1.00
+        </span>
+        
+        
+        
+        <span class="text-[10px] text-stone-400 font-mono">280 pts</span>
+        <span class="text-[10px] text-stone-400 font-mono">1d</span>
+    </div>
+    <h2 class="text-sm font-semibold text-stone-900 leading-snug mb-1">
+        <a href="https://www.bbc.com/future/article/20260428-ai-companies-want-you-to-be-afraid-of-them" target="_blank" class="hover:text-hn transition-colors">Why AI companies want you to be afraid of them</a>
+        
+        <a href="https://news.ycombinator.com/item?id=47949750" target="_blank" class="ml-2 text-xs font-medium text-stone-900 hover:text-hn transition-colors" title="Comments">💬 159</a>
+        
+    </h2>
+    
+</div>
+
+<div class="story-card group">
+    <div class="flex items-center gap-2 mb-0.5 flex-wrap">
+        <span class="px-1.5 py-0.5 rounded bg-hn/10 text-hn text-[10px] font-bold" title="Hybrid Match Score">
+            86%
+        </span>

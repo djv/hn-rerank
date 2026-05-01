@@ -58,6 +58,7 @@ class StoryDisplayDict(StoryForTldr):
     reason_url: str
     source: StorySource
     tldr: str
+    cross_encoder_score: NotRequired[float]
     comment_count: NotRequired[int | None]
 
 
@@ -133,6 +134,7 @@ class RankResult:
     semantic_score: float = 0.0  # Raw semantic score (classifier or k-NN)
     hn_score: float = 0.0  # HN score contribution (log-scaled)
     freshness_boost: float = 0.0  # Freshness boost applied to hybrid score
+    cross_encoder_score: float = 0.0
 
 
 @dataclass
@@ -153,6 +155,7 @@ class StoryDisplay:
     source: StorySource = "hn"
     tldr: str = ""
     text_content: str = ""
+    cross_encoder_score: float = 0.0
     comment_count: int | None = None
 
     def to_dict(self) -> StoryDisplayDict:
@@ -172,6 +175,7 @@ class StoryDisplay:
             "source": self.source,
             "tldr": self.tldr,
             "text_content": self.text_content,
+            "cross_encoder_score": self.cross_encoder_score,
             "comment_count": self.comment_count,
         }
 

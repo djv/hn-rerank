@@ -428,9 +428,14 @@ def select_ranked_results(
 STORY_CARD_TEMPLATE: str = """
 <div class="story-card group{% if is_external %} rss-story{% endif %}">
     <div class="flex items-center gap-2 mb-0.5 flex-wrap">
-        <span class="px-1.5 py-0.5 rounded bg-hn/10 text-hn text-[10px] font-bold">
+        <span class="px-1.5 py-0.5 rounded bg-hn/10 text-hn text-[10px] font-bold" title="Hybrid Match Score">
             {{ score }}%
         </span>
+        {% if ce_score %}
+        <span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 text-[10px] font-bold" title="Cross-Encoder Semantic Score (Higher is better)">
+            CE: {{ "%.2f"|format(ce_score) }}
+        </span>
+        {% endif %}
         {% if source_badge %}
         <span class="rss-badge">{{ source_badge }}</span>
         {% endif %}
@@ -464,6 +469,7 @@ def generate_story_html(story: StoryDisplay) -> str:
     link_url = story.url or story.hn_url or "#"
     return _STORY_TEMPLATE.render(
         score=story.match_percent,
+        ce_score=story.cross_encoder_score,
         is_external=story.is_external,
         source_badge=story.badge_label,
         cluster_name=story.cluster_name,
@@ -1047,6 +1053,7 @@ async def main() -> None:
             progress_callback=rank_cb,
             positive_stories=pos_stories,
             negative_stories=neg_stories,
+            cluster_names=cluster_names,
         )
         progress.update(
             r_task, completed=100, description="[green][+] Reranking complete."
@@ -1111,6 +1118,7 @@ async def main() -> None:
                 comments=list(s.comments),
                 source=s.source,
                 text_content=s.text_content,
+                cross_encoder_score=result.cross_encoder_score,
                 comment_count=s.comment_count,
             )
 

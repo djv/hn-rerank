@@ -175,11 +175,12 @@ def _save_cached_story(story: Story | None) -> None:
     if sid is None:
         return
     cache_file = CACHE_PATH / f"{sid}.json"
-    cache_payload: CachedStory = {
+    cache_payload = {
         "ts": time.time(),
         "version": STORY_CACHE_VERSION,
-        "story": story.to_dict(),
+        "story": story.to_dict() if story else None,
     }
+
     atomic_write_json(cache_file, cache_payload)
     evict_old_cache_files(CACHE_PATH, "*.json", STORY_CACHE_MAX_FILES)
 
