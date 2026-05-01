@@ -900,6 +900,7 @@ def rank_stories(
     positive_stories: list[Story] | None = None,
     negative_stories: list[Story] | None = None,
     cluster_names: dict[int, str] | None = None,
+    cluster_keywords: dict[int, str] | None = None,
 ) -> list[RankResult]:
     """
     Rank candidate stories by relevance to user interests.
@@ -1352,14 +1353,25 @@ def rank_stories(
                 centroid_sims = cosine_similarity(interest_centroids, X_pos)
                 rep_indices = np.argmax(centroid_sims, axis=1)
                 
-                # Use Cluster Name + Rep Story Content for maximum signal
+                # Use Cluster Keywords + Name + Title for high-signal queries
                 queries_text = []
                 for i, idx in enumerate(rep_indices):
+                    title = positive_stories[idx].title
                     content = positive_stories[idx].text_content
-                    # Use the provided name if it's not a generic fallback
                     name = cluster_names.get(i) if cluster_names else None
+                    keywords = cluster_keywords.get(i) if cluster_keywords else None
+                    
+                    parts = []
                     if name and not name.startswith("Group") and not name.startswith("Interest Group"):
-                        queries_text.append(f"{name}: {content}")
+                        parts.append(name)
+                    if keywords:
+                        parts.append(keywords)
+                    
+                    if parts:
+                        # query is "Name: Keywords (Title)"
+                        query = ": ".join(parts)
+                        query = f"{query} ({title})"
+                        queries_text.append(query)
                     else:
                         queries_text.append(content)
 
@@ -1377,25 +1389,29 @@ def rank_stories(
                             max_ce = float(np.max(pair_scores))
                             ce_scores_list.append(max_ce)
                         # Sigmoid to normalize CE scores (logits) to [0, 1]
-                        # Shift center to -8.0 based on observed negative logits
-                        ce_scores_normalized = 1.0 / (1.0 + np.exp(-(np.array(ce_scores_list, dtype=np.float32) + 8.0)))
+                        ce_scores_normalized = 1.0 / (1.0 + np.exp(-np.array(ce_scores_list, dtype=np.float32)))
                         
                         # Store normalized scores for display
                         for i, idx in enumerate(ce_indices):
                             idx_to_ce[int(idx)] = float(ce_scores_normalized[i])
 
                         # Re-sort top_n indices by blended score
-                        # We use a blend of the first-stage hybrid score and the CE score
+                        # We use raw logits for the CE contribution to preserve relative ordering
                         top_hybrid_scores = hybrid_scores[ce_indices]
-                        # Normalize hybrid scores to [0, 1] for blending if they aren't already
-                        # (hybrid_scores are usually 0-1.1 range)
                         h_min = np.min(top_hybrid_scores)
                         h_max = np.max(top_hybrid_scores)
                         h_range = h_max - h_min if h_max > h_min else 1.0
                         h_norm = (top_hybrid_scores - h_min) / h_range
                         
+                        # Normalize raw logits to [0, 1] linearly for the blend to avoid sigmoid squashing
+                        ce_logits = np.array(ce_scores_list, dtype=np.float32)
+                        ce_min = np.min(ce_logits)
+                        ce_max = np.max(ce_logits)
+                        ce_range = ce_max - ce_min if ce_max > ce_min else 1.0
+                        ce_norm = (ce_logits - ce_min) / ce_range
+                        
                         ce_weight = config.cross_encoder.weight
-                        blended_top_scores = (1.0 - ce_weight) * h_norm + ce_weight * ce_scores_normalized
+                        blended_top_scores = (1.0 - ce_weight) * h_norm + ce_weight * ce_norm
                         
                         reranked_top = [
                             ce_indices[i]

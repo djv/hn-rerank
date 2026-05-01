@@ -179,7 +179,7 @@ CLUSTER_NAME_CACHE_PATH = Path(".cache/cluster_names.json")
 
 def _cluster_name_cache_key(story_ids: Sequence[str], model: str) -> str:
     key_src = ",".join(story_ids)
-    key_src += f"|model={model}|prompt={LLM_CLUSTER_NAME_PROMPT_VERSION}"
+    key_src += f"|model={model}|prompt=v14"
     return hashlib.sha256(key_src.encode()).hexdigest()
 
 
@@ -427,15 +427,23 @@ async def generate_batch_cluster_names(
         if not cached_val and fallback_model:
             fallback_key = _cluster_name_cache_key(story_ids, fallback_model)
             cached_val = cache.get(fallback_key)
-        if cached_val and cached_val.strip():
-            results[cid] = cached_val
-        else:
-            to_generate[cid] = items
+        
+        if cached_val:
+            try:
+                parsed = json.loads(cached_val)
+                if isinstance(parsed, dict) and "name" in parsed:
+                    results[cid] = parsed
+                    continue
+            except json.JSONDecodeError:
+                # Handle old string-only cache entries by re-generating
+                pass
+        
+        to_generate[cid] = items
 
     if not to_generate:
         if progress_callback:
             progress_callback(len(clusters), len(clusters))
-        return {cid: results.get(cid, "") for cid in clusters}
+        return results
 
     cid_list = list(to_generate.keys())
     total_batches = len(cid_list)
@@ -543,8 +551,9 @@ async def generate_batch_cluster_names(
                     }
                 )
                 _flush_debug()
+                provider_name = active_model.split("-")[0].capitalize() if "-" in active_model else "LLM"
                 raise RuntimeError(
-                    "Groq cluster naming timed out after "
+                    f"{provider_name} cluster naming timed out after "
                     f"{LLM_CLUSTER_MAX_TOTAL_SECONDS:.0f}s. "
                     "Try rerunning with fewer clusters/candidates or wait for quota reset."
                 )
@@ -555,19 +564,20 @@ async def generate_batch_cluster_names(
                 info_block = "\n\n".join(info_entries) if info_entries else "(no stories)"
                 batch_prompts.append(info_block)
 
-            used_names = sorted(set(n for n in results.values() if n))
+            used_names = sorted(set(n["name"] for n in results.values() if isinstance(n, dict) and n.get("name")))
             already_used_str = f"Already Used Names (DO NOT REUSE): {', '.join(used_names)}" if used_names else ""
 
             full_prompt = f"""
-            Provide a concise, generic category name (2-4 words) for this cluster of stories.
+            Analyze this cluster of stories and provide:
+            1. A concise, generic category name (2-4 words).
+            2. A 'Semantic Keyword Profile' (10-15 technical keywords or short phrases) that describes the core intent of this cluster.
 
             Rules:
-            - Use broad, standard industry terms (e.g., 'Web Development', 'Cybersecurity', 'Machine Learning').
-            - Avoid flowery, narrative, or overly specific language.
-            - Ensure the label is DISTINCT from others in this report.
-            - Use Title Case.
-            - Return ONLY the category name.
-
+            - Return ONLY valid JSON.
+            - Format: {{"name": "Category Name", "keywords": "keyword1, keyword2, phrase1, ..."}}
+            - Name: Use Title Case, broad industry terms.
+            - Keywords: Focus on technical concepts, tools, and specific domains mentioned.
+            
             {already_used_str}
 
             Cluster Stories:
@@ -592,52 +602,36 @@ async def generate_batch_cluster_names(
                     config={
                         "temperature": LLM_TEMPERATURE,
                         "max_output_tokens": LLM_CLUSTER_MAX_TOKENS,
+                        "response_mime_type": "application/json",
                     },
                     max_retries=LLM_CLUSTER_MAX_RETRIES,
                 )
                 duration = time.time() - t0
 
                 returned = 0
-                batch_results: dict[str, object] | None = None
-                if (
-                    text is None
-                    and attempt_model == primary_model
-                    and fallback_model
-                    and not fallback_triggered
-                ):
-                    fallback_triggered = True
-                    active_model = fallback_model
-                    if debug_path is not None:
-                        debug_records.append(
-                            {
-                                "event": "fallback",
-                                "reason": "empty_response",
-                                "batch_index": batch_index,
-                                "attempt": attempt,
-                                "from_model": primary_model,
-                                "to_model": fallback_model,
-                            }
-                        )
-                        _flush_debug()
                 if text:
                     logger.debug("Groq cluster naming raw response: %s", text)
                     if len(pending) == 1:
-                        only_cid = next(iter(pending))
-                        final_name = _finalize_cluster_name(text)
-                        if final_name:
-                            results[only_cid] = final_name
-                            items = to_generate[only_cid]
-                            story_ids = sorted(
-                                [
-                                    str(s.get("id", s.get("objectID", "")))
-                                    for s, _ in items
-                                ]
-                            )
-                            cache_key = _cluster_name_cache_key(
-                                story_ids, attempt_model
-                            )
-                            cache[cache_key] = final_name
-                            returned += 1
+                        batch_results = _safe_json_loads(text)
+                        if "name" in batch_results:
+                            only_cid = next(iter(pending))
+                            final_name = _finalize_cluster_name(str(batch_results["name"]))
+                            final_keywords = str(batch_results.get("keywords", "")).strip()
+                            if final_name:
+                                profile = {"name": final_name, "keywords": final_keywords}
+                                results[only_cid] = profile
+                                items = to_generate[only_cid]
+                                story_ids = sorted(
+                                    [
+                                        str(s.get("id", s.get("objectID", "")))
+                                        for s, _ in items
+                                    ]
+                                )
+                                cache_key = _cluster_name_cache_key(
+                                    story_ids, attempt_model
+                                )
+                                cache[cache_key] = json.dumps(profile)
+                                returned += 1
                 pending = {cid for cid in pending if cid not in results}
                 if debug_path is not None:
                     debug_records.append(
@@ -753,8 +747,9 @@ async def generate_batch_cluster_names(
                     }
                 )
                 _flush_debug()
+                provider_name = active_model.split("-")[0].capitalize() if "-" in active_model else "LLM"
                 raise RuntimeError(
-                    "Groq cluster naming timed out after "
+                    f"{provider_name} cluster naming timed out after "
                     f"{LLM_CLUSTER_MAX_TOTAL_SECONDS:.0f}s. "
                     "Try rerunning with fewer clusters/candidates or wait for quota reset."
                 )
@@ -765,23 +760,24 @@ async def generate_batch_cluster_names(
                 info_block = "\n\n".join(info_entries) if info_entries else "(no stories)"
                 rescue_prompts.append(info_block)
 
-            used_names = sorted(set(n for n in results.values() if n))
+            used_names = sorted(set(n["name"] for n in results.values() if isinstance(n, dict) and n.get("name")))
             already_used_str = f"Already Used Names (DO NOT REUSE): {', '.join(used_names)}" if used_names else ""
 
             full_prompt = f"""
-            Provide a concise, generic category name (2-4 words) for this cluster of stories.
+            Analyze this cluster of stories and provide:
+            1. A concise, generic category name (2-4 words).
+            2. A 'Semantic Keyword Profile' (10-15 technical keywords or short phrases) that describes the core intent of this cluster.
 
             Rules:
-            - Use broad, standard industry terms (e.g., 'Web Development', 'Cybersecurity', 'Machine Learning').
-            - Avoid flowery, narrative, or overly specific language.
-            - Ensure the label is DISTINCT from others in this report.
-            - Use Title Case.
-            - Return ONLY the category name.
-
+            - Return ONLY valid JSON.
+            - Format: {{"name": "Category Name", "keywords": "keyword1, keyword2, phrase1, ..."}}
+            - Name: Use Title Case, broad industry terms.
+            - Keywords: Focus on technical concepts, tools, and specific domains mentioned.
+            
             {already_used_str}
 
             Cluster Stories:
-            {chr(10).join(batch_prompts)}
+            {chr(10).join(rescue_prompts)}
             """
 
             try:
@@ -927,15 +923,16 @@ async def generate_batch_cluster_names(
     missing = [cid for cid in clusters if not results.get(cid)]
     if missing:
         elapsed = time.time() - start_time
+        provider_name = active_model.split("-")[0].capitalize() if "-" in active_model else "LLM"
         raise RuntimeError(
-            "Groq cluster naming failed for "
+            f"{provider_name} cluster naming failed for "
             f"{len(missing)} clusters after {request_count} requests "
             f"({elapsed:.1f}s). Missing IDs: {sorted(missing)}. "
             "Likely rate-limited or incomplete JSON. "
             "Try rerunning, lowering --clusters, or waiting for quota reset."
         )
 
-    return {cid: results.get(cid, "") for cid in clusters}
+    return {cid: results.get(cid, {"name": "", "keywords": ""}) for cid in clusters}
 
 
 TLDR_CACHE_PATH = Path(".cache/tldrs.json")

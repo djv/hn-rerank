@@ -701,6 +701,7 @@ async def main() -> None:
     args: argparse.Namespace = parser.parse_args()
 
     # Create unified config from TOML and CLI overrides
+    provider_choice = "mistral" if args.mistral else "groq"
     config = AppConfig.load(
         toml_path=config_path,
         username=args.username,
@@ -717,6 +718,16 @@ async def main() -> None:
         debug_scores=args.debug_scores,
         debug_clusters=args.debug_clusters,
     )
+    
+    # Apply CLI overrides to nested config objects
+    from dataclasses import replace
+    if args.clusters:
+        config = replace(config, clustering=replace(config.clustering, default_count=args.clusters, max_clusters=args.clusters))
+
+    # Override provider if explicitly requested on CLI
+    if args.mistral or not args.mistral:  # args.mistral is always either True or False
+         from dataclasses import replace
+         config = replace(config, llm=replace(config.llm, provider=provider_choice))
 
     os.environ["LLM_PROVIDER"] = config.llm.provider
 
@@ -913,6 +924,7 @@ async def main() -> None:
         cluster_labels: NDArray[np.int32] | None = None
         cluster_centroids: NDArray[np.float32] | None = None
         cluster_names: dict[int, str] = {}
+        cluster_keywords: dict[int, str] = {}
         cluster_source = cluster_emb if cluster_emb is not None else p_emb
         if cluster_source is not None and len(cluster_source) > 0:
             cl_task: TaskID = progress.add_task(
@@ -963,9 +975,9 @@ async def main() -> None:
                     last_n_completed = curr
 
             if config.no_naming:
-                cluster_names.update(
-                    {cid: f"Interest Group {cid + 1}" for cid in clusters_for_naming}
-                )
+                for cid in clusters_for_naming:
+                    cluster_names[cid] = f"Interest Group {cid + 1}"
+                    cluster_keywords[cid] = ""
                 progress.update(
                     name_task,
                     completed=n_clusters,
@@ -981,18 +993,21 @@ async def main() -> None:
                             if config.debug_clusters_path
                             else config.output_path.with_name("cluster_name_debug.json")
                         )
-                    cluster_names.update(
-                        await llm_utils.generate_batch_cluster_names(
-                            clusters_for_naming,
-                            progress_callback=name_cb,
-                            debug_path=debug_path,
-                        )
+                    cluster_profiles = await llm_utils.generate_batch_cluster_names(
+                        clusters_for_naming,
+                        progress_callback=name_cb,
+                        debug_path=debug_path,
                     )
+                    for cid, profile in cluster_profiles.items():
+                        cluster_names[cid] = profile["name"]
+                        cluster_keywords[cid] = profile["keywords"]
+                    
                     progress.update(name_task, description="[green][+] Clusters named.")
                 except RuntimeError as exc:
                     progress.stop()
+                    provider_name = config.llm.provider.capitalize()
                     console.print(
-                        f"[red][bold][-] Groq naming failed:[/bold] {exc}[/red]"
+                        f"[red][bold][-] {provider_name} naming failed:[/bold] {exc}[/red]"
                     )
                     raise
         else:
@@ -1054,6 +1069,7 @@ async def main() -> None:
             positive_stories=pos_stories,
             negative_stories=neg_stories,
             cluster_names=cluster_names,
+            cluster_keywords=cluster_keywords,
         )
         progress.update(
             r_task, completed=100, description="[green][+] Reranking complete."
