@@ -14,7 +14,7 @@ provider = "mistral"
 # Balanced Hybrid Ranking (Linear 85/5/10 split)
 
 [hn_rerank.ranking]
-negative_weight = 0.6
+negative_weight = 0.26932
 max_results = 500
 
 [hn_rerank.adaptive_hn]
@@ -41,7 +41,7 @@ knn_neighbors = 6
 scoring_mode = "pairwise_logistic"
 feature_mode = "bottleneck"
 pairwise_negatives = 15
-pairwise_c = 1.4700450168
+pairwise_c = 0.21448
 k_feat = 7
 use_balanced_class_weight = false
 cv_scoring = "f1"
@@ -55,10 +55,16 @@ use_log_points_feature = false
 algorithm = "agglomerative"
 linkage = "ward"
 metric = "euclidean"
-distance_threshold = 1.3282321556
+distance_threshold = 1.57824
 similarity_threshold = 0.75
 outlier_similarity_threshold = 0.0
 min_samples_per_cluster = 1
 max_cluster_fraction = 0.25
 max_cluster_size = 40
 refine_iters = 2
+
+[hn_rerank.cross_encoder]
+enabled = true
+top_n = 50
+weight = 0.06953
+
