@@ -758,6 +758,7 @@ class RankingEvaluator:
         parallel: bool = True,
         final_list_count: int | None = None,
         diagnostics_summary: dict[str, object] | None = None,
+        cluster_keywords: dict[int, str] | None = None,
     ) -> dict[str, float]:
         """Run k-fold cross-validation and return averaged metrics."""
         from concurrent.futures import ThreadPoolExecutor
@@ -807,7 +808,7 @@ class RankingEvaluator:
                 positive_stories=[all_stories[i] for i in train_idx],
                 negative_stories=dataset.neg_stories,
                 cluster_names=None,
-                cluster_keywords=None,
+                cluster_keywords=cluster_keywords,
             )
 
             ranked_ids = [fold_candidates[r.index].id for r in results]
@@ -884,16 +885,16 @@ async def main():
     parser.add_argument(
         "--diversity",
         type=float,
-        default=0.2396634418,
+        default=None,
         help="MMR diversity lambda",
     )
     parser.add_argument(
-        "--knn", type=int, default=6, help="k-NN neighbors for scoring"
+        "--knn", type=int, default=None, help="k-NN neighbors for scoring"
     )
     parser.add_argument(
         "--neg-weight",
         type=float,
-        default=0.5529047831,
+        default=None,
         help="Weight for negative similarity penalty",
     )
     parser.add_argument(
@@ -918,6 +919,17 @@ async def main():
     )
     parser.add_argument(
         "--guard-tolerance", type=float, default=0.0, help="Allowed drop vs baseline"
+    )
+    parser.add_argument(
+        "--limit-pos", type=int, default=200, help="Max positive stories to load"
+    )
+    parser.add_argument(
+        "--limit-neg", type=int, default=100, help="Max negative stories to load"
+    )
+    parser.add_argument(
+        "--cluster-keywords",
+        action="store_true",
+        help="Generate and use LLM cluster keywords for ranking",
     )
     parser.add_argument(
         "--cache-only",
@@ -958,18 +970,18 @@ async def main():
     # Apply CLI overrides to nested config objects
     # This is a bit manual but preserves CLI flexibility for evaluation
     from dataclasses import replace
-    config = replace(
-        config,
-        ranking=replace(
-            config.ranking,
-            diversity_lambda=args.diversity,
-            negative_weight=args.neg_weight,
-        ),
-        semantic=replace(
-            config.semantic,
-            knn_neighbors=args.knn,
-        ),
-    )
+    
+    ranking_overrides = {}
+    if args.diversity is not None:
+        ranking_overrides["diversity_lambda"] = args.diversity
+    if args.neg_weight is not None:
+        ranking_overrides["negative_weight"] = args.neg_weight
+        
+    if ranking_overrides:
+        config = replace(config, ranking=replace(config.ranking, **ranking_overrides))
+        
+    if args.knn is not None:
+        config = replace(config, semantic=replace(config.semantic, knn_neighbors=args.knn))
 
     if args.pure_semantic:
         config = replace(
@@ -981,6 +993,8 @@ async def main():
     evaluator = RankingEvaluator(args.username)
     success = await evaluator.load_data(
         holdout=args.holdout,
+        limit_pos=args.limit_pos,
+        limit_neg=args.limit_neg,
         candidate_count=args.candidates,
         use_classifier=args.classifier,
         cache_only=args.cache_only,
@@ -993,6 +1007,33 @@ async def main():
     if evaluator.dataset is None:
         return
     dataset = evaluator.dataset
+
+    # Generate cluster keywords if requested
+    cluster_keywords = None
+    if args.cluster_keywords:
+        print("\nGenerating cluster keywords via LLM...")
+        from api import llm_utils
+        from api.rerank import get_embeddings
+        
+        # We need to cluster the training stories to get keywords
+        train_emb = get_embeddings([s.text_content for s in dataset.train_stories])
+        # Use same logic as production clustering
+        from api.rerank import cluster_interests_with_labels
+        _, labels = cluster_interests_with_labels(train_emb, config.clustering)
+        
+        # Map back to story objects for naming
+        clusters_dict = {}
+        for i, cid_raw in enumerate(labels):
+            cid = int(cid_raw)
+            if cid not in clusters_dict:
+                clusters_dict[cid] = []
+            story = dataset.train_stories[i]
+            clusters_dict[cid].append((story.to_dict(), 1.0))
+            
+        cluster_profiles = await llm_utils.generate_batch_cluster_names(clusters_dict)
+        cluster_keywords = {cid: p["keywords"] for cid, p in cluster_profiles.items()}
+        print(f"Generated keywords for {len(cluster_keywords)} clusters.")
+
     k_metrics = (
         [k for k in DEFAULT_K_METRICS if k <= args.count] or [args.count]
         if args.final_list
@@ -1007,6 +1048,7 @@ async def main():
             k_metrics=k_metrics,
             report_each=True,
             final_list_count=args.count if args.final_list else None,
+            cluster_keywords=cluster_keywords,
         )
         _print_metrics_report(
             metrics,
@@ -1019,6 +1061,7 @@ async def main():
             config=config,
             k_metrics=k_metrics,
             final_list_count=args.count if args.final_list else None,
+            cluster_keywords=cluster_keywords,
         )
         _print_metrics_report(
             metrics,
