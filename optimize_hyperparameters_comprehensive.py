@@ -8,20 +8,14 @@ import argparse
 import asyncio
 import json
 import logging
-import os
-import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
-import numpy as np
 import optuna
-from optuna.trial import Trial, TrialState
+from optuna.trial import Trial
 from optuna.samplers import TPESampler
-from optuna.pruners import MedianPruner
 
-from evaluate_quality import RankingEvaluator, _print_metrics_report
-from api.config import AppConfig
+from evaluate_quality import RankingEvaluator
 from api import rerank
 import tuning_common as _tuning_common
 

@@ -1388,13 +1388,6 @@ def rank_stories(
                             # Take the max score across centroids
                             max_ce = float(np.max(pair_scores))
                             ce_scores_list.append(max_ce)
-                        # Sigmoid to normalize CE scores (logits) to [0, 1]
-                        ce_scores_normalized = 1.0 / (1.0 + np.exp(-np.array(ce_scores_list, dtype=np.float32)))
-                        
-                        # Store normalized scores for display
-                        for i, idx in enumerate(ce_indices):
-                            idx_to_ce[int(idx)] = float(ce_scores_normalized[i])
-
                         # Re-sort top_n indices by blended score
                         # We use raw logits for the CE contribution to preserve relative ordering
                         top_hybrid_scores = hybrid_scores[ce_indices]
@@ -1410,6 +1403,10 @@ def rank_stories(
                         ce_range = ce_max - ce_min if ce_max > ce_min else 1.0
                         ce_norm = (ce_logits - ce_min) / ce_range
                         
+                        # Store normalized scores for display (with 0.01 floor for UI visibility)
+                        for i, idx in enumerate(ce_indices):
+                            idx_to_ce[int(idx)] = float(max(0.01, ce_norm[i]))
+
                         ce_weight = config.cross_encoder.weight
                         blended_top_scores = (1.0 - ce_weight) * h_norm + ce_weight * ce_norm
                         
