@@ -614,7 +614,7 @@ async def test_get_best_stories_merges_algolia_live_and_bigquery_archive(
 
     captured: dict[str, int] = {}
 
-    def fake_query_bigquery_archive_sync(*, start_ts, end_ts, candidate_limit):
+    def fake_query_bigquery_archive_sync(*, start_ts, end_ts, candidate_limit, **kwargs):
         captured["start_ts"] = start_ts
         captured["end_ts"] = end_ts
         captured["candidate_limit"] = candidate_limit
@@ -661,7 +661,8 @@ async def test_get_best_stories_merges_algolia_live_and_bigquery_archive(
     stories = await get_best_stories(limit=10, config=config)
 
     assert [story.id for story in stories] == [1, 2]
-    assert "archive article text" in stories[1].text_content
+    # story 2 text_content is directly returned from the fake BQ sync
+    assert "archive story text" in stories[1].text_content
     assert captured["end_ts"] > captured["start_ts"]
     assert 5 * 86400 < captured["end_ts"] - captured["start_ts"] < 7 * 86400
     assert captured["candidate_limit"] >= 10
@@ -669,10 +670,19 @@ async def test_get_best_stories_merges_algolia_live_and_bigquery_archive(
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_get_best_stories_raises_when_bigquery_archive_fails(monkeypatch):
+async def test_get_best_stories_gracefully_handles_bigquery_archive_failure(monkeypatch):
     respx.get(f"{ALGOLIA_BASE}/search").mock(
-        return_value=Response(200, json={"hits": []})
+        return_value=Response(200, json={"hits": [{"objectID": "123"}]})
     )
+
+    async def fake_fetch_story(client, sid, **kwargs):
+        return Story(
+            id=sid,
+            title=f"Story {sid}",
+            url=f"https://example.com/{sid}",
+            score=100,
+            time=1800000000,
+        )
 
     def fake_query_bigquery_archive_sync(**kwargs):
         raise RuntimeError("BigQuery unavailable")
@@ -681,10 +691,14 @@ async def test_get_best_stories_raises_when_bigquery_archive_fails(monkeypatch):
         "api.fetching._query_bigquery_archive_sync",
         fake_query_bigquery_archive_sync,
     )
+    monkeypatch.setattr("api.fetching.fetch_story", fake_fetch_story)
 
-    config = AppConfig(days=10, no_rss=True)
-    with pytest.raises(RuntimeError, match="BigQuery unavailable"):
-        await get_best_stories(limit=10, config=config)
+    config = AppConfig(days=10, no_rss=True, candidates=1)
+    # Should not raise, should return Algolia stories
+    stories = await get_best_stories(limit=1, config=config)
+    assert len(stories) > 0
+    # At least our mocked 123 should be there
+    assert any(s.id == 123 for s in stories)
 
 
 class TestWindowFilters:

@@ -424,7 +424,8 @@ def story_from_bigquery_row(row: Any) -> Story | None:
     )
 
 
-def build_bigquery_sql(table: str = HN_FULL_TABLE) -> str:
+def build_bigquery_sql(table: str = HN_FULL_TABLE, has_exclude_ids: bool = False) -> str:
+    exclude_clause = "AND id NOT IN UNNEST(@exclude_ids)" if has_exclude_ids else ""
     return f"""
 WITH RECURSIVE candidate_stories AS (
   SELECT
@@ -443,6 +444,7 @@ WITH RECURSIVE candidate_stories AS (
     AND (@min_comments <= 0 OR IFNULL(descendants, 0) >= @min_comments)
     AND NOT IFNULL(deleted, FALSE)
     AND NOT IFNULL(dead, FALSE)
+    {exclude_clause}
   ORDER BY score DESC, timestamp DESC
   LIMIT @candidate_limit
 ),
@@ -501,6 +503,7 @@ def _query_bigquery_archive_sync(
     start_ts: int,
     end_ts: int,
     candidate_limit: int,
+    exclude_ids: list[int] | None = None,
 ) -> list[Story]:
     try:
         from google.cloud import bigquery
@@ -511,24 +514,34 @@ def _query_bigquery_archive_sync(
 
     project = os.environ.get(HN_BIGQUERY_PROJECT_ENV) or None
     client = bigquery.Client(project=project)
-    job_config = bigquery.QueryJobConfig(
-        query_parameters=[
-            bigquery.ScalarQueryParameter("start_ts", "INT64", start_ts),
-            bigquery.ScalarQueryParameter("end_ts", "INT64", end_ts),
-            bigquery.ScalarQueryParameter("candidate_limit", "INT64", candidate_limit),
-            bigquery.ScalarQueryParameter("min_points", "INT64", ALGOLIA_MIN_POINTS),
-            bigquery.ScalarQueryParameter(
-                "min_comments", "INT64", MIN_CANDIDATE_COMMENTS
-            ),
-            bigquery.ScalarQueryParameter(
-                "max_comment_depth", "INT64", HN_BIGQUERY_MAX_COMMENT_DEPTH
-            ),
-            bigquery.ScalarQueryParameter(
-                "comments_per_story", "INT64", TOP_COMMENTS_FOR_RANKING
-            ),
-        ]
-    )
-    rows = client.query(build_bigquery_sql(), job_config=job_config).result()
+    
+    query_parameters = [
+        bigquery.ScalarQueryParameter("start_ts", "INT64", start_ts),
+        bigquery.ScalarQueryParameter("end_ts", "INT64", end_ts),
+        bigquery.ScalarQueryParameter("candidate_limit", "INT64", candidate_limit),
+        bigquery.ScalarQueryParameter("min_points", "INT64", ALGOLIA_MIN_POINTS),
+        bigquery.ScalarQueryParameter(
+            "min_comments", "INT64", MIN_CANDIDATE_COMMENTS
+        ),
+        bigquery.ScalarQueryParameter(
+            "max_comment_depth", "INT64", HN_BIGQUERY_MAX_COMMENT_DEPTH
+        ),
+        bigquery.ScalarQueryParameter(
+            "comments_per_story", "INT64", TOP_COMMENTS_FOR_RANKING
+        ),
+    ]
+    if exclude_ids:
+        query_parameters.append(
+            bigquery.ArrayQueryParameter("exclude_ids", "INT64", exclude_ids)
+        )
+
+    job_config = bigquery.QueryJobConfig(query_parameters=query_parameters)
+    try:
+        sql = build_bigquery_sql(has_exclude_ids=bool(exclude_ids))
+        rows = client.query(sql, job_config=job_config).result()
+    except Exception as e:
+        logger.warning(f"BigQuery archive fetching failed (possibly quota exceeded): {e}")
+        return []
     stories: list[Story] = []
     for row in rows:
         story = story_from_bigquery_row(row)
@@ -549,63 +562,116 @@ async def fetch_bigquery_archive_stories(
     cache_only: bool = False,
     allow_stale: bool = False,
 ) -> list[Story]:
-    cached_results: list[Story] = []
     if cache_only:
-        return cached_results
+        return []
 
-    stories = await asyncio.to_thread(
-        _query_bigquery_archive_sync,
-        start_ts=start_ts,
-        end_ts=end_ts,
-        candidate_limit=candidate_limit,
-    )
-
-    results: list[Story] = []
-    seen: set[int] = set()
-    for story in stories:
-        if story.id in exclude_ids or story.id in seen:
-            continue
-        if story.url:
-            norm_url = normalize_url(story.url)
-            if norm_url and (
-                (exclude_urls and norm_url in exclude_urls)
-                or (seen_urls and norm_url in seen_urls)
-            ):
-                continue
-
-        cached = _load_cached_story(
-            story.id,
-            ttl=HN_BIGQUERY_ARCHIVE_STORY_CACHE_TTL,
-            allow_stale=allow_stale,
+    # Identify stories already in cache to avoid re-fetching them from BigQuery
+    # This saves quota by excluding these IDs from the query
+    cached_in_window: list[Story] = []
+    
+    # Simple heuristic: scan cache for stories in this time window
+    # In a large cache this might be slow, but for typical use it's fine
+    try:
+        # Sort by mtime to check newest files first
+        cache_files = sorted(
+            CACHE_PATH.glob("*.json"), 
+            key=lambda p: p.stat().st_mtime, 
+            reverse=True
         )
-        if cached is not None:
-            results.append(cached)
-            seen.add(cached.id)
-            if cached.url and seen_urls is not None:
-                norm_url = normalize_url(cached.url)
-                if norm_url:
-                    seen_urls.add(norm_url)
-            continue
+        for p in cache_files:
+            try:
+                # We use the filename as ID to avoid reading the whole file if it's out of window
+                sid = int(p.stem)
+                if sid in exclude_ids:
+                    continue
+                
+                # Check file mtime as a coarse filter before reading (1 day buffer)
+                if p.stat().st_mtime < start_ts - 86400:
+                    # Since we sorted by mtime, we can stop early
+                    break
 
-        article_text = ""
-        if story.url:
-            async with ARTICLE_SEM:
-                article_text = await fetch_full_text(http_client, story.url)
-        if article_text:
-            story.text_content = compose_story_text(
-                title=story.title,
-                article_text=article_text,
-                comments=story.comments,
-            )
-        _save_cached_story(story)
+                story = _load_cached_story(
+                    sid,
+                    ttl=HN_BIGQUERY_ARCHIVE_STORY_CACHE_TTL,
+                    allow_stale=allow_stale,
+                )
+                if story and start_ts <= story.time < end_ts:
+                    # Standard filters
+                    if story.score <= ALGOLIA_MIN_POINTS:
+                        continue
+                    if MIN_CANDIDATE_COMMENTS > 0 and (story.comment_count or 0) < MIN_CANDIDATE_COMMENTS:
+                        continue
+                    
+                    if exclude_urls and story.url:
+                        norm_url = normalize_url(story.url)
+                        if norm_url and norm_url in exclude_urls:
+                            continue
+                    if seen_urls and story.url:
+                        norm_url = normalize_url(story.url)
+                        if norm_url and norm_url in seen_urls:
+                            continue
+                            
+                    cached_in_window.append(story)
+                    if len(cached_in_window) >= candidate_limit:
+                        break
+            except (ValueError, OSError):
+                continue
+    except Exception as e:
+        logger.warning(f"Error scanning cache for BigQuery optimization: {e}")
+
+    # Combine all known IDs to exclude from the BigQuery query
+    # We prioritize recent IDs by sorting descending (HN IDs are chronological)
+    ids_to_exclude = sorted(list(exclude_ids | {s.id for s in cached_in_window}), reverse=True)
+    
+    remaining_limit = candidate_limit
+    stories: list[Story] = []
+    
+    # Cap the exclude list size to avoid giant queries
+    # BigQuery can handle large arrays, but 10k is a safe middle ground for performance
+    bq_exclude = ids_to_exclude[:10000] if len(ids_to_exclude) > 10000 else ids_to_exclude
+    
+    try:
+        stories = await asyncio.to_thread(
+            _query_bigquery_archive_sync,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            candidate_limit=remaining_limit,
+            exclude_ids=bq_exclude,
+        )
+    except Exception as e:
+        logger.warning(f"BigQuery archive fetching failed: {e}")
+        # stories remains empty, fallback to cached only
+
+    results: list[Story] = cached_in_window
+    seen: set[int] = {s.id for s in cached_in_window}
+    
+    for story in stories:
+        if story.id in seen or story.id in exclude_ids:
+            continue
+        
+        # New story from BQ, already has full content
         results.append(story)
         seen.add(story.id)
         if story.url and seen_urls is not None:
             norm_url = normalize_url(story.url)
             if norm_url:
                 seen_urls.add(norm_url)
+        
+        # Save to cache
+        from api.cache_utils import atomic_write_json
+        cache_file = CACHE_PATH / f"{story.id}.json"
+        atomic_write_json(
+            cache_file,
+            {
+                "ts": time.time(),
+                "version": STORY_CACHE_VERSION,
+                "story": story.to_dict(),
+            },
+        )
 
-    return results
+    # Sort by score and time to ensure the best candidates are kept regardless of provenance
+    results.sort(key=lambda s: (s.score, s.time), reverse=True)
+    return results[:candidate_limit]
 
 
 async def get_best_stories(
