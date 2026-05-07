@@ -51,7 +51,7 @@ def test_ranking_invariants(num_candidates, num_favorites):
     with pytest.MonkeyPatch().context() as mp:
         mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: cand_emb)
 
-        config = AppConfig(ranking=RankingConfig(hn_weight=0.0, diversity_lambda=0.0))
+        config = AppConfig(ranking=RankingConfig(non_semantic_weight=0.0, diversity_lambda=0.0))
         results = rank_stories(
             stories,
             positive_embeddings=pos_emb,
@@ -109,7 +109,7 @@ def test_ranking_permutation_invariance(story_ids):
             ),
         )
 
-        config = AppConfig(ranking=RankingConfig(hn_weight=0.0, diversity_lambda=0.0), use_classifier=False)
+        config = AppConfig(ranking=RankingConfig(non_semantic_weight=0.0, diversity_lambda=0.0), use_classifier=False)
         res_a = rank_stories(
             stories,
             positive_embeddings=pos_emb,
@@ -153,7 +153,7 @@ def test_semantic_score_bounds_without_negatives(
         mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: cand_emb)
 
         config = AppConfig(
-            ranking=RankingConfig(hn_weight=0.0, diversity_lambda=0.0),
+            ranking=RankingConfig(non_semantic_weight=0.0, diversity_lambda=0.0),
             semantic=SemanticConfig(maxsim_weight=0.0, meansim_weight=1.0, sigmoid_threshold=0.0),
             use_classifier=False,
         )
@@ -196,10 +196,10 @@ def test_negative_signal_impact(num_candidates, neg_multiplier):
         mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: cand_emb)
 
         # Rank without negative signal
-        config_no_neg = AppConfig(ranking=RankingConfig(hn_weight=0.0, diversity_lambda=0.0))
+        config_no_neg = AppConfig(ranking=RankingConfig(non_semantic_weight=0.0, diversity_lambda=0.0))
         res_no_neg = rank_stories(stories, pos_emb, config=config_no_neg)
         # Rank with negative signal in heuristic mode
-        config_with_neg = AppConfig(ranking=RankingConfig(hn_weight=0.0, diversity_lambda=0.0, negative_weight=neg_multiplier))
+        config_with_neg = AppConfig(ranking=RankingConfig(non_semantic_weight=0.0, diversity_lambda=0.0, negative_weight=neg_multiplier))
         res_with_neg = rank_stories(
             stories,
             pos_emb,
@@ -234,7 +234,7 @@ def test_hn_points_normalization(scores):
         mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: dummy_cand)
 
         # Pure HN weight
-        config = AppConfig(ranking=RankingConfig(hn_weight=1.0, diversity_lambda=0.0))
+        config = AppConfig(ranking=RankingConfig(non_semantic_weight=1.0, diversity_lambda=0.0))
         results = rank_stories(
             stories, positive_embeddings=dummy_pos, config=config
         )
@@ -284,7 +284,7 @@ def test_rank_stories_empty_signals():
         mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: cand_emb)
 
         # Both positive and negative embeddings are empty/None
-        config = AppConfig(ranking=RankingConfig(hn_weight=0.5))
+        config = AppConfig(ranking=RankingConfig(non_semantic_weight=0.5))
         results = rank_stories(
             stories,
             positive_embeddings=np.zeros((0, 384), dtype=np.float32),
@@ -322,11 +322,11 @@ def test_rank_stories_diversity_param_does_not_change_ranking():
 
     with pytest.MonkeyPatch().context() as mp:
         mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: embs)
-        config_low = AppConfig(ranking=RankingConfig(diversity_lambda=0.0, hn_weight=0.0))
+        config_low = AppConfig(ranking=RankingConfig(diversity_lambda=0.0, non_semantic_weight=0.0))
         res_low = rank_stories(
             stories, pos_emb, config=config_low
         )
-        config_high = AppConfig(ranking=RankingConfig(diversity_lambda=0.5, hn_weight=0.0))
+        config_high = AppConfig(ranking=RankingConfig(diversity_lambda=0.5, non_semantic_weight=0.0))
         res_high = rank_stories(
             stories, pos_emb, config=config_high
         )
@@ -371,8 +371,8 @@ def test_rank_stories_upvote_boost():
     with pytest.MonkeyPatch().context() as mp:
         mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: cand_emb)
 
-        # Rank with pure semantic weight (hn_weight=0) to isolate the effect
-        config = AppConfig(ranking=RankingConfig(hn_weight=0.0, diversity_lambda=0.0))
+        # Rank with pure semantic weight (non_semantic_weight=0) to isolate the effect
+        config = AppConfig(ranking=RankingConfig(non_semantic_weight=0.0, diversity_lambda=0.0))
         results = rank_stories(
             stories, positive_embeddings=pos_emb, config=config
         )
@@ -402,14 +402,14 @@ def test_rank_stories_hidden_only_affects_classifier_mode():
         mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: cand_emb)
 
         # Baseline: Rank WITHOUT negative embeddings
-        config_baseline = AppConfig(ranking=RankingConfig(hn_weight=0.0))
+        config_baseline = AppConfig(ranking=RankingConfig(non_semantic_weight=0.0))
         res_baseline = rank_stories(
             stories, pos_emb, negative_embeddings=None, config=config_baseline
         )
         score_baseline = res_baseline[0].hybrid_score
 
         # Test: Rank WITH negative embeddings
-        config_penalized = AppConfig(ranking=RankingConfig(hn_weight=0.0, negative_weight=0.5))
+        config_penalized = AppConfig(ranking=RankingConfig(non_semantic_weight=0.0, negative_weight=0.5))
         res_penalized = rank_stories(
             stories, pos_emb, negative_embeddings=neg_emb, config=config_penalized
         )
@@ -424,11 +424,11 @@ def test_rank_stories_hidden_only_affects_classifier_mode():
 
 
 @given(
-    hn_weight=st.floats(min_value=0.0, max_value=1.0),
+    non_semantic_weight=st.floats(min_value=0.0, max_value=1.0),
     diversity_lambda=st.floats(min_value=0.0, max_value=1.0),
 )
 @settings(deadline=None)
-def test_weight_parameters_produce_bounded_scores(hn_weight, diversity_lambda):
+def test_weight_parameters_produce_bounded_scores(non_semantic_weight, diversity_lambda):
     """
     Invariant: Final scores should always be in reasonable bounds
     regardless of weight parameter combinations.
@@ -452,7 +452,7 @@ def test_weight_parameters_produce_bounded_scores(hn_weight, diversity_lambda):
     with pytest.MonkeyPatch().context() as mp:
         mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: cand_emb)
 
-        config = AppConfig(ranking=RankingConfig(hn_weight=hn_weight, diversity_lambda=diversity_lambda))
+        config = AppConfig(ranking=RankingConfig(non_semantic_weight=non_semantic_weight, diversity_lambda=diversity_lambda))
         results = rank_stories(
             stories,
             positive_embeddings=pos_emb,
@@ -511,7 +511,7 @@ def test_rank_stories_returns_all_identical_candidates():
     with pytest.MonkeyPatch().context() as mp:
         mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: cand_emb)
 
-        config = AppConfig(ranking=RankingConfig(diversity_lambda=0.5, hn_weight=0.1))
+        config = AppConfig(ranking=RankingConfig(diversity_lambda=0.5, non_semantic_weight=0.1))
         results = rank_stories(
             stories,
             positive_embeddings=pos_emb,
@@ -560,7 +560,7 @@ def test_knn_scoring_logic():
         mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: cand_emb)
 
         config = AppConfig(
-            ranking=RankingConfig(hn_weight=0.0, diversity_lambda=0.0),
+            ranking=RankingConfig(non_semantic_weight=0.0, diversity_lambda=0.0),
             semantic=SemanticConfig(knn_neighbors=3),
         )
         results = rank_stories(
@@ -631,7 +631,7 @@ def test_freshness_boost_ordering():
             freshness=FreshnessConfig(enabled=True, max_boost=0.1),
         )
 
-        # Use default hn_weight (triggers adaptive + freshness)
+        # Use default non_semantic_weight (triggers adaptive + freshness)
         results = rank_stories(
             stories,
             positive_embeddings=pos_emb,
@@ -682,7 +682,7 @@ def test_adaptive_hn_weight():
         mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: cand_emb)
         from api.config import AdaptiveHNConfig, FreshnessConfig
         config = AppConfig(
-            ranking=RankingConfig(diversity_lambda=0.0),
+            ranking=RankingConfig(non_semantic_weight=1.0, diversity_lambda=0.0),
             adaptive_hn=AdaptiveHNConfig(
                 weight_min=0.0,
                 weight_max=0.5,
@@ -740,7 +740,7 @@ def test_median_knn_outlier_robustness():
         # Median = 0.0 (robust to outlier)
         # With mean it would be 0.33
         config = AppConfig(
-            ranking=RankingConfig(hn_weight=0.0, diversity_lambda=0.0),
+            ranking=RankingConfig(non_semantic_weight=0.0, diversity_lambda=0.0),
             semantic=SemanticConfig(knn_neighbors=3),
         )
         results = rank_stories(
@@ -788,7 +788,7 @@ def test_knn_scores_have_nonzero_variance(seed, num_candidates, num_favorites):
         mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: cand_emb)
 
         config = AppConfig(
-            ranking=RankingConfig(hn_weight=0.0, diversity_lambda=0.0),
+            ranking=RankingConfig(non_semantic_weight=0.0, diversity_lambda=0.0),
             semantic=SemanticConfig(maxsim_weight=0.0, meansim_weight=1.0, sigmoid_threshold=0.0),
             use_classifier=False,
         )
@@ -834,7 +834,7 @@ def test_knn_discriminates_close_vs_far():
         mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: cand_emb)
 
         config = AppConfig(
-            ranking=RankingConfig(hn_weight=0.0, diversity_lambda=0.0),
+            ranking=RankingConfig(non_semantic_weight=0.0, diversity_lambda=0.0),
             semantic=SemanticConfig(maxsim_weight=0.0, meansim_weight=1.0, sigmoid_threshold=0.0),
             use_classifier=False,
         )

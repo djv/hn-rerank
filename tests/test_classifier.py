@@ -201,7 +201,7 @@ def test_classifier_probability_is_semantic_score_without_post_hidden_penalty():
 
     config = AppConfig(
         use_classifier=True, 
-        ranking=RankingConfig(hn_weight=0.0),
+        ranking=RankingConfig(non_semantic_weight=0.0),
         classifier=ClassifierConfig(scoring_mode="logistic_cv", feature_mode="full")
     )
     with (
@@ -630,10 +630,12 @@ def test_classifier_metadata_features_still_allow_tuned_hn_blend():
     neg_emb = rng.normal(size=(5, 8)).astype(np.float32)
     cand_emb = rng.normal(size=(2, 8)).astype(np.float32)
 
-    from api.config import FreshnessConfig
+    from api.config import AdaptiveHNConfig, CrossEncoderConfig, FreshnessConfig
     config = AppConfig(
         use_classifier=True,
-        ranking=RankingConfig(hn_weight=0.5),
+        ranking=RankingConfig(non_semantic_weight=1.0),
+        adaptive_hn=AdaptiveHNConfig(weight_min=1.0, weight_max=1.0),
+        cross_encoder=CrossEncoderConfig(enabled=False),
         freshness=FreshnessConfig(enabled=False),
         classifier=ClassifierConfig(
             scoring_mode="logistic_cv",
@@ -685,7 +687,7 @@ def test_classifier_scores_are_not_post_penalized_by_hidden_similarity():
 
     config = AppConfig(
         use_classifier=True, 
-        ranking=RankingConfig(hn_weight=0.0),
+        ranking=RankingConfig(non_semantic_weight=0.0),
         classifier=ClassifierConfig(scoring_mode="logistic_cv", feature_mode="full")
     )
     with (

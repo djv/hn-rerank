@@ -83,7 +83,7 @@ async def main():
             from dataclasses import replace
             if args.pure_semantic:
                 config = replace(config, 
-                    ranking=replace(config.ranking, hn_weight=0.0),
+                    ranking=replace(config.ranking, non_semantic_weight=0.0),
                     freshness=replace(config.freshness, enabled=False)
                 )
 

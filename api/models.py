@@ -52,12 +52,14 @@ class StoryDisplayDict(StoryForTldr):
     cluster_name: str
     points: int
     time_ago: str
+    time: int
     url: str | None
     hn_url: str | None
     reason: str
     reason_url: str
     source: StorySource
     tldr: str
+    rank_index: NotRequired[int]
     cross_encoder_score: NotRequired[float]
     comment_count: NotRequired[int | None]
 
@@ -146,6 +148,7 @@ class StoryDisplay:
     cluster_name: str
     points: int
     time_ago: str
+    time: int
     url: str | None
     title: str
     hn_url: str | None
@@ -155,6 +158,7 @@ class StoryDisplay:
     source: StorySource = "hn"
     tldr: str = ""
     text_content: str = ""
+    rank_index: int = 0
     cross_encoder_score: float = 0.0
     comment_count: int | None = None
 
@@ -166,6 +170,7 @@ class StoryDisplay:
             "cluster_name": self.cluster_name,
             "points": self.points,
             "time_ago": self.time_ago,
+            "time": self.time,
             "url": self.url,
             "title": self.title,
             "hn_url": self.hn_url,
@@ -175,6 +180,7 @@ class StoryDisplay:
             "source": self.source,
             "tldr": self.tldr,
             "text_content": self.text_content,
+            "rank_index": self.rank_index,
             "cross_encoder_score": self.cross_encoder_score,
             "comment_count": self.comment_count,
         }

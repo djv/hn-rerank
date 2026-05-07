@@ -16,8 +16,10 @@ from api.constants import (
     FRESHNESS_MAX_BOOST,
     HN_SCORE_NORMALIZATION_CAP,
     KNN_NEIGHBORS,
+    RANKING_COMMENT_RATIO,
     RANKING_DIVERSITY_LAMBDA,
     RANKING_NEGATIVE_WEIGHT,
+    RANKING_NON_SEMANTIC_WEIGHT,
     CLASSIFIER_SCORING_MODE,
     CLASSIFIER_FEATURE_MODE,
     CLASSIFIER_PAIRWISE_NEGATIVES,
@@ -153,6 +155,12 @@ def resolve_params(params: Mapping[str, float | int]) -> ResolvedParams:
             "diversity_lambda_classifier": derive_classifier_diversity_lambda(
                 diversity_lambda
             ),
+            "non_semantic_weight": float(
+                params.get("non_semantic_weight", RANKING_NON_SEMANTIC_WEIGHT)
+            ),
+            "comment_ratio": float(
+                params.get("comment_ratio", RANKING_COMMENT_RATIO)
+            ),
         },
         "adaptive_hn": {
             "weight_min": adaptive_hn_min,
@@ -257,7 +265,9 @@ def render_promoted_toml(resolved: ResolvedParams) -> str:
         f"negative_weight = {float(ranking['negative_weight']):.10f}\n"
         f"diversity_lambda = {float(ranking['diversity_lambda']):.10f}\n"
         f"diversity_lambda_classifier = "
-        f"{float(ranking['diversity_lambda_classifier']):.10f}\n\n"
+        f"{float(ranking['diversity_lambda_classifier']):.10f}\n"
+        f"non_semantic_weight = {float(ranking['non_semantic_weight']):.10f}\n"
+        f"comment_ratio = {float(ranking['comment_ratio']):.10f}\n\n"
         "[hn_rerank.adaptive_hn]\n"
         f"weight_min = {float(adaptive_hn['weight_min']):.10f}\n"
         f"weight_max = {float(adaptive_hn['weight_max']):.10f}\n"

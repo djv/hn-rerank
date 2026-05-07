@@ -10,6 +10,7 @@ import pytest
 
 import generate_html
 from generate_html import (
+    _INDEX_TEMPLATE,
     _extract_hn_dupe_target,
     _fetch_hn_dupe_target,
     _load_cached_hn_dupe_target,
@@ -35,6 +36,7 @@ def test_generate_story_html_special_chars():
         cluster_name="",
         points=100,
         time_ago="2h",
+        time=123,
         url="https://example.com",
         title="React {hooks} vs [brackets]",
         hn_url="https://news.ycombinator.com/item?id=123",
@@ -60,6 +62,7 @@ def test_generate_story_html_missing_fields():
         cluster_name="",
         points=10,
         time_ago="1d",
+        time=456,
         url=None,  # Missing URL
         title="Untitled",
         hn_url="https://news.ycombinator.com/item?id=456",
@@ -81,6 +84,7 @@ def test_generate_story_html_includes_comment_count_after_icon():
         cluster_name="",
         points=90,
         time_ago="3h",
+        time=457,
         url="https://example.com/story",
         title="Story with discussion",
         hn_url="https://news.ycombinator.com/item?id=457",
@@ -92,6 +96,7 @@ def test_generate_story_html_includes_comment_count_after_icon():
 
     html = generate_story_html(story)
 
+    assert 'aria-label="Open comments for Story with discussion"' in html
     assert 'title="Comments">💬 42</a>' in html
 
 
@@ -102,6 +107,7 @@ def test_generate_story_html_hides_unknown_comment_count():
         cluster_name="",
         points=90,
         time_ago="3h",
+        time=458,
         url="https://example.com/story",
         title="Story with unknown discussion count",
         hn_url="https://news.ycombinator.com/item?id=458",
@@ -138,6 +144,7 @@ def test_generate_story_html_includes_cluster_chip():
         cluster_name=resolve_cluster_name({}, 0),
         points=50,
         time_ago="3h",
+        time=789,
         url="https://example.com",
         title="Clustered story",
         hn_url="https://news.ycombinator.com/item?id=789",
@@ -194,6 +201,7 @@ class TestHtmlEscaping:
             cluster_name="",
             points=50,
             time_ago="1h",
+            time=1,
             url="https://example.com",
             title="<script>alert('xss')</script>",
             hn_url="https://news.ycombinator.com/item?id=1",
@@ -213,6 +221,7 @@ class TestHtmlEscaping:
             cluster_name="",
             points=50,
             time_ago="1h",
+            time=1,
             url="https://example.com",
             title="Safe Title",
             hn_url="https://news.ycombinator.com/item?id=1",
@@ -232,6 +241,7 @@ class TestHtmlEscaping:
             cluster_name="",
             points=50,
             time_ago="1h",
+            time=1,
             url="https://example.com",
             title="Safe Title",
             hn_url="https://news.ycombinator.com/item?id=1",
@@ -251,6 +261,7 @@ def test_generate_story_html_without_hn_url_hides_comment_link():
         cluster_name="",
         points=0,
         time_ago="1h",
+        time=1,
         url="https://example.com/rss",
         title="RSS Story",
         hn_url=None,
@@ -262,6 +273,7 @@ def test_generate_story_html_without_hn_url_hides_comment_link():
     html = generate_story_html(story)
     assert "RSS Story" in html
     assert "title=\"Comments\"" not in html
+    assert 'aria-label="Open comments for RSS Story"' not in html
 
 
 def test_generate_story_html_rss_badge():
@@ -271,6 +283,7 @@ def test_generate_story_html_rss_badge():
         cluster_name="",
         points=0,
         time_ago="1h",
+        time=42,
         url="https://example.com/rss",
         title="RSS Story",
         hn_url=None,
@@ -290,6 +303,7 @@ def test_generate_story_html_lesswrong_badge():
         cluster_name="",
         points=0,
         time_ago="1h",
+        time=43,
         url="https://www.lesswrong.com/posts/abc/example",
         title="LessWrong Story",
         hn_url=None,
@@ -309,6 +323,7 @@ def test_generate_story_html_reddit_badge():
         cluster_name="",
         points=0,
         time_ago="1h",
+        time=44,
         url="https://arxiv.org/abs/2604.21691",
         title="Reddit ML Story",
         hn_url="https://www.reddit.com/r/MachineLearning/comments/1sun588/post/",
@@ -330,6 +345,7 @@ def test_generate_story_html_external_comments_link():
         cluster_name="",
         points=0,
         time_ago="1h",
+        time=7,
         url="https://example.com/article",
         title="Lobsters Story",
         hn_url="https://lobste.rs/s/example/post",
@@ -341,8 +357,69 @@ def test_generate_story_html_external_comments_link():
     html = generate_story_html(story)
     assert 'href="https://example.com/article"' in html
     assert 'href="https://lobste.rs/s/example/post"' in html
+    assert 'aria-label="Open comments for Lobsters Story"' in html
     assert 'title="Comments"' in html
     assert "Lobsters" in html
+
+
+def test_generate_story_html_makes_card_clickable_to_comments():
+    story = StoryDisplay(
+        id=901,
+        match_percent=80,
+        cluster_name="",
+        points=12,
+        time_ago="2h",
+        time=1710000000,
+        url="https://example.com/story",
+        title="Clickable card story",
+        hn_url="https://news.ycombinator.com/item?id=901",
+        reason="",
+        reason_url="",
+        comments=[],
+    )
+
+    html = generate_story_html(story)
+
+    assert 'class="absolute inset-0 z-10 rounded-lg"' in html
+    assert 'href="https://news.ycombinator.com/item?id=901"' in html
+    assert 'aria-label="Open comments for Clickable card story"' in html
+
+
+def test_generate_story_html_includes_sort_metadata():
+    story = StoryDisplay(
+        id=900,
+        match_percent=80,
+        cluster_name="",
+        points=12,
+        time_ago="2h",
+        time=1710000000,
+        url="https://example.com/story",
+        title="Sortable story",
+        hn_url="https://news.ycombinator.com/item?id=900",
+        reason="",
+        reason_url="",
+        comments=[],
+        rank_index=3,
+    )
+
+    html = generate_story_html(story)
+
+    assert 'data-rank-index="3"' in html
+    assert 'data-story-time="1710000000"' in html
+
+
+def test_index_template_includes_sort_control_and_defaults_to_date():
+    html = _INDEX_TEMPLATE.render(
+        username="alice",
+        n_clusters=4,
+        timestamp="2026-05-05 00:00:00",
+        stories_html="",
+    )
+
+    assert 'id="sort-mode"' in html
+    assert '<option value="current">Current</option>' in html
+    assert '<option value="date" selected>Date</option>' in html
+    assert "renderSort(sortMode.value);" in html
 
 
 def test_build_candidate_cluster_map_respects_threshold_for_external(monkeypatch):
@@ -533,8 +610,8 @@ def test_select_ranked_results_caps_external_results_at_quota():
     external_count = sum(1 for r in selected if cands[r.index].is_external)
     hn_count = len(selected) - external_count
     assert len(selected) == 6
-    assert external_count == 5
-    assert hn_count == 1
+    assert external_count == 2
+    assert hn_count == 4
 
 
 def test_select_ranked_results_no_longer_prioritizes_cluster_coverage():
@@ -586,8 +663,8 @@ def test_select_ranked_results_preserves_external_floor_when_hn_is_available():
     external_count = sum(1 for r in selected if cands[r.index].is_external)
     hn_count = len(selected) - external_count
     assert len(selected) == 6
-    assert hn_count == 1
-    assert external_count == 5
+    assert hn_count == 2
+    assert external_count == 4
 
 
 def test_select_ranked_results_preserves_existing_hn_heavy_top_slice():

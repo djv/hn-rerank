@@ -915,7 +915,6 @@ def rank_stories(
     # but strictly from the passed config object.
     use_classifier = config.use_classifier
     knn_k = config.semantic.knn_neighbors
-    hn_weight = config.ranking.hn_weight
 
     cand_texts: list[str] = [s.text_content for s in stories]
     cand_emb: NDArray[np.float32] = get_embeddings(
@@ -1207,7 +1206,7 @@ def rank_stories(
             )
         except Exception as e:
             # Fallback to heuristic on error
-            logger.warning(f"Classifier training failed, using heuristic: {e}")
+            logger.exception("Classifier training failed, using heuristic")
             _set_rank_diagnostics(
                 diagnostics,
                 classifier_failure_reason=f"{type(e).__name__}: {e}",
@@ -1278,25 +1277,54 @@ def rank_stories(
             semantic_scores = 1.0 / (1.0 + np.exp(-k * (blended - t)))
             semantic_scores = semantic_scores.astype(np.float32)
 
-    # 3. HN Gravity Score (Log-scaled)
-    # We use a log scale so that high-point stories punch through without dominating
+    # 3. Popularity score (log-scaled).
+    # External sources get a modest fallback score so they are not treated as
+    # totally metadata-empty when their feeds omit points.
+    external_default_score = 40.0
     points: NDArray[np.float32] = np.array(
-        [float(s.score) for s in stories], dtype=np.float32
+        [
+            float(max(s.score, 0))
+            if s.source == "hn"
+            else float(max(s.score, external_default_score))
+            for s in stories
+        ],
+        dtype=np.float32
     )
     hn_scores = np.log1p(points) / np.log1p(
         max(points.max(), config.adaptive_hn.score_normalization_cap)
     )
 
-    # 4. Compute story ages for adaptive weighting
+    # 4. Comment Volume Score (Log-scaled)
+    # External sources get a modest fallback comment count when feeds omit it.
+    external_default_comment_count = 20.0
+    comment_counts: NDArray[np.float32] = np.array(
+        [
+            float(max(s.comment_count or 0, 0))
+            if s.source == "hn"
+            else float(max(s.comment_count or 0, external_default_comment_count))
+            for s in stories
+        ],
+        dtype=np.float32
+    )
+    comment_scores = np.log1p(comment_counts) / np.log1p(
+        max(comment_counts.max(), config.adaptive_hn.score_normalization_cap)
+    )
+
+    # 5. Compute story ages for adaptive weighting
     now = time.time()
     ages_hours: NDArray[np.float64] = np.array(
         [(now - s.time) / 3600.0 for s in stories]
     )
 
-    # 5. Adaptive HN weight based on age (only if hn_weight > 0)
-    # hn_weight=0 means pure semantic mode (for testing invariants)
+    # 6. Adaptive non-semantic weight based on age
+    # Weights are 0 in pure semantic mode (for testing invariants)
     freshness_boost: NDArray[np.float32] = np.zeros(len(stories), dtype=np.float32)
-    if hn_weight > 0:
+    current_non_semantic_weight = float(
+        np.clip(config.ranking.non_semantic_weight, 0.0, 1.0)
+    )
+    current_comment_ratio = float(np.clip(config.ranking.comment_ratio, 0.0, 1.0))
+
+    if current_non_semantic_weight > 0:
         # Young stories (<6h): trust semantic more (low HN weight)
         # Old stories (>48h): trust HN score more (higher HN weight)
         young_hn_weight = min(config.adaptive_hn.weight_min, config.adaptive_hn.weight_max)
@@ -1312,8 +1340,17 @@ def rank_stories(
         )
 
         # 6. Hybrid Score (per-story adaptive weighting)
+        # We blend semantic with a non-semantic score bucket, then split the
+        # non-semantic bucket between HN points and comment volume.
+        non_semantic_scores = (
+            (1.0 - current_comment_ratio) * hn_scores
+            + current_comment_ratio * comment_scores
+        )
+        effective_non_semantic_weights = hn_weights * current_non_semantic_weight
+
         hybrid_scores = (
-            (1 - hn_weights) * semantic_scores + hn_weights * hn_scores
+            (1 - effective_non_semantic_weights) * semantic_scores
+            + effective_non_semantic_weights * non_semantic_scores
         ).astype(np.float32)
 
         # 7. Freshness boost (exponential decay)
@@ -1326,7 +1363,7 @@ def rank_stories(
             freshness_boost = (config.freshness.max_boost * freshness).astype(np.float32)
             hybrid_scores = hybrid_scores + freshness_boost
     else:
-        # Pure semantic mode (hn_weight=0): no HN score, no freshness
+        # Pure semantic mode: no non-semantic score, no freshness
         hybrid_scores = semantic_scores.astype(np.float32)
 
     ranked_indices = np.argsort(-hybrid_scores, kind="stable")[
@@ -1423,8 +1460,8 @@ def rank_stories(
                                 ranked_indices[top_n_ce:],
                             ]
                         )
-                    except Exception as e:
-                        logger.warning(f"Cross-encoder reranking failed: {e}")
+                    except Exception:
+                        logger.exception("Cross-encoder reranking failed")
 
     return [
         RankResult(

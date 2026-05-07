@@ -15,7 +15,8 @@ class RankingConfig:
     diversity_lambda: float = 0.2396634418
     diversity_lambda_classifier: float = 0.30
     max_results: int = 500
-    hn_weight: float = 0.05  # Base HN weight
+    non_semantic_weight: float = 0.05  # Total share for non-semantic signals
+    comment_ratio: float = 0.0  # Share of non-semantic score assigned to comments
 
 @dataclass(frozen=True)
 class AdaptiveHNConfig:
@@ -184,4 +185,3 @@ class AppConfig:
             llm=llm,
             cross_encoder=cross_encoder,
         )
-

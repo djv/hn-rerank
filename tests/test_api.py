@@ -251,18 +251,17 @@ def test_rank_stories_penalizes_external_stories():
     cand_emb = np.array([[0.8] * 768, [0.8] * 768])
 
     with patch("api.rerank.get_embeddings", return_value=cand_emb):
-        # We need to ensure ranking.hn_weight > 0 for the test to be meaningful
-        config = AppConfig(ranking=RankingConfig(hn_weight=0.05))
+        # We need to ensure ranking.non_semantic_weight > 0 for the test to be meaningful
+        config = AppConfig(ranking=RankingConfig(non_semantic_weight=0.05))
         results = rank_stories(stories, pos_emb, config=config)
 
     assert len(results) == 2
     hn_res = next(r for r in results if r.index == 0)
     ext_res = next(r for r in results if r.index == 1)
 
-    # With the fix, they should have identical scores because both are 0-point stories
-    # subject to the same (1-w)*sem + w*0 formula.
-    # Previously, ext_res.hybrid_score would be ~0.8 and hn_res.hybrid_score ~0.76.
-    assert pytest.approx(hn_res.hybrid_score) == ext_res.hybrid_score
+    # External stories now get a small fallback metadata prior, but it should stay modest.
+    assert ext_res.hybrid_score > hn_res.hybrid_score
+    assert ext_res.hybrid_score - hn_res.hybrid_score < 0.02
 
     # Now test that an HN story with points beats the external story
     stories[0].score = 100

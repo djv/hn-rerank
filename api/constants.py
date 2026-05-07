@@ -3,10 +3,6 @@ Constants and configuration values for HN reranking.
 Loads overrides from hn_rerank.toml if present.
 """
 
-import sys
-import tomllib
-from pathlib import Path
-from typing import Any
 
 from dotenv import load_dotenv
 
@@ -14,7 +10,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-from api.config import AppConfig
+from api.config import AppConfig  # noqa: E402
 
 _config = AppConfig.load()
 
@@ -58,9 +54,9 @@ CANDIDATE_FETCH_COUNT = 2000
 RSS_OPML_URL = "https://gist.githubusercontent.com/emschwartz/e6d2bf860ccc367fe37ff953ba6de66b/raw/hn-popular-blogs-2025.opml"
 RSS_EXTRA_FEEDS = [
     "https://jack-clark.net/feed/",
-    "https://lobste.rs/rss",
+    "https://lobste.rs/top/rss",
     "https://tildes.net/topics.rss",
-    "https://www.lesswrong.com/feed.xml",
+    "https://www.lesswrong.com/feed.xml?view=frontpage&karmaThreshold=20",
     "https://www.reddit.com/r/MachineLearning/top/.rss?t=week&limit=25",
 ]  # Additional feeds not in OPML
 RSS_EXCLUDED_FEEDS = {
@@ -68,7 +64,7 @@ RSS_EXCLUDED_FEEDS = {
     "https://www.tedunangst.com/flak/rss",
 }
 RSS_MAX_FEEDS = 0  # 0 = no max feed limit
-RSS_PER_FEED_LIMIT = 5
+RSS_PER_FEED_LIMIT = 70
 RSS_CURATED_NEWS_PER_FEED_LIMIT = 50
 RSS_ALLOWED_SOURCE_LANGUAGES = ("en", "fr", "es")
 
@@ -97,7 +93,8 @@ CLUSTER_SIMILARITY_THRESHOLD = _config.clustering.similarity_threshold
 CLUSTER_OUTLIER_SIMILARITY_THRESHOLD = _config.clustering.outlier_similarity_threshold
 
 # Ranking Weights
-RANKING_HN_WEIGHT = 0.05
+RANKING_NON_SEMANTIC_WEIGHT = _config.ranking.non_semantic_weight
+RANKING_COMMENT_RATIO = _config.ranking.comment_ratio
 RANKING_NEGATIVE_WEIGHT = _config.ranking.negative_weight
 RANKING_DIVERSITY_LAMBDA = _config.ranking.diversity_lambda
 RANKING_MAX_RESULTS = _config.ranking.max_results

@@ -1,9 +1,10 @@
 [hn_rerank]
 username = "pure_coder"
 output = "public/index.html"
-days = 30
+days = 7
 clusters = 30
-count = 40
+count = 50
+candidates = 1000
 no_rss = false
 no_tldr = false
 debug_scores = false
@@ -15,6 +16,8 @@ provider = "mistral"
 
 [hn_rerank.ranking]
 negative_weight = 0.26932
+non_semantic_weight = 1.0
+comment_ratio = 0.9585070171
 max_results = 500
 
 [hn_rerank.adaptive_hn]
@@ -65,6 +68,5 @@ refine_iters = 2
 
 [hn_rerank.cross_encoder]
 enabled = true
-top_n = 50
+top_n = 80
 weight = 0.06953
-

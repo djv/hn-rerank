@@ -33,7 +33,7 @@ def test_semantic_blend_uses_cluster_max_and_knn_components(
     centroids = unit_rows([[1.0, 0.0], [0.0, 1.0]])
 
     config = AppConfig(
-        ranking=RankingConfig(hn_weight=0.0),
+        ranking=RankingConfig(non_semantic_weight=0.0),
         semantic=SemanticConfig(maxsim_weight=0.5, meansim_weight=0.5, knn_neighbors=3),
         use_classifier=False,
     )
@@ -76,7 +76,7 @@ def test_pure_cluster_max_weight_ignores_diagnostic_knn_score(
     centroids = unit_rows([[1.0, 0.0], [0.0, 1.0]])
 
     config = AppConfig(
-        ranking=RankingConfig(hn_weight=0.0),
+        ranking=RankingConfig(non_semantic_weight=0.0),
         semantic=SemanticConfig(maxsim_weight=1.0, meansim_weight=0.0, knn_neighbors=3),
         use_classifier=False,
     )
@@ -163,7 +163,7 @@ def test_max_cluster_score_populated_in_heuristic_path(
     cand_emb = unit_rows([[1.0, 0.0], [0.0, 1.0]])
     centroids = unit_rows([[1.0, 0.0], [0.0, 1.0]])
 
-    config = AppConfig(ranking=RankingConfig(hn_weight=0.0), use_classifier=False)
+    config = AppConfig(ranking=RankingConfig(non_semantic_weight=0.0), use_classifier=False)
     with (
         patch("api.rerank.get_embeddings", return_value=cand_emb),
         patch("api.rerank.cluster_interests", return_value=centroids),
@@ -175,3 +175,38 @@ def test_max_cluster_score_populated_in_heuristic_path(
         )
 
     assert [result.max_cluster_score for result in results] == pytest.approx([1.0, 1.0])
+
+
+def test_missing_hn_comment_count_is_treated_as_zero():
+    stories = [
+        Story(
+            id=1,
+            title="Missing comments",
+            url=None,
+            score=50,
+            time=1000,
+            text_content="A",
+            comment_count=None,
+        ),
+        Story(
+            id=2,
+            title="Has comments",
+            url=None,
+            score=50,
+            time=1000,
+            text_content="B",
+            comment_count=10,
+        ),
+    ]
+    pos_emb = np.array([[1.0] * 768])
+    cand_emb = np.array([[1.0] * 768, [1.0] * 768])
+
+    config = AppConfig(
+        ranking=RankingConfig(non_semantic_weight=1.0, comment_ratio=1.0),
+        use_classifier=False,
+    )
+    with patch("api.rerank.get_embeddings", return_value=cand_emb):
+        results = rank_stories(stories, pos_emb, config=config)
+
+    assert len(results) == 2
+    assert {result.index for result in results} == {0, 1}

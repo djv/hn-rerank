@@ -290,6 +290,30 @@ def test_parse_feed_entries_reddit_self_post_uses_comments_url():
     assert stories[0].discussion_url == comments_url
 
 
+def test_parse_feed_entries_extracts_reddit_score():
+    xml = """
+    <feed xmlns="http://www.w3.org/2005/Atom">
+      <entry>
+        <title>Reddit Post With Score</title>
+        <link href="https://www.reddit.com/r/MachineLearning/comments/123/" />
+        <content type="html">
+          &lt;span&gt;&lt;a href=&quot;https://example.com/&quot;&gt;[link]&lt;/a&gt;&lt;/span&gt;
+          &lt;span&gt;&lt;a href=&quot;https://www.reddit.com/r/MachineLearning/comments/123/&quot;&gt;[comments]&lt;/a&gt;&lt;/span&gt; (score: 789)
+        </content>
+      </entry>
+    </feed>
+    """
+    stories = _parse_feed_entries(
+        xml,
+        feed_url="https://www.reddit.com/r/MachineLearning/top/.rss?t=week&limit=25",
+        max_items=5,
+        min_ts=0,
+    )
+
+    assert len(stories) == 1
+    assert stories[0].score == 789
+
+
 @pytest.mark.asyncio
 @respx.mock
 async def test_fetch_rss_stories_filters_old_and_excluded_urls(monkeypatch):
@@ -426,6 +450,50 @@ async def test_fetch_rss_stories_skips_excluded_feeds(monkeypatch):
     assert [story.title for story in stories] == ["Allowed Post"]
     assert not excluded_route.called
 
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_fetch_rss_stories_uses_higher_default_limit_for_regular_rss(monkeypatch):
+    opml_url = "https://example.com/feeds.opml"
+    feed_url = "https://example.com/feed.xml"
+    monkeypatch.setattr(rss, "RSS_EXTRA_FEEDS", [feed_url])
+
+    items = []
+    for i in range(30):
+        items.append(
+            f"""
+            <item>
+              <title>Regular Feed Post {i}</title>
+              <link>https://example.com/posts/{i}</link>
+              <pubDate>Mon, 02 Feb 2026 12:{i:02d}:00 GMT</pubDate>
+              <description>Regular feed summary {i}</description>
+            </item>
+            """
+        )
+    rss_xml = f"""
+    <rss version="2.0">
+      <channel>
+        <language>en</language>
+        {''.join(items)}
+      </channel>
+    </rss>
+    """
+
+    respx.get(opml_url).mock(return_value=Response(200, text=""))
+    respx.get(feed_url).mock(return_value=Response(200, text=rss_xml))
+
+    stories = await fetch_rss_stories(
+        opml_url=opml_url,
+        days=3650,
+        max_feeds=5,
+        per_feed=5,
+        fetch_full_content=False,
+    )
+
+    assert len(stories) == 30
+    assert stories[0].source == "rss"
+    assert stories[-1].title == "Regular Feed Post 29"
 
 
 @pytest.mark.asyncio

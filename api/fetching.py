@@ -539,8 +539,8 @@ def _query_bigquery_archive_sync(
     try:
         sql = build_bigquery_sql(has_exclude_ids=bool(exclude_ids))
         rows = client.query(sql, job_config=job_config).result()
-    except Exception as e:
-        logger.warning(f"BigQuery archive fetching failed (possibly quota exceeded): {e}")
+    except Exception:
+        logger.exception("BigQuery archive fetching failed (possibly quota exceeded)")
         return []
     stories: list[Story] = []
     for row in rows:
@@ -616,8 +616,8 @@ async def fetch_bigquery_archive_stories(
                         break
             except (ValueError, OSError):
                 continue
-    except Exception as e:
-        logger.warning(f"Error scanning cache for BigQuery optimization: {e}")
+    except Exception:
+        logger.exception("Error scanning cache for BigQuery optimization")
 
     # Combine all known IDs to exclude from the BigQuery query
     # We prioritize recent IDs by sorting descending (HN IDs are chronological)
@@ -638,8 +638,8 @@ async def fetch_bigquery_archive_stories(
             candidate_limit=remaining_limit,
             exclude_ids=bq_exclude,
         )
-    except Exception as e:
-        logger.warning(f"BigQuery archive fetching failed: {e}")
+    except Exception:
+        logger.exception("BigQuery archive fetching failed")
         # stories remains empty, fallback to cached only
 
     results: list[Story] = cached_in_window
@@ -869,7 +869,7 @@ async def get_best_stories(
                     fetch_full_content=True,
                     progress_callback=progress_callback,
                 )
-            except Exception as e:
-                logger.warning(f"RSS fetch failed: {e}")
+            except Exception:
+                logger.exception("RSS fetch failed")
 
         return results + rss_stories

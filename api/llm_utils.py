@@ -207,8 +207,8 @@ def _load_cluster_name_cache() -> dict[str, str]:
                     for key, val in cache.items()
                     if isinstance(val, str) and val.strip()
                 }
-        except Exception as e:
-            logger.warning(f"Failed to load cluster name cache: {e}")
+        except Exception:
+            logger.exception("Failed to load cluster name cache")
     return {}
 
 
@@ -380,8 +380,8 @@ async def _generate_with_retry(
                     return None
         except LLMQuotaError:
             raise
-        except LLMRetryableError as e:
-            logger.error("%s API call failed after %d retries: %s", provider.upper(), max_retries, e)
+        except LLMRetryableError:
+            logger.exception("%s API call failed after %d retries", provider.upper(), max_retries)
             return None
 
     return None
@@ -706,8 +706,8 @@ async def generate_batch_cluster_names(
                     )
                     _flush_debug()
                 raise RuntimeError(f"Groq quota exceeded: {e}") from e
-            except Exception as e:
-                logger.warning(f"Cluster naming batch failed: {e}")
+            except Exception:
+                logger.exception("Cluster naming batch failed")
                 if debug_path is not None:
                     debug_records.append(
                         {
@@ -716,7 +716,7 @@ async def generate_batch_cluster_names(
                             "attempt": attempt,
                             "batch_cids": batch_cids,
                             "pending_before": sorted(pending),
-                            "error": repr(e),
+                            "error": "See traceback in logs",
                         }
                     )
                     _flush_debug()
@@ -914,8 +914,8 @@ async def generate_batch_cluster_names(
                     )
                     _flush_debug()
                 raise RuntimeError(f"Groq quota exceeded: {e}") from e
-            except Exception as e:
-                logger.warning(f"Cluster naming rescue batch failed: {e}")
+            except Exception:
+                logger.exception("Cluster naming rescue batch failed")
 
     _flush_debug()
 
@@ -965,8 +965,8 @@ def _load_tldr_cache() -> dict[str, str]:
                 if text:
                     coerced[str(key)] = text
             return coerced
-        except Exception as e:
-            logger.warning(f"Failed to load TLDR cache: {e}")
+        except Exception:
+            logger.exception("Failed to load TLDR cache")
     return {}
 
 
@@ -1104,8 +1104,8 @@ async def generate_batch_tldrs(
                         except (ValueError, TypeError) as e:
                             logger.debug(f"Failed to parse TLDR for {sid_str}: {e}")
                             continue
-            except Exception as e:
-                logger.warning(f"TLDR batch generation failed (attempt {attempt+1}): {e}")
+            except Exception:
+                logger.exception(f"TLDR batch generation failed (attempt {attempt+1})")
 
         if progress_callback:
             progress_callback(completed_initial + i + len(original_batch), len(stories))

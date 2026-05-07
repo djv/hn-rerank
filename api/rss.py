@@ -4,6 +4,7 @@ import calendar
 import hashlib
 import json
 import logging
+import re
 import time
 from collections.abc import Sequence, Callable
 from datetime import UTC, datetime
@@ -30,6 +31,7 @@ from api.constants import (
     RSS_FEED_CACHE_TTL,
     RSS_FEED_CACHE_VERSION,
     RSS_OPML_CACHE_TTL,
+    RSS_PER_FEED_LIMIT,
 )
 from api.models import Story, StoryDict, StorySource
 from api.url_utils import normalize_url
@@ -87,8 +89,8 @@ def _parse_date(text: str) -> int | None:
 def _extract_opml_feed_urls(opml_text: str) -> list[str]:
     try:
         root = ET.fromstring(opml_text)
-    except Exception as e:
-        logger.warning(f"Failed to parse OPML: {e}")
+    except Exception:
+        logger.exception("Failed to parse OPML")
         return []
 
     urls: list[str] = []
@@ -122,7 +124,7 @@ def _feed_item_limit(feed_url: str, default_limit: int) -> int:
     source = _feed_source(feed_url, feed_url)
     if source in {"lobsters", "tildes", "lesswrong", "reddit"}:
         return max(default_limit, RSS_CURATED_NEWS_PER_FEED_LIMIT)
-    return default_limit
+    return max(default_limit, RSS_PER_FEED_LIMIT)
 
 
 def _is_reddit_internal_url(url: str) -> bool:
@@ -201,6 +203,35 @@ def _detect_parsed_feed_language(parsed: feedparser.FeedParserDict) -> str | Non
         return None
 
 
+def _extract_score(entry: feedparser.FeedParserDict, source: StorySource, summary_text: str) -> int:
+    """Extract story score/points from various RSS metadata sources."""
+    # 1. Direct attribute check (some feed types or custom parser results)
+    # Reddit RSS often has reddit_score via feedparser if using the right namespace
+    for key in (f"{source}_score", "score", "points", "rank_score"):
+        val = entry.get(key)
+        if val is not None:
+            try:
+                return int(val)
+            except (ValueError, TypeError):
+                pass
+
+    # 2. Textual extraction from summary (common for Tildes and some RSS variations)
+    # Tildes uses "<p>Votes: 1</p>"
+    # Standard format: "score: 123" or "(score: 123)"
+    patterns = [
+        r"score:\s*(\d+)",
+        r"Votes:\s*(\d+)",
+        r"Points:\s*(\d+)",
+        r"Score\s*(\d+)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, summary_text, re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+
+    return 0
+
+
 def _parse_feed(
     feed_xml: str,
     feed_url: str,
@@ -262,7 +293,7 @@ def _parse_feed(
             id=_make_story_id(feed_url, link, title),
             title=title,
             url=story_url,
-            score=0,
+            score=_extract_score(entry, source, text),
             time=ts,
             discussion_url=discussion_url,
             comments=[],
@@ -343,8 +374,8 @@ async def fetch_rss_stories(
                     _write_cache_json(opml_cache, feed_urls)
                 else:
                     feed_urls = []
-            except Exception as e:
-                logger.warning(f"Failed to fetch OPML: {e}")
+            except Exception:
+                logger.exception("Failed to fetch OPML")
                 feed_urls = []
 
         feed_urls = list(feed_urls or [])
@@ -381,8 +412,9 @@ async def fetch_rss_stories(
             else:
                 try:
                     resp = await client.get(feed_url)
-                except Exception as e:
-                    logger.warning(f"Failed to fetch feed {feed_url}: {e}")
+                except Exception:
+                    logger.exception(f"Failed to fetch feed {feed_url}")
+
                     continue
                 if resp.status_code != 200 or not resp.text:
                     continue

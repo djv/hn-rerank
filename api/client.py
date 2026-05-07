@@ -60,8 +60,8 @@ class HNClient:
             try:
                 cookies = cast(dict[str, str], json.loads(COOKIES_FILE.read_text()))
                 self.client.cookies.update(cookies)
-            except Exception as exc:
-                logger.warning("Failed to load HN cookies from %s: %s", COOKIES_FILE, exc)
+            except Exception:
+                logger.exception("Failed to load HN cookies from %s", COOKIES_FILE)
 
     @staticmethod
     def _load_cached_ids(

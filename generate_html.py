@@ -198,10 +198,19 @@ HTML_TEMPLATE: str = """
                 </h1>
                 <p class="text-stone-500 text-xs">@{{ username }} &bull; <a href="clusters.html" class="text-hn hover:underline">{{ n_clusters }} interest clusters</a></p>
             </div>
-            <p class="text-[10px] text-stone-400 font-mono">{{ timestamp }}</p>
+            <div class="flex items-end gap-3">
+                <label for="sort-mode" class="flex flex-col gap-1 text-[10px] text-stone-400 font-mono">
+                    <span>SORT</span>
+                    <select id="sort-mode" class="rounded border border-stone-200 bg-white px-2 py-1 text-xs text-stone-700">
+                        <option value="current">Current</option>
+                        <option value="date" selected>Date</option>
+                    </select>
+                </label>
+                <p class="text-[10px] text-stone-400 font-mono">{{ timestamp }}</p>
+            </div>
         </header>
 
-        <div class="grid gap-3 items-start grid-cols-[repeat(auto-fit,minmax(280px,1fr))]">
+        <div id="stories-grid" class="grid gap-3 items-start grid-cols-[repeat(auto-fit,minmax(280px,1fr))]">
             {{ stories_html | safe }}
         </div>
 
@@ -209,6 +218,32 @@ HTML_TEMPLATE: str = """
             HN Rerank &bull; Local Semantic Analysis
         </footer>
     </div>
+    <script>
+        (() => {
+            const grid = document.getElementById('stories-grid');
+            const sortMode = document.getElementById('sort-mode');
+            if (!grid || !sortMode) return;
+
+            const cards = Array.from(grid.querySelectorAll('[data-rank-index][data-story-time]'));
+            const compareCurrent = (a, b) =>
+                Number(a.dataset.rankIndex) - Number(b.dataset.rankIndex);
+            const compareDate = (a, b) => {
+                const timeDiff = Number(b.dataset.storyTime) - Number(a.dataset.storyTime);
+                if (timeDiff !== 0) return timeDiff;
+                return compareCurrent(a, b);
+            };
+
+            const renderSort = (mode) => {
+                const sorted = [...cards].sort(mode === 'date' ? compareDate : compareCurrent);
+                for (const card of sorted) {
+                    grid.appendChild(card);
+                }
+            };
+
+            sortMode.addEventListener('change', () => renderSort(sortMode.value));
+            renderSort(sortMode.value);
+        })();
+    </script>
 </body>
 </html>
 """
@@ -396,7 +431,7 @@ def select_ranked_results(
     def is_external_result(res: RankResult) -> bool:
         return cands[res.index].is_external
 
-    desired_external = 5
+    desired_external = round(count * 0.2)
     available_external = sum(1 for r in ranked if is_external_result(r))
     available_hn = len(ranked) - available_external
     min_external = max(0, count - available_hn)
@@ -432,8 +467,11 @@ def select_ranked_results(
 
 
 STORY_CARD_TEMPLATE: str = """
-<div class="story-card group{% if is_external %} rss-story{% endif %}">
-    <div class="flex items-center gap-2 mb-0.5 flex-wrap">
+<div class="story-card group relative{% if is_external %} rss-story{% endif %}" data-rank-index="{{ rank_index }}" data-story-time="{{ story_time }}">
+    {% if hn_url %}
+    <a href="{{ hn_url }}" target="_blank" class="absolute inset-0 z-10 rounded-lg" aria-label="Open comments for {{ title }}"></a>
+    {% endif %}
+    <div class="flex items-center gap-2 mb-0.5 flex-wrap{% if hn_url %} relative z-20 pointer-events-none{% endif %}">
         <span class="px-1.5 py-0.5 rounded bg-hn/10 text-hn text-[10px] font-bold" title="Hybrid Match Score">
             {{ score }}%
         </span>
@@ -451,14 +489,14 @@ STORY_CARD_TEMPLATE: str = """
         <span class="text-[10px] text-stone-400 font-mono">{{ points }} pts</span>
         <span class="text-[10px] text-stone-400 font-mono">{{ time_ago }}</span>
     </div>
-    <h2 class="text-sm font-semibold text-stone-900 leading-snug mb-1">
-        <a href="{{ url }}" target="_blank" class="hover:text-hn transition-colors">{{ title }}</a>
+    <h2 class="text-sm font-semibold text-stone-900 leading-snug mb-1{% if hn_url %} relative z-20 pointer-events-none{% endif %}">
+        <a href="{{ url }}" target="_blank" class="hover:text-hn transition-colors pointer-events-auto">{{ title }}</a>
         {% if hn_url %}
-        <a href="{{ hn_url }}" target="_blank" class="ml-2 text-xs font-medium text-stone-900 hover:text-hn transition-colors" title="Comments">💬{% if comment_count is not none %} {{ comment_count }}{% endif %}</a>
+        <a href="{{ hn_url }}" target="_blank" class="ml-2 text-xs font-medium text-stone-900 hover:text-hn transition-colors pointer-events-auto" title="Comments">💬{% if comment_count is not none %} {{ comment_count }}{% endif %}</a>
         {% endif %}
     </h2>
     {% if tldr %}
-    <div class="text-sm text-stone-600 bg-stone-50 p-2 rounded border border-stone-100 leading-relaxed whitespace-pre-line">{{ tldr }}</div>
+    <div class="text-sm text-stone-600 bg-stone-50 p-2 rounded border border-stone-100 leading-relaxed whitespace-pre-line{% if hn_url %} relative z-20 pointer-events-none{% endif %}">{{ tldr }}</div>
     {% endif %}
 </div>
 """
@@ -481,6 +519,8 @@ def generate_story_html(story: StoryDisplay) -> str:
         cluster_name=story.cluster_name,
         points=story.points,
         time_ago=story.time_ago,
+        story_time=story.time,
+        rank_index=story.rank_index,
         url=link_url,
         title=story.title,
         hn_url=story.hn_url,
@@ -1133,6 +1173,7 @@ async def main() -> None:
                 cluster_name=cluster_name,
                 points=s.score,
                 time_ago=get_relative_time(s.time),
+                time=s.time,
                 url=s.url,
                 title=s.title or "Untitled",
                 hn_url=discussion_url,
@@ -1145,9 +1186,10 @@ async def main() -> None:
                 comment_count=s.comment_count,
             )
 
-        for result in selected_results:
+        for rank_index, result in enumerate(selected_results):
             sd = make_story_display_local(result)
             if sd:
+                sd.rank_index = rank_index
                 stories_data.append(sd)
 
         if not config.no_tldr and stories_data:
