@@ -2,8 +2,9 @@ import numpy as np
 import pytest
 from unittest.mock import patch, MagicMock
 from api.rerank import rank_stories
+import api.rerank as rerank
 from api.models import Story
-from api.config import AppConfig, ClassifierConfig, RankingConfig
+from api.config import AppConfig, ClassifierConfig, CrossEncoderConfig, RankingConfig
 
 
 def _make_stories(n: int) -> list[Story]:
@@ -18,6 +19,139 @@ def _make_stories(n: int) -> list[Story]:
         )
         for i in range(n)
     ]
+
+
+def test_rank_stories_progress_completes_after_cross_encoder(monkeypatch):
+    stories = _make_stories(2)
+    pos_emb = np.ones((1, 768), dtype=np.float32)
+    cand_emb = np.vstack(
+        [
+            np.ones(768, dtype=np.float32),
+            np.full(768, 0.5, dtype=np.float32),
+        ]
+    )
+    events = []
+
+    class FakeCrossEncoder:
+        def score(self, candidates, queries):
+            return np.array([0.5], dtype=np.float32)
+
+    monkeypatch.setattr("api.rerank.get_embeddings", lambda *args, **kwargs: cand_emb)
+    monkeypatch.setattr("api.rerank.cluster_interests", lambda *args, **kwargs: pos_emb)
+    monkeypatch.setattr("api.rerank.init_ce_model", lambda *args, **kwargs: FakeCrossEncoder())
+
+    rank_stories(
+        stories,
+        pos_emb,
+        config=AppConfig(
+            use_classifier=False,
+            cross_encoder=CrossEncoderConfig(enabled=True, top_n=2),
+        ),
+        positive_stories=stories[:1],
+        progress_callback=events.append,
+    )
+
+    phases = [event["phase"] for event in events]
+    cross_encoder_done = next(
+        i
+        for i, event in enumerate(events)
+        if event["phase"] == "cross_encoder" and event["current"] == 2
+    )
+    assert phases.index("complete") > cross_encoder_done
+
+
+def test_cross_encoder_score_cache_reuses_prior_score(monkeypatch, tmp_path):
+    calls = []
+
+    class FakeCrossEncoder:
+        def score(self, candidates, queries):
+            calls.append((list(candidates), list(queries)))
+            return np.array([0.5, 0.8], dtype=np.float32)
+
+    monkeypatch.setattr(rerank, "CROSS_ENCODER_SCORE_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(rerank, "evict_old_cache_files", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        rerank,
+        "_cross_encoder_model_fingerprint",
+        lambda model_dir: model_dir,
+    )
+
+    kwargs = {
+        "ce_model": FakeCrossEncoder(),
+        "model_dir": "model-a",
+        "candidate_text": "candidate",
+        "queries_text": ["query a", "query b"],
+    }
+
+    assert rerank._score_cross_encoder_candidate(**kwargs) == pytest.approx(0.8)
+    assert rerank._score_cross_encoder_candidate(**kwargs) == pytest.approx(0.8)
+    assert len(calls) == 1
+
+
+def test_cross_encoder_score_cache_misses_when_queries_change(monkeypatch, tmp_path):
+    calls = []
+
+    class FakeCrossEncoder:
+        def score(self, candidates, queries):
+            calls.append(list(queries))
+            return np.array([float(len(calls))], dtype=np.float32)
+
+    monkeypatch.setattr(rerank, "CROSS_ENCODER_SCORE_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(rerank, "evict_old_cache_files", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        rerank,
+        "_cross_encoder_model_fingerprint",
+        lambda model_dir: model_dir,
+    )
+    ce_model = FakeCrossEncoder()
+
+    first = rerank._score_cross_encoder_candidate(
+        ce_model=ce_model,
+        model_dir="model-a",
+        candidate_text="candidate",
+        queries_text=["query a"],
+    )
+    second = rerank._score_cross_encoder_candidate(
+        ce_model=ce_model,
+        model_dir="model-a",
+        candidate_text="candidate",
+        queries_text=["query b"],
+    )
+
+    assert first == pytest.approx(1.0)
+    assert second == pytest.approx(2.0)
+    assert calls == [["query a"], ["query b"]]
+
+
+def test_cross_encoder_score_cache_ignores_corrupt_file(monkeypatch, tmp_path):
+    calls = []
+
+    class FakeCrossEncoder:
+        def score(self, candidates, queries):
+            calls.append(1)
+            return np.array([0.7], dtype=np.float32)
+
+    monkeypatch.setattr(rerank, "CROSS_ENCODER_SCORE_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(rerank, "evict_old_cache_files", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        rerank,
+        "_cross_encoder_model_fingerprint",
+        lambda model_dir: model_dir,
+    )
+    cache_key = rerank._cross_encoder_cache_key(
+        model_dir="model-a",
+        candidate_text="candidate",
+        queries_text=["query a"],
+    )
+    (tmp_path / f"{cache_key}.json").write_text("{not json")
+
+    assert rerank._score_cross_encoder_candidate(
+        ce_model=FakeCrossEncoder(),
+        model_dir="model-a",
+        candidate_text="candidate",
+        queries_text=["query a"],
+    ) == pytest.approx(0.7)
+    assert calls == [1]
 
 
 def test_rank_stories_with_classifier_pairwise():

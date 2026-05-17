@@ -8,7 +8,7 @@ import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Literal, TypedDict, cast
 
 
 def _ensure_joblib_settings() -> None:
@@ -47,6 +47,7 @@ from api.constants import (  # noqa: E402
     TEXT_CONTENT_MAX_TOKENS,
     CROSS_ENCODER_MODEL_DIR,
 )
+from api.cache_utils import atomic_write_json, evict_old_cache_files  # noqa: E402
 from api.models import RankResult, Story, StoryDict  # noqa: E402
 from api.model_metadata import CURRENT_PRODUCTION_SPEC, load_model_spec  # noqa: E402
 from api.config import (  # noqa: E402
@@ -57,6 +58,24 @@ from api.config import (  # noqa: E402
 from api.cross_encoder import CrossEncoderModel  # noqa: E402
 
 logger = logging.getLogger(__name__)
+
+RankProgressPhase = Literal[
+    "embeddings",
+    "scoring",
+    "cross_encoder",
+    "finalize",
+    "complete",
+]
+
+
+class RankProgress(TypedDict):
+    phase: RankProgressPhase
+    current: int
+    total: int
+    label: str
+
+
+RankProgressCallback = Callable[[RankProgress], None]
 
 
 def _set_rank_diagnostics(
@@ -133,7 +152,10 @@ _ce_model_init_lock = threading.Lock()
 
 CACHE_DIR: Path = Path(EMBEDDING_CACHE_DIR)
 CLUSTER_CACHE_DIR: Path = Path(CLUSTER_EMBEDDING_CACHE_DIR)
-for _cache_dir in (CACHE_DIR, CLUSTER_CACHE_DIR):
+CROSS_ENCODER_SCORE_CACHE_DIR: Path = Path(".cache/cross_encoder_scores")
+CROSS_ENCODER_SCORE_CACHE_VERSION = "v1"
+CROSS_ENCODER_SCORE_CACHE_MAX_FILES = 10000
+for _cache_dir in (CACHE_DIR, CLUSTER_CACHE_DIR, CROSS_ENCODER_SCORE_CACHE_DIR):
     _cache_dir.mkdir(parents=True, exist_ok=True)
 
 
@@ -161,6 +183,92 @@ def _evict_old_embedding_cache_files(
             continue
         except OSError:
             pass
+
+
+def _cross_encoder_model_fingerprint(model_dir: str) -> str:
+    model_path = Path(model_dir) / "model.onnx"
+    if not model_path.exists():
+        alt_path = Path(__file__).parent.parent / model_dir / "model.onnx"
+        if alt_path.exists():
+            model_path = alt_path
+    try:
+        stat = model_path.stat()
+    except OSError:
+        return model_dir
+    return f"{model_dir}:{stat.st_size}:{int(stat.st_mtime)}"
+
+
+def _cross_encoder_cache_key(
+    *,
+    model_dir: str,
+    candidate_text: str,
+    queries_text: list[str],
+) -> str:
+    payload = {
+        "version": CROSS_ENCODER_SCORE_CACHE_VERSION,
+        "model": _cross_encoder_model_fingerprint(model_dir),
+        "candidate": candidate_text,
+        "queries": queries_text,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _load_cached_cross_encoder_score(cache_key: str) -> float | None:
+    path = CROSS_ENCODER_SCORE_CACHE_DIR / f"{cache_key}.json"
+    if not path.exists():
+        return None
+    try:
+        raw = json.loads(path.read_text())
+    except Exception:
+        return None
+    if not isinstance(raw, dict):
+        return None
+    if raw.get("version") != CROSS_ENCODER_SCORE_CACHE_VERSION:
+        return None
+    score = raw.get("score")
+    if not isinstance(score, int | float):
+        return None
+    return float(score)
+
+
+def _save_cached_cross_encoder_score(cache_key: str, score: float) -> None:
+    path = CROSS_ENCODER_SCORE_CACHE_DIR / f"{cache_key}.json"
+    atomic_write_json(
+        path,
+        {
+            "version": CROSS_ENCODER_SCORE_CACHE_VERSION,
+            "score": score,
+            "ts": time.time(),
+        },
+    )
+    evict_old_cache_files(
+        CROSS_ENCODER_SCORE_CACHE_DIR,
+        "*.json",
+        CROSS_ENCODER_SCORE_CACHE_MAX_FILES,
+    )
+
+
+def _score_cross_encoder_candidate(
+    *,
+    ce_model: CrossEncoderModel,
+    model_dir: str,
+    candidate_text: str,
+    queries_text: list[str],
+) -> float:
+    cache_key = _cross_encoder_cache_key(
+        model_dir=model_dir,
+        candidate_text=candidate_text,
+        queries_text=queries_text,
+    )
+    cached_score = _load_cached_cross_encoder_score(cache_key)
+    if cached_score is not None:
+        return cached_score
+
+    pair_scores = ce_model.score([candidate_text] * len(queries_text), queries_text)
+    max_ce = float(np.max(pair_scores))
+    _save_cached_cross_encoder_score(cache_key, max_ce)
+    return max_ce
 
 
 class ONNXEmbeddingModel:
@@ -911,15 +1019,36 @@ def rank_stories(
     if not stories:
         return []
 
+    def report_progress(
+        phase: RankProgressPhase,
+        current: int,
+        total: int,
+        label: str,
+    ) -> None:
+        if progress_callback:
+            progress_callback(
+                {
+                    "phase": phase,
+                    "current": current,
+                    "total": max(total, 1),
+                    "label": label,
+                }
+            )
+
     # Map old parameter names to config values for internal compatibility
     # but strictly from the passed config object.
     use_classifier = config.use_classifier
     knn_k = config.semantic.knn_neighbors
 
     cand_texts: list[str] = [s.text_content for s in stories]
+
+    def embedding_progress(curr: int, total: int) -> None:
+        report_progress("embeddings", curr, total, "Embedding candidate stories")
+
     cand_emb: NDArray[np.float32] = get_embeddings(
-        cand_texts, progress_callback=progress_callback
+        cand_texts, progress_callback=embedding_progress
     )
+    report_progress("scoring", 0, 1, "Scoring candidates")
     positive_count = 0 if positive_embeddings is None else len(positive_embeddings)
     negative_count = 0 if negative_embeddings is None else len(negative_embeddings)
     _set_rank_diagnostics(
@@ -1366,6 +1495,8 @@ def rank_stories(
         # Pure semantic mode: no non-semantic score, no freshness
         hybrid_scores = semantic_scores.astype(np.float32)
 
+    report_progress("scoring", 1, 1, "Scored candidates")
+
     ranked_indices = np.argsort(-hybrid_scores, kind="stable")[
         : min(len(stories), config.ranking.max_results)
     ]
@@ -1382,6 +1513,7 @@ def rank_stories(
         top_n_ce = min(len(ranked_indices), config.cross_encoder.top_n)
         if top_n_ce > 0:
             logger.info("Running Cross-Encoder reranking for top %d candidates...", top_n_ce)
+            report_progress("cross_encoder", 0, top_n_ce, "Running cross-encoder rerank")
             ce_indices = ranked_indices[:top_n_ce]
 
             # Identify representative stories for centroids
@@ -1416,15 +1548,21 @@ def rank_stories(
                     try:
                         ce_model = init_ce_model(config.cross_encoder.model_dir)
                         ce_scores_list = []
-                        for idx in ce_indices:
+                        for ce_position, idx in enumerate(ce_indices):
                             cand_text = stories[idx].text_content
-                            # Score candidate against all interest centroids
-                            pair_scores = ce_model.score(
-                                [cand_text] * len(queries_text), queries_text
+                            max_ce = _score_cross_encoder_candidate(
+                                ce_model=ce_model,
+                                model_dir=config.cross_encoder.model_dir,
+                                candidate_text=cand_text,
+                                queries_text=queries_text,
                             )
-                            # Take the max score across centroids
-                            max_ce = float(np.max(pair_scores))
                             ce_scores_list.append(max_ce)
+                            report_progress(
+                                "cross_encoder",
+                                ce_position + 1,
+                                top_n_ce,
+                                "Running cross-encoder rerank",
+                            )
                         # Re-sort top_n indices by blended score
                         # We use raw logits for the CE contribution to preserve relative ordering
                         top_hybrid_scores = hybrid_scores[ce_indices]
@@ -1463,7 +1601,8 @@ def rank_stories(
                     except Exception:
                         logger.exception("Cross-encoder reranking failed")
 
-    return [
+    report_progress("finalize", 0, 1, "Finalizing ranked stories")
+    results = [
         RankResult(
             index=int(best_idx),
             hybrid_score=float(hybrid_scores[best_idx]),
@@ -1478,3 +1617,6 @@ def rank_stories(
         )
         for best_idx in ranked_indices
     ]
+    report_progress("finalize", 1, 1, "Finalized ranked stories")
+    report_progress("complete", 1, 1, "Reranking complete")
+    return results

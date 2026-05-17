@@ -10,7 +10,7 @@ import time
 import logging
 from pathlib import Path
 from datetime import UTC, datetime, timedelta
-from typing import Any, TypedDict, cast
+from typing import Any, Literal, TypedDict, cast
 from collections.abc import Awaitable, Callable
 import httpx
 
@@ -41,6 +41,25 @@ from api.url_utils import normalize_url
 from api.config import AppConfig
 
 logger = logging.getLogger(__name__)
+
+CandidateProgressPhase = Literal[
+    "hn",
+    "archive_cache",
+    "archive_bigquery",
+    "rss_feeds",
+    "rss_content",
+    "complete",
+]
+
+
+class CandidateProgress(TypedDict):
+    phase: CandidateProgressPhase
+    current: int
+    total: int
+    label: str
+
+
+CandidateProgressCallback = Callable[[CandidateProgress], None]
 
 ALGOLIA_BASE: str = "https://hn.algolia.com/api/v1"
 HN_FULL_TABLE: str = "bigquery-public-data.hacker_news.full"
@@ -550,29 +569,19 @@ def _query_bigquery_archive_sync(
     return stories
 
 
-async def fetch_bigquery_archive_stories(
+def load_cached_archive_stories(
     *,
-    http_client: httpx.AsyncClient,
     start_ts: int,
     end_ts: int,
     candidate_limit: int,
     exclude_ids: set[int],
     exclude_urls: set[str] | None,
     seen_urls: set[str] | None = None,
-    cache_only: bool = False,
     allow_stale: bool = False,
 ) -> list[Story]:
-    if cache_only:
-        return []
-
-    # Identify stories already in cache to avoid re-fetching them from BigQuery
-    # This saves quota by excluding these IDs from the query
     cached_in_window: list[Story] = []
-    
-    # Simple heuristic: scan cache for stories in this time window
-    # In a large cache this might be slow, but for typical use it's fine
+
     try:
-        # Sort by mtime to check newest files first
         cache_files = sorted(
             CACHE_PATH.glob("*.json"), 
             key=lambda p: p.stat().st_mtime, 
@@ -584,11 +593,6 @@ async def fetch_bigquery_archive_stories(
                 sid = int(p.stem)
                 if sid in exclude_ids:
                     continue
-                
-                # Check file mtime as a coarse filter before reading (1 day buffer)
-                if p.stat().st_mtime < start_ts - 86400:
-                    # Since we sorted by mtime, we can stop early
-                    break
 
                 story = _load_cached_story(
                     sid,
@@ -617,11 +621,30 @@ async def fetch_bigquery_archive_stories(
             except (ValueError, OSError):
                 continue
     except Exception:
-        logger.exception("Error scanning cache for BigQuery optimization")
+        logger.exception("Error scanning cache for archive stories")
+
+    cached_in_window.sort(key=lambda s: (s.score, s.time), reverse=True)
+    return cached_in_window[:candidate_limit]
+
+
+async def fetch_bigquery_archive_stories(
+    *,
+    http_client: httpx.AsyncClient,
+    start_ts: int,
+    end_ts: int,
+    candidate_limit: int,
+    exclude_ids: set[int],
+    exclude_urls: set[str] | None,
+    seen_urls: set[str] | None = None,
+    cache_only: bool = False,
+    allow_stale: bool = False,
+) -> list[Story]:
+    if cache_only:
+        return []
 
     # Combine all known IDs to exclude from the BigQuery query
     # We prioritize recent IDs by sorting descending (HN IDs are chronological)
-    ids_to_exclude = sorted(list(exclude_ids | {s.id for s in cached_in_window}), reverse=True)
+    ids_to_exclude = sorted(exclude_ids, reverse=True)
     
     remaining_limit = candidate_limit
     stories: list[Story] = []
@@ -642,8 +665,8 @@ async def fetch_bigquery_archive_stories(
         logger.exception("BigQuery archive fetching failed")
         # stories remains empty, fallback to cached only
 
-    results: list[Story] = cached_in_window
-    seen: set[int] = {s.id for s in cached_in_window}
+    results: list[Story] = []
+    seen: set[int] = set()
     
     for story in stories:
         if story.id in seen or story.id in exclude_ids:
@@ -678,7 +701,7 @@ async def get_best_stories(
     limit: int,
     exclude_ids: set[int] | None = None,
     exclude_urls: set[str] | None = None,
-    progress_callback: Callable[[int, int], None] | None = None,
+    progress_callback: CandidateProgressCallback | None = None,
     config: AppConfig = AppConfig(),
     cache_only: bool = False,
     allow_stale: bool = False,
@@ -689,6 +712,22 @@ async def get_best_stories(
 
     days = config.days
     include_rss = not config.no_rss
+
+    def report_progress(
+        phase: CandidateProgressPhase,
+        current: int,
+        total: int,
+        label: str,
+    ) -> None:
+        if progress_callback:
+            progress_callback(
+                {
+                    "phase": phase,
+                    "current": current,
+                    "total": max(total, 1),
+                    "label": label,
+                }
+            )
 
     ALGOLIA_MAX_PER_QUERY = 1000
 
@@ -830,9 +869,9 @@ async def get_best_stories(
                             continue
                     results.append(res)
                 if progress_callback:
-                    progress_callback(i + 1, len(hits))
+                    report_progress("hn", i + 1, len(hits), "Fetching HN stories")
 
-        if has_archive_window and not cache_only:
+        if has_archive_window:
             seen_urls = {
                 norm_url
                 for story in results
@@ -840,26 +879,96 @@ async def get_best_stories(
                 for norm_url in [normalize_url(story.url)]
                 if norm_url
             }
-            archive_stories = await fetch_bigquery_archive_stories(
-                http_client=client,
-                start_ts=cutoff_ts,
-                end_ts=archive_end_ts,
-                candidate_limit=archive_budget,
-                exclude_ids=exclude_ids | {story.id for story in results},
-                exclude_urls=exclude_urls,
-                seen_urls=seen_urls,
-                cache_only=cache_only,
-                allow_stale=allow_stale,
-            )
-            results.extend(archive_stories)
+            archive_exclude_ids = exclude_ids | {story.id for story in results}
+            if config.archive.use_cached_stories:
+                report_progress(
+                    "archive_cache",
+                    0,
+                    1,
+                    "Loading cached archive candidates",
+                )
+                cached_archive_stories = load_cached_archive_stories(
+                    start_ts=cutoff_ts,
+                    end_ts=archive_end_ts,
+                    candidate_limit=archive_budget,
+                    exclude_ids=archive_exclude_ids,
+                    exclude_urls=exclude_urls,
+                    seen_urls=seen_urls,
+                    allow_stale=allow_stale,
+                )
+                results.extend(cached_archive_stories)
+                archive_exclude_ids |= {story.id for story in cached_archive_stories}
+                for story in cached_archive_stories:
+                    if story.url:
+                        norm_url = normalize_url(story.url)
+                        if norm_url:
+                            seen_urls.add(norm_url)
+                report_progress(
+                    "archive_cache",
+                    1,
+                    1,
+                    "Loaded cached archive candidates",
+                )
+
+            if config.archive.bigquery_enabled and not cache_only:
+                report_progress(
+                    "archive_bigquery",
+                    0,
+                    1,
+                    "Fetching BigQuery archive candidates",
+                )
+                bigquery_limit = min(
+                    archive_budget,
+                    config.archive.bigquery_candidate_limit,
+                )
+                archive_stories = await fetch_bigquery_archive_stories(
+                    http_client=client,
+                    start_ts=cutoff_ts,
+                    end_ts=archive_end_ts,
+                    candidate_limit=bigquery_limit,
+                    exclude_ids=archive_exclude_ids,
+                    exclude_urls=exclude_urls,
+                    seen_urls=seen_urls,
+                    cache_only=cache_only,
+                    allow_stale=allow_stale,
+                )
+                results.extend(archive_stories)
+                report_progress(
+                    "archive_bigquery",
+                    1,
+                    1,
+                    "Fetched BigQuery archive candidates",
+                )
+            elif not cache_only:
+                logger.info("Skipping BigQuery archive fetch; archive.bigquery_enabled=false")
 
         if not results and not include_rss:
+            report_progress("complete", 1, 1, "Candidate fetching complete")
             return []
 
         rss_stories: list[Story] = []
         if include_rss and not cache_only:
             try:
                 # Use progress callback for RSS fetching too
+                report_progress("rss_feeds", 0, 1, "Fetching external feeds")
+
+                def rss_progress(event: Any) -> None:
+                    phase = event.get("phase")
+                    if phase == "feeds":
+                        report_progress(
+                            "rss_feeds",
+                            int(event.get("current", 0)),
+                            int(event.get("total", 1)),
+                            str(event.get("label", "Fetching external feeds")),
+                        )
+                    elif phase == "content":
+                        report_progress(
+                            "rss_content",
+                            int(event.get("current", 0)),
+                            int(event.get("total", 1)),
+                            str(event.get("label", "Fetching external article text")),
+                        )
+
                 rss_stories = await fetch_rss_stories(
                     opml_url=RSS_OPML_URL,
                     days=days,
@@ -867,9 +976,10 @@ async def get_best_stories(
                     per_feed=RSS_PER_FEED_LIMIT,
                     exclude_urls=exclude_urls,
                     fetch_full_content=True,
-                    progress_callback=progress_callback,
+                    progress_callback=rss_progress,
                 )
             except Exception:
                 logger.exception("RSS fetch failed")
 
+        report_progress("complete", 1, 1, "Candidate fetching complete")
         return results + rss_stories

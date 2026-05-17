@@ -70,3 +70,8 @@ refine_iters = 2
 enabled = true
 top_n = 80
 weight = 0.06953
+
+[hn_rerank.archive]
+bigquery_enabled = false
+use_cached_stories = true
+bigquery_candidate_limit = 50

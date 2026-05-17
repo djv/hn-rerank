@@ -24,7 +24,7 @@ from api.fetching import (
     story_from_bigquery_row,
 )
 from api.models import Story
-from api.config import AppConfig
+from api.config import AppConfig, ArchiveConfig
 
 
 class TestCleanText:
@@ -657,7 +657,11 @@ async def test_get_best_stories_merges_algolia_live_and_bigquery_archive(
     )
     monkeypatch.setattr("api.fetching.fetch_full_text", fake_fetch_full_text)
 
-    config = AppConfig(days=10, no_rss=True)
+    config = AppConfig(
+        days=10,
+        no_rss=True,
+        archive=ArchiveConfig(bigquery_enabled=True, bigquery_candidate_limit=7),
+    )
     stories = await get_best_stories(limit=10, config=config)
 
     assert [story.id for story in stories] == [1, 2]
@@ -665,7 +669,7 @@ async def test_get_best_stories_merges_algolia_live_and_bigquery_archive(
     assert "archive story text" in stories[1].text_content
     assert captured["end_ts"] > captured["start_ts"]
     assert 5 * 86400 < captured["end_ts"] - captured["start_ts"] < 7 * 86400
-    assert captured["candidate_limit"] >= 10
+    assert captured["candidate_limit"] == 7
 
 
 @pytest.mark.asyncio
@@ -691,14 +695,129 @@ async def test_get_best_stories_gracefully_handles_bigquery_archive_failure(monk
         "api.fetching._query_bigquery_archive_sync",
         fake_query_bigquery_archive_sync,
     )
+    monkeypatch.setattr(
+        "api.fetching.get_cached_candidates",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "api.fetching.save_cached_candidates",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "api.fetching.load_cached_archive_stories",
+        lambda *args, **kwargs: [],
+    )
     monkeypatch.setattr("api.fetching.fetch_story", fake_fetch_story)
 
-    config = AppConfig(days=10, no_rss=True, candidates=1)
+    config = AppConfig(
+        days=10,
+        no_rss=True,
+        candidates=1,
+        archive=ArchiveConfig(bigquery_enabled=True),
+    )
     # Should not raise, should return Algolia stories
     stories = await get_best_stories(limit=1, config=config)
     assert len(stories) > 0
     # At least our mocked 123 should be there
     assert any(s.id == 123 for s in stories)
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_get_best_stories_uses_cached_archive_without_bigquery(monkeypatch, tmp_path):
+    now_ts = 1800000000
+    cached_story = Story(
+        id=999,
+        title="Cached Archive Story",
+        url="https://example.com/archive/cached",
+        score=75,
+        time=now_ts - 7 * 86400,
+        discussion_url="https://news.ycombinator.com/item?id=999",
+        comments=["cached archive comment"],
+        text_content="cached archive story text",
+        source="hn",
+    )
+    cache_file = tmp_path / "999.json"
+    cache_file.write_text(
+        json.dumps(
+            {
+                "ts": time.time(),
+                "version": STORY_CACHE_VERSION,
+                "story": cached_story.to_dict(),
+            }
+        )
+    )
+
+    respx.get(f"{ALGOLIA_BASE}/search").mock(
+        return_value=Response(200, json={"hits": []})
+    )
+
+    def fail_bigquery(**kwargs):
+        raise AssertionError("BigQuery should not be called by default")
+
+    monkeypatch.setattr("api.fetching.CACHE_PATH", tmp_path)
+    monkeypatch.setattr(
+        "api.fetching._query_bigquery_archive_sync",
+        fail_bigquery,
+    )
+
+    config = AppConfig(days=10, no_rss=True)
+    stories = await get_best_stories(limit=10, config=config, now_ts=now_ts)
+
+    assert [story.id for story in stories] == [999]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_get_best_stories_progress_completes_after_rss_content(monkeypatch):
+    events = []
+
+    respx.get(f"{ALGOLIA_BASE}/search").mock(
+        return_value=Response(200, json={"hits": []})
+    )
+
+    async def fake_fetch_rss_stories(**kwargs):
+        progress_callback = kwargs["progress_callback"]
+        progress_callback(
+            {
+                "phase": "feeds",
+                "current": 1,
+                "total": 1,
+                "label": "Fetching external feeds",
+            }
+        )
+        progress_callback(
+            {
+                "phase": "content",
+                "current": 1,
+                "total": 1,
+                "label": "Fetching external article text",
+            }
+        )
+        return [
+            Story(
+                id=-1,
+                title="External Story",
+                url="https://example.com/external",
+                score=40,
+                time=int(time.time()),
+                source="rss",
+            )
+        ]
+
+    monkeypatch.setattr("api.fetching.get_cached_candidates", lambda *args, **kwargs: None)
+    monkeypatch.setattr("api.fetching.save_cached_candidates", lambda *args, **kwargs: None)
+    monkeypatch.setattr("api.fetching.fetch_rss_stories", fake_fetch_rss_stories)
+
+    stories = await get_best_stories(
+        limit=10,
+        config=AppConfig(days=1),
+        progress_callback=events.append,
+    )
+
+    phases = [event["phase"] for event in events]
+    assert [story.title for story in stories] == ["External Story"]
+    assert phases.index("rss_content") < phases.index("complete")
 
 
 class TestWindowFilters:

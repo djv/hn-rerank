@@ -115,6 +115,11 @@ no_rss = false
 no_tldr = true
 debug_scores = false
 
+[hn_rerank.archive]
+bigquery_enabled = false
+use_cached_stories = true
+bigquery_candidate_limit = 50
+
 [hn_rerank.ranking]
 negative_weight = 0.5529
 diversity_lambda = 0.2397

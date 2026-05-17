@@ -101,6 +101,13 @@ class CrossEncoderConfig:
     weight: float = 0.8
 
 @dataclass(frozen=True)
+class ArchiveConfig:
+    """Historical HN archive fetching parameters."""
+    bigquery_enabled: bool = False
+    use_cached_stories: bool = True
+    bigquery_candidate_limit: int = 50
+
+@dataclass(frozen=True)
 class AppConfig:
     """Root configuration object."""
     username: str = field(default_factory=lambda: os.getlogin() if os.name != "nt" else "user")
@@ -127,6 +134,7 @@ class AppConfig:
     clustering: ClusteringConfig = field(default_factory=ClusteringConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
     cross_encoder: CrossEncoderConfig = field(default_factory=CrossEncoderConfig)
+    archive: ArchiveConfig = field(default_factory=ArchiveConfig)
 
     @classmethod
     def load(cls, toml_path: Path | str | None = None, **overrides: Any) -> Self:
@@ -152,6 +160,7 @@ class AppConfig:
         clustering = ClusteringConfig(**_get_section("clustering"))
         llm = LLMConfig(**_get_section("llm"))
         cross_encoder = CrossEncoderConfig(**_get_section("cross_encoder"))
+        archive = ArchiveConfig(**_get_section("archive"))
 
         def _get_root(key: str, default: Any) -> Any:
             val = overrides.get(key)
@@ -184,4 +193,5 @@ class AppConfig:
             clustering=clustering,
             llm=llm,
             cross_encoder=cross_encoder,
+            archive=archive,
         )
