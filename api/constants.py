@@ -37,7 +37,7 @@ STORY_CACHE_MAX_FILES = 25000  # LRU eviction threshold
 RSS_CACHE_DIR = ".cache/rss"
 RSS_OPML_CACHE_TTL = 86400  # 1 day
 RSS_FEED_CACHE_TTL = 86400  # 1 day
-RSS_FEED_CACHE_VERSION = 2
+RSS_FEED_CACHE_VERSION = 3
 RSS_ARTICLE_CACHE_TTL = 86400  # 1 day
 RSS_CACHE_MAX_FILES = 5000
 
@@ -58,8 +58,13 @@ RSS_EXTRA_FEEDS = [
     "https://tildes.net/topics.rss",
     "https://www.lesswrong.com/feed.xml?view=frontpage&karmaThreshold=20",
     "https://www.reddit.com/r/MachineLearning/top/.rss?t=week&limit=25",
+    "https://www.reddit.com/r/programming/top/.rss?t=week&limit=25",
+    "https://www.reddit.com/r/compsci/top/.rss?t=week&limit=25",
+    "https://digg.com/ai",
 ]  # Additional feeds not in OPML
 RSS_EXCLUDED_FEEDS = {
+    "http://www.aaronsw.com/2002/feeds/pgessays.rss",
+    "https://chadnauseam.com/rss.xml",
     "https://rachelbythebay.com/w/atom.xml",
     "https://www.tedunangst.com/flak/rss",
 }

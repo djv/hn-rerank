@@ -10,7 +10,7 @@ from collections.abc import Sequence, Callable
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import TypedDict, cast
+from typing import Literal, TypedDict, cast
 from xml.etree import ElementTree as ET
 from urllib.parse import urljoin, urlparse
 
@@ -33,13 +33,37 @@ from api.constants import (
     RSS_OPML_CACHE_TTL,
     RSS_PER_FEED_LIMIT,
 )
+from api.external_sources import detect_source
 from api.models import Story, StoryDict, StorySource
 from api.url_utils import normalize_url
 
 logger = logging.getLogger(__name__)
 
+RssProgressPhase = Literal["feeds", "content"]
+
+
+class RssProgress(TypedDict):
+    phase: RssProgressPhase
+    current: int
+    total: int
+    label: str
+
+
+RssProgressCallback = Callable[[RssProgress], None]
+
 DetectorFactory.seed = 0
 RSS_USER_AGENT = "linux:hn_rerank:1.0 (local-first dashboard)"
+DIGG_AI_URL = "https://digg.com/ai"
+DIGG_AI_STORY_PATTERN = re.compile(
+    r'\\"id\\":\\"(?P<id>[^\\"]+)\\"'
+    r',\\"shortId\\":\\"(?P<short_id>[^\\"]+)\\"'
+    r',\\"title\\":\\"(?P<title>(?:\\\\.|[^\\"])*)\\"'
+    r',\\"tldr\\":\\"(?P<tldr>(?:\\\\.|[^\\"])*)\\"'
+    r',\\"createdAt\\":\\"(?P<created_at>[^\\"]+)\\"'
+    r',\\"firstPostAt\\":\\"[^\\"]+\\"'
+    r',\\"lastFrozenPostAt\\":\\"[^\\"]+\\"'
+    r',\\"postCount\\":(?P<post_count>\d+)'
+)
 
 RSS_CACHE_PATH: Path = Path(RSS_CACHE_DIR)
 RSS_CACHE_PATH.mkdir(parents=True, exist_ok=True)
@@ -108,23 +132,74 @@ def _make_story_id(feed_url: str, link: str, title: str) -> int:
 
 
 def _feed_source(feed_url: str, link: str) -> StorySource:
-    haystacks = (feed_url.lower(), link.lower())
-    if any("reddit.com/r/machinelearning" in value for value in haystacks):
-        return "reddit"
-    if any("lobste.rs" in value for value in haystacks):
-        return "lobsters"
-    if any("tildes.net" in value for value in haystacks):
-        return "tildes"
-    if any("lesswrong.com" in value for value in haystacks):
-        return "lesswrong"
-    return "rss"
+    return cast(StorySource, detect_source(feed_url, link).source)
 
 
 def _feed_item_limit(feed_url: str, default_limit: int) -> int:
-    source = _feed_source(feed_url, feed_url)
-    if source in {"lobsters", "tildes", "lesswrong", "reddit"}:
+    spec = detect_source(feed_url, feed_url)
+    if spec.curated:
         return max(default_limit, RSS_CURATED_NEWS_PER_FEED_LIMIT)
     return max(default_limit, RSS_PER_FEED_LIMIT)
+
+
+def _is_reddit_source(source: StorySource) -> bool:
+    return source == "reddit" or source.startswith("reddit_")
+
+
+def _is_digg_ai_source(feed_url: str) -> bool:
+    return detect_source(feed_url, feed_url).parser == "digg_ai"
+
+
+def _decode_next_string(value: str) -> str:
+    try:
+        decoded = json.loads(f'"{value}"')
+    except json.JSONDecodeError:
+        decoded = value
+    return str(decoded).strip()
+
+
+def _parse_digg_ai_page(
+    html_text: str,
+    feed_url: str,
+    max_items: int,
+    min_ts: int,
+) -> list[Story]:
+    stories: list[Story] = []
+    seen_urls: set[str] = set()
+
+    for match in DIGG_AI_STORY_PATTERN.finditer(html_text):
+        title = _decode_next_string(match.group("title"))
+        if not title:
+            continue
+
+        ts = _parse_date(match.group("created_at"))
+        if ts is None or ts < min_ts:
+            continue
+
+        story_path_id = match.group("id") or match.group("short_id")
+        link = urljoin(DIGG_AI_URL, f"/ai/{story_path_id}")
+        if link in seen_urls:
+            continue
+        seen_urls.add(link)
+
+        summary = _decode_next_string(match.group("tldr"))
+        story = Story(
+            id=_make_story_id(feed_url, link, title),
+            title=title,
+            url=link,
+            score=0,
+            time=ts,
+            discussion_url=None,
+            comments=[],
+            text_content=compose_story_text(title=title, article_text=summary),
+            source="digg",
+            comment_count=int(match.group("post_count")),
+        )
+        stories.append(story)
+        if len(stories) >= max_items:
+            break
+
+    return stories
 
 
 def _is_reddit_internal_url(url: str) -> bool:
@@ -207,7 +282,11 @@ def _extract_score(entry: feedparser.FeedParserDict, source: StorySource, summar
     """Extract story score/points from various RSS metadata sources."""
     # 1. Direct attribute check (some feed types or custom parser results)
     # Reddit RSS often has reddit_score via feedparser if using the right namespace
-    for key in (f"{source}_score", "score", "points", "rank_score"):
+    source_score_keys = [f"{source}_score"]
+    if _is_reddit_source(source):
+        source_score_keys.append("reddit_score")
+    source_score_keys.extend(["score", "points", "rank_score"])
+    for key in source_score_keys:
         val = entry.get(key)
         if val is not None:
             try:
@@ -252,7 +331,6 @@ def _parse_feed(
         )
         return feed_language, []
 
-    now_ts = int(time.time())
     stories: list[Story] = []
 
     for entry in parsed.entries:
@@ -276,7 +354,10 @@ def _parse_feed(
                 break
         if ts is None:
             date_text = entry.get("published") or entry.get("updated") or ""
-            ts = _parse_date(str(date_text)) or now_ts
+            ts = _parse_date(str(date_text))
+
+        if ts is None:
+            continue
 
         if ts < min_ts:
             continue
@@ -284,7 +365,7 @@ def _parse_feed(
         source = _feed_source(feed_url, link)
         story_url = link or None
         discussion_url = str(entry.get("comments") or "").strip() or None
-        if source == "reddit":
+        if _is_reddit_source(source):
             story_url, discussion_url = _extract_reddit_urls(str(summary), link)
 
         text = strip_html(str(summary))
@@ -355,7 +436,7 @@ async def fetch_rss_stories(
     per_feed: int,
     exclude_urls: set[str] | None = None,
     fetch_full_content: bool = True,
-    progress_callback: Callable[[int, int], None] | None = None,
+    progress_callback: RssProgressCallback | None = None,
 ) -> list[Story]:
     exclude_urls = exclude_urls or set()
     min_ts = int(time.time()) - days * 86400
@@ -400,49 +481,83 @@ async def fetch_rss_stories(
         seen_urls: set[str] = set(exclude_urls)
         seen_titles: set[str] = set()
 
-        for feed_url in unique_feeds:
-            item_limit = _feed_item_limit(feed_url, per_feed)
-            feed_cache = _cache_path("feed", feed_url)
-            cached = _load_cached_feed(feed_cache, RSS_FEED_CACHE_TTL)
-            if cached is not None:
-                feed_language, cached_stories = cached
-                if not _is_allowed_feed_language(feed_language):
-                    continue
-                candidates = [s for s in cached_stories if s.time >= min_ts][:item_limit]
-            else:
-                try:
-                    resp = await client.get(feed_url)
-                except Exception:
-                    logger.exception(f"Failed to fetch feed {feed_url}")
-
-                    continue
-                if resp.status_code != 200 or not resp.text:
-                    continue
-                feed_language, candidates = _parse_feed(resp.text, feed_url, item_limit, min_ts)
-                cache_payload: dict[str, object] = {
-                    "version": RSS_FEED_CACHE_VERSION,
-                    "language": feed_language,
-                    "stories": [s.to_dict() for s in candidates],
-                }
-                _write_cache_json(feed_cache, cache_payload)
-                if not _is_allowed_feed_language(feed_language):
-                    continue
-
-            for story in candidates:
-                if story.url:
-                    norm_url = normalize_url(story.url)
-                    if norm_url and norm_url in seen_urls:
+        total_feeds = len(unique_feeds)
+        for feed_index, feed_url in enumerate(unique_feeds):
+            try:
+                item_limit = _feed_item_limit(feed_url, per_feed)
+                feed_cache = _cache_path("feed", feed_url)
+                cached = _load_cached_feed(feed_cache, RSS_FEED_CACHE_TTL)
+                if cached is not None:
+                    feed_language, cached_stories = cached
+                    if not _is_allowed_feed_language(feed_language):
                         continue
-                    if norm_url:
-                        seen_urls.add(norm_url)
-                norm_title = story.title.lower().strip()
-                if norm_title:
-                    if norm_title in seen_titles:
+                    candidates = [
+                        s for s in cached_stories if s.time >= min_ts
+                    ][:item_limit]
+                else:
+                    try:
+                        resp = await client.get(feed_url)
+                    except Exception:
+                        logger.exception(f"Failed to fetch feed {feed_url}")
                         continue
-                    seen_titles.add(norm_title)
-                stories.append(story)
+                    if resp.status_code != 200 or not resp.text:
+                        continue
+                    if _is_digg_ai_source(feed_url):
+                        feed_language = "en"
+                        candidates = _parse_digg_ai_page(
+                            resp.text, feed_url, item_limit, min_ts
+                        )
+                    else:
+                        feed_language, candidates = _parse_feed(
+                            resp.text, feed_url, item_limit, min_ts
+                        )
+                    cache_payload: dict[str, object] = {
+                        "version": RSS_FEED_CACHE_VERSION,
+                        "language": feed_language,
+                        "stories": [s.to_dict() for s in candidates],
+                    }
+                    _write_cache_json(feed_cache, cache_payload)
+                    if not _is_allowed_feed_language(feed_language):
+                        continue
+
+                for story in candidates:
+                    if story.url:
+                        norm_url = normalize_url(story.url)
+                        if norm_url and norm_url in seen_urls:
+                            continue
+                        if norm_url:
+                            seen_urls.add(norm_url)
+                    norm_title = story.title.lower().strip()
+                    if norm_title:
+                        if norm_title in seen_titles:
+                            continue
+                        seen_titles.add(norm_title)
+                    stories.append(story)
+            finally:
+                if progress_callback:
+                    progress_callback(
+                        {
+                            "phase": "feeds",
+                            "current": feed_index + 1,
+                            "total": total_feeds,
+                            "label": "Fetching external feeds",
+                        }
+                    )
 
         if fetch_full_content and stories:
-            await enrich_stories_with_full_text(client, stories, progress_callback=progress_callback)
+            def content_progress(curr: int, total: int) -> None:
+                if progress_callback:
+                    progress_callback(
+                        {
+                            "phase": "content",
+                            "current": curr,
+                            "total": total,
+                            "label": "Fetching external article text",
+                        }
+                    )
+
+            await enrich_stories_with_full_text(
+                client, stories, progress_callback=content_progress
+            )
 
         return stories

@@ -5,20 +5,23 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal, NotRequired, TypedDict
 
-StorySource = Literal["hn", "rss", "lobsters", "tildes", "lesswrong", "reddit"]
+from api.external_sources import source_badge_label as _source_badge_label
 
-_SOURCE_BADGE_LABELS: dict[StorySource, str | None] = {
-    "hn": None,
-    "rss": "RSS",
-    "lobsters": "Lobsters",
-    "tildes": "Tildes",
-    "lesswrong": "LessWrong",
-    "reddit": "Reddit",
-}
-
+StorySource = Literal[
+    "hn",
+    "rss",
+    "lobsters",
+    "tildes",
+    "lesswrong",
+    "reddit",
+    "reddit_machinelearning",
+    "reddit_programming",
+    "reddit_compsci",
+    "digg",
+]
 
 def source_badge_label(source: StorySource) -> str | None:
-    return _SOURCE_BADGE_LABELS[source]
+    return _source_badge_label(source)
 
 
 class StoryDict(TypedDict):
