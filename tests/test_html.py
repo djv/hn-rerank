@@ -122,6 +122,30 @@ def test_generate_story_html_hides_unknown_comment_count():
     assert "💬 0" not in html
 
 
+def test_generate_story_html_shows_external_count_without_discussion_link():
+    story = StoryDisplay(
+        id=-459,
+        match_percent=81,
+        cluster_name="",
+        points=0,
+        time_ago="3h",
+        time=459,
+        url="https://digg.com/ai/story",
+        title="External story with count",
+        hn_url=None,
+        reason="",
+        reason_url="",
+        comments=[],
+        source="digg",
+        comment_count=31,
+    )
+
+    html = generate_story_html(story)
+
+    assert '<span class="ml-2 text-xs font-medium text-stone-500" title="Comments">💬 31</span>' in html
+    assert 'title="Comments">💬 31</a>' not in html
+
+
 def test_resolve_cluster_name_fallback():
     cluster_names = {0: "Systems"}
 
@@ -274,6 +298,8 @@ def test_generate_story_html_without_hn_url_hides_comment_link():
     assert "RSS Story" in html
     assert "title=\"Comments\"" not in html
     assert 'aria-label="Open comments for RSS Story"' not in html
+    assert 'aria-label="Open story for RSS Story"' in html
+    assert 'href="https://example.com/rss"' in html
 
 
 def test_generate_story_html_rss_badge():
@@ -330,10 +356,10 @@ def test_generate_story_html_reddit_badge():
         reason="",
         reason_url="",
         comments=[],
-        source="reddit",
+        source="reddit_machinelearning",
     )
     html = generate_story_html(story)
-    assert "Reddit" in html
+    assert "r/MachineLearning" in html
     assert 'href="https://arxiv.org/abs/2604.21691"' in html
     assert 'href="https://www.reddit.com/r/MachineLearning/comments/1sun588/post/"' in html
 
@@ -417,7 +443,7 @@ def test_index_template_includes_sort_control_and_defaults_to_date():
     )
 
     assert 'id="sort-mode"' in html
-    assert '<option value="current">Current</option>' in html
+    assert '<option value="current">Similarity</option>' in html
     assert '<option value="date" selected>Date</option>' in html
     assert "renderSort(sortMode.value);" in html
 
@@ -610,8 +636,8 @@ def test_select_ranked_results_caps_external_results_at_quota():
     external_count = sum(1 for r in selected if cands[r.index].is_external)
     hn_count = len(selected) - external_count
     assert len(selected) == 6
-    assert external_count == 2
-    assert hn_count == 4
+    assert external_count == 6
+    assert hn_count == 0
 
 
 def test_select_ranked_results_no_longer_prioritizes_cluster_coverage():
@@ -663,8 +689,8 @@ def test_select_ranked_results_preserves_external_floor_when_hn_is_available():
     external_count = sum(1 for r in selected if cands[r.index].is_external)
     hn_count = len(selected) - external_count
     assert len(selected) == 6
-    assert hn_count == 2
-    assert external_count == 4
+    assert hn_count == 0
+    assert external_count == 6
 
 
 def test_select_ranked_results_preserves_existing_hn_heavy_top_slice():

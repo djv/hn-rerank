@@ -25,7 +25,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 from api import rerank, llm_utils
 from api.client import HNClient, UserSignals
-from api.fetching import get_best_stories, fetch_story
+from api.fetching import CandidateProgress, get_best_stories, fetch_story
 from api.models import RankResult, Story, StoryDict, StoryDisplay
 from api.url_utils import normalize_url
 from api.config import AppConfig
@@ -202,7 +202,7 @@ HTML_TEMPLATE: str = """
                 <label for="sort-mode" class="flex flex-col gap-1 text-[10px] text-stone-400 font-mono">
                     <span>SORT</span>
                     <select id="sort-mode" class="rounded border border-stone-200 bg-white px-2 py-1 text-xs text-stone-700">
-                        <option value="current">Current</option>
+                        <option value="current">Similarity</option>
                         <option value="date" selected>Date</option>
                     </select>
                 </label>
@@ -431,7 +431,7 @@ def select_ranked_results(
     def is_external_result(res: RankResult) -> bool:
         return cands[res.index].is_external
 
-    desired_external = round(count * 0.2)
+    desired_external = round(count * 0.2) + 5
     available_external = sum(1 for r in ranked if is_external_result(r))
     available_hn = len(ranked) - available_external
     min_external = max(0, count - available_hn)
@@ -468,10 +468,10 @@ def select_ranked_results(
 
 STORY_CARD_TEMPLATE: str = """
 <div class="story-card group relative{% if is_external %} rss-story{% endif %}" data-rank-index="{{ rank_index }}" data-story-time="{{ story_time }}">
-    {% if hn_url %}
-    <a href="{{ hn_url }}" target="_blank" class="absolute inset-0 z-10 rounded-lg" aria-label="Open comments for {{ title }}"></a>
+    {% if card_url %}
+    <a href="{{ card_url }}" target="_blank" class="absolute inset-0 z-10 rounded-lg" aria-label="{{ card_aria_label }}"></a>
     {% endif %}
-    <div class="flex items-center gap-2 mb-0.5 flex-wrap{% if hn_url %} relative z-20 pointer-events-none{% endif %}">
+    <div class="flex items-center gap-2 mb-0.5 flex-wrap{% if card_url %} relative z-20 pointer-events-none{% endif %}">
         <span class="px-1.5 py-0.5 rounded bg-hn/10 text-hn text-[10px] font-bold" title="Hybrid Match Score">
             {{ score }}%
         </span>
@@ -489,14 +489,16 @@ STORY_CARD_TEMPLATE: str = """
         <span class="text-[10px] text-stone-400 font-mono">{{ points }} pts</span>
         <span class="text-[10px] text-stone-400 font-mono">{{ time_ago }}</span>
     </div>
-    <h2 class="text-sm font-semibold text-stone-900 leading-snug mb-1{% if hn_url %} relative z-20 pointer-events-none{% endif %}">
+    <h2 class="text-sm font-semibold text-stone-900 leading-snug mb-1{% if card_url %} relative z-20 pointer-events-none{% endif %}">
         <a href="{{ url }}" target="_blank" class="hover:text-hn transition-colors pointer-events-auto">{{ title }}</a>
         {% if hn_url %}
         <a href="{{ hn_url }}" target="_blank" class="ml-2 text-xs font-medium text-stone-900 hover:text-hn transition-colors pointer-events-auto" title="Comments">💬{% if comment_count is not none %} {{ comment_count }}{% endif %}</a>
+        {% elif comment_count is not none %}
+        <span class="ml-2 text-xs font-medium text-stone-500" title="Comments">💬 {{ comment_count }}</span>
         {% endif %}
     </h2>
     {% if tldr %}
-    <div class="text-sm text-stone-600 bg-stone-50 p-2 rounded border border-stone-100 leading-relaxed whitespace-pre-line{% if hn_url %} relative z-20 pointer-events-none{% endif %}">{{ tldr }}</div>
+    <div class="text-sm text-stone-600 bg-stone-50 p-2 rounded border border-stone-100 leading-relaxed whitespace-pre-line{% if card_url %} relative z-20 pointer-events-none{% endif %}">{{ tldr }}</div>
     {% endif %}
 </div>
 """
@@ -511,6 +513,18 @@ _CLUSTERS_TEMPLATE = _JINJA_ENV.from_string(CLUSTERS_PAGE_TEMPLATE)
 
 def generate_story_html(story: StoryDisplay) -> str:
     link_url = story.url or story.hn_url or "#"
+    if story.is_hn:
+        card_url = story.hn_url
+        card_aria_label = (
+            f"Open comments for {story.title}" if story.hn_url else None
+        )
+    else:
+        card_url = story.hn_url or story.url
+        card_aria_label = (
+            f"Open comments for {story.title}"
+            if story.hn_url
+            else (f"Open story for {story.title}" if story.url else None)
+        )
     return _STORY_TEMPLATE.render(
         score=story.match_percent,
         ce_score=story.cross_encoder_score,
@@ -521,6 +535,8 @@ def generate_story_html(story: StoryDisplay) -> str:
         time_ago=story.time_ago,
         story_time=story.time,
         rank_index=story.rank_index,
+        card_url=card_url,
+        card_aria_label=card_aria_label,
         url=link_url,
         title=story.title,
         hn_url=story.hn_url,
@@ -691,6 +707,11 @@ async def main() -> None:
         help="Disable RSS candidate fetching",
     )
     parser.add_argument(
+        "--bigquery-archive",
+        action="store_true",
+        help="Enable BigQuery archive fetching for older HN candidates",
+    )
+    parser.add_argument(
         "--no-tldr",
         action="store_true",
         default=False,
@@ -769,6 +790,11 @@ async def main() -> None:
     from dataclasses import replace
     if args.clusters:
         config = replace(config, clustering=replace(config.clustering, default_count=args.clusters, max_clusters=args.clusters))
+    if args.bigquery_archive:
+        config = replace(
+            config,
+            archive=replace(config.archive, bigquery_enabled=True),
+        )
 
     # Override provider if explicitly requested on CLI
     if args.mistral or not args.mistral:  # args.mistral is always either True or False
@@ -1063,18 +1089,46 @@ async def main() -> None:
 
         # 3. Candidates
         c_task: TaskID = progress.add_task(
-            f"[*] Fetching {config.candidates} candidates...", total=config.candidates
+            f"[*] Fetching {config.candidates} candidates...", total=100
         )
-        last_c_completed = 0
+        candidate_phase_weights = {
+            "hn": 55.0,
+            "archive_cache": 10.0,
+            "archive_bigquery": 5.0,
+            "rss_feeds": 15.0,
+            "rss_content": 15.0,
+        }
+        candidate_phase_order = list(candidate_phase_weights)
+        candidate_phase_completed = dict.fromkeys(candidate_phase_weights, 0.0)
+        last_c_completed = 0.0
 
-        def cand_cb(curr: int, total: int) -> None:
+        def cand_cb(event: CandidateProgress) -> None:
             nonlocal last_c_completed
-            progress.update(c_task, total=total, completed=curr)
-            if total > 0:
-                delta = curr - last_c_completed
-                overall_advance = (delta / total) * PROGRESS_WEIGHTS["candidates"]
-                progress.update(overall_task, advance=overall_advance)
-                last_c_completed = curr
+            phase = event["phase"]
+            if phase == "complete":
+                completed = 100.0
+                description = "[*] Finalizing candidates..."
+            else:
+                total = max(event["total"], 1)
+                phase_fraction = min(max(event["current"] / total, 0.0), 1.0)
+                candidate_phase_completed[phase] = (
+                    candidate_phase_weights[phase] * phase_fraction
+                )
+                phase_index = candidate_phase_order.index(phase)
+                for prior_phase in candidate_phase_order[:phase_index]:
+                    candidate_phase_completed[prior_phase] = candidate_phase_weights[
+                        prior_phase
+                    ]
+                completed = min(sum(candidate_phase_completed.values()), 99.0)
+                description = f"[*] {event['label']}..."
+            progress.update(c_task, completed=completed, description=description)
+            delta = completed - last_c_completed
+            if delta > 0:
+                progress.update(
+                    overall_task,
+                    advance=(delta / 100.0) * PROGRESS_WEIGHTS["candidates"],
+                )
+                last_c_completed = completed
 
         # Exclude everything we've already interacted with
         exclude_ids: set[int] = data["favorites"] | data["upvoted"] | data["hidden"]
@@ -1096,16 +1150,43 @@ async def main() -> None:
 
         # 4. Reranking
         r_task: TaskID = progress.add_task("[*] Reranking stories...", total=100)
-        last_r_completed = 0
+        rank_phase_weights = {
+            "embeddings": 45.0,
+            "scoring": 30.0,
+            "cross_encoder": 20.0,
+            "finalize": 5.0,
+        }
+        rank_phase_order = list(rank_phase_weights)
+        rank_phase_completed = dict.fromkeys(rank_phase_weights, 0.0)
+        last_r_completed = 0.0
 
-        def rank_cb(curr: int, total: int) -> None:
+        def rank_cb(event: rerank.RankProgress) -> None:
             nonlocal last_r_completed
-            progress.update(r_task, total=total, completed=curr)
-            if total > 0:
-                delta = curr - last_r_completed
-                overall_advance = (delta / total) * PROGRESS_WEIGHTS["rank"]
-                progress.update(overall_task, advance=overall_advance)
-                last_r_completed = curr
+            phase = event["phase"]
+            if phase == "complete":
+                completed = 100.0
+                description = "[*] Finalizing rerank..."
+            else:
+                total = max(event["total"], 1)
+                phase_fraction = min(max(event["current"] / total, 0.0), 1.0)
+                rank_phase_completed[phase] = (
+                    rank_phase_weights[phase] * phase_fraction
+                )
+                phase_index = rank_phase_order.index(phase)
+                for prior_phase in rank_phase_order[:phase_index]:
+                    rank_phase_completed[prior_phase] = rank_phase_weights[
+                        prior_phase
+                    ]
+                completed = min(sum(rank_phase_completed.values()), 99.0)
+                description = f"[*] {event['label']}..."
+            progress.update(r_task, completed=completed, description=description)
+            delta = completed - last_r_completed
+            if delta > 0:
+                progress.update(
+                    overall_task,
+                    advance=(delta / 100.0) * PROGRESS_WEIGHTS["rank"],
+                )
+                last_r_completed = completed
 
         ranked: list[RankResult] = rerank.rank_stories(
             cands,

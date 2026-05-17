@@ -45,7 +45,9 @@ async def test_generate_html_integration(tmp_path):
     ):
         # Mock LLM functions
         mock_batch_tldrs.return_value = {1: "This is a test TL;DR summary."}
-        mock_batch_names.return_value = {0: "Technology"}
+        mock_batch_names.return_value = {
+            0: {"name": "Technology", "keywords": "testing, integration"}
+        }
 
         # Mock API behavior
         client_instance = mock_client_class.return_value.__aenter__.return_value
@@ -86,7 +88,14 @@ async def test_generate_html_integration(tmp_path):
         with patch.object(
             sys,
             "argv",
-            ["generate_html.py", username, "-o", str(output_file), "--tldr"],
+            [
+                "generate_html.py",
+                username,
+                "-o",
+                str(output_file),
+                "--tldr",
+                "--bigquery-archive",
+            ],
         ):
             await main()
 
@@ -99,6 +108,10 @@ async def test_generate_html_integration(tmp_path):
         assert username in html_content
         # TL;DR replaces raw comments
         assert "This is a test TL;DR summary." in html_content
+
+        best_call = mock_best.call_args
+        assert best_call is not None
+        assert best_call.kwargs["config"].archive.bigquery_enabled is True
 
         cluster_call = mock_cluster.call_args
         assert cluster_call is not None
