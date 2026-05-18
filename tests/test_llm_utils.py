@@ -4,6 +4,7 @@ from api.llm_utils import (
     _coerce_tldr_value,
     _build_tldr_prompt,
     _finalize_cluster_name,
+    _is_provider_capacity_error,
     _load_tldr_cache,
     _parse_retry_after,
     _safe_json_loads,
@@ -73,6 +74,12 @@ def test_safe_json_loads_falls_back_to_empty_dict():
 def test_parse_retry_after_seconds():
     assert _parse_retry_after("2.5") == pytest.approx(2.5)
     assert _parse_retry_after("") is None
+
+
+def test_provider_capacity_error_detection():
+    assert _is_provider_capacity_error("Service tier capacity exceeded for this model.")
+    assert _is_provider_capacity_error('{"code":"service_tier_capacity_exceeded"}')
+    assert not _is_provider_capacity_error("rate limit exceeded")
 
 
 @pytest.mark.parametrize(

@@ -113,11 +113,16 @@ class LLMRetryableError(RuntimeError):
     """Raised for retryable LLM errors."""
 
     def __init__(
-        self, message: str, cooldown: float | None = None, is_rate_limit: bool = False
+        self,
+        message: str,
+        cooldown: float | None = None,
+        is_rate_limit: bool = False,
+        is_capacity: bool = False,
     ) -> None:
         super().__init__(message)
         self.cooldown = cooldown
         self.is_rate_limit = is_rate_limit
+        self.is_capacity = is_capacity
 
 
 _LLM_LIMITER: AsyncLimiter = AsyncLimiter(
@@ -150,6 +155,11 @@ def _retry_after_seconds(resp: httpx.Response) -> float | None:
     if not header:
         return None
     return _parse_retry_after(header)
+
+
+def _is_provider_capacity_error(message: str) -> bool:
+    msg_lower = message.lower()
+    return "capacity" in msg_lower or "service_tier_capacity_exceeded" in msg_lower
 
 
 _RATE_LIMIT_WAIT = wait_random_exponential(
@@ -366,6 +376,7 @@ async def _generate_with_retry(
                             error_msg,
                             cooldown=retry_after,
                             is_rate_limit=True,
+                            is_capacity=_is_provider_capacity_error(error_msg),
                         )
 
                     if resp.status_code in {408, 500, 502, 503, 504}:
@@ -380,8 +391,21 @@ async def _generate_with_retry(
                     return None
         except LLMQuotaError:
             raise
-        except LLMRetryableError:
-            logger.exception("%s API call failed after %d retries", provider.upper(), max_retries)
+        except LLMRetryableError as e:
+            if e.is_capacity:
+                logger.warning(
+                    "%s API capacity unavailable after %d attempts: %s",
+                    provider.upper(),
+                    max_retries,
+                    e,
+                )
+            else:
+                logger.warning(
+                    "%s API call failed after %d attempts: %s",
+                    provider.upper(),
+                    max_retries,
+                    e,
+                )
             return None
 
     return None
