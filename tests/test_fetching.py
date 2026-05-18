@@ -19,8 +19,10 @@ from api.fetching import (
     _extract_comments_recursive,
     build_bigquery_sql,
     build_candidate_filters,
+    build_open_index_sql,
     fetch_story,
     get_best_stories,
+    open_index_parquet_paths,
     story_from_bigquery_row,
 )
 from api.models import Story
@@ -290,6 +292,26 @@ def test_build_bigquery_sql_uses_archive_bounds_and_public_table():
     assert "TIMESTAMP_SECONDS(@end_ts)" in sql
     assert "@candidate_limit" in sql
     assert "@max_comment_depth" in sql
+
+
+def test_open_index_parquet_paths_selects_years():
+    start_ts = int(datetime(2025, 12, 31, 12, 0, tzinfo=UTC).timestamp())
+    end_ts = int(datetime(2026, 1, 2, 12, 0, tzinfo=UTC).timestamp())
+
+    assert open_index_parquet_paths(start_ts, end_ts) == [
+        "hf://datasets/open-index/hacker-news/data/2025/*.parquet",
+        "hf://datasets/open-index/hacker-news/data/2026/*.parquet",
+    ]
+
+
+def test_build_open_index_sql_filters_archive_candidates():
+    sql = build_open_index_sql(has_exclude_ids=True)
+
+    assert "read_parquet(?)" in sql
+    assert "type = 1" in sql
+    assert "coalesce(score, 0) > ?" in sql
+    assert "coalesce(descendants, 0)" in sql
+    assert "id NOT IN (SELECT * FROM UNNEST(?))" in sql
 
 
 @pytest.mark.asyncio
@@ -592,7 +614,7 @@ async def test_get_best_stories_partial_failure():
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_get_best_stories_merges_algolia_live_and_bigquery_archive(
+async def test_get_best_stories_merges_algolia_live_and_open_index_archive(
     monkeypatch, tmp_path
 ):
     respx.get(f"{ALGOLIA_BASE}/search").mock(
@@ -614,20 +636,13 @@ async def test_get_best_stories_merges_algolia_live_and_bigquery_archive(
 
     captured: dict[str, int] = {}
 
-    def fake_query_bigquery_archive_sync(*, start_ts, end_ts, candidate_limit, **kwargs):
+    async def fake_fetch_open_index_archive_stories(
+        *, start_ts, end_ts, candidate_limit, **kwargs
+    ):
         captured["start_ts"] = start_ts
         captured["end_ts"] = end_ts
         captured["candidate_limit"] = candidate_limit
         return [
-            Story(
-                id=1,
-                title="Duplicate archive",
-                url="https://example.com/live/1",
-                score=90,
-                time=1700000000,
-                comments=["duplicate archive comment"],
-                text_content="duplicate archive text",
-            ),
             Story(
                 id=2,
                 title="Archive 2",
@@ -639,10 +654,6 @@ async def test_get_best_stories_merges_algolia_live_and_bigquery_archive(
             ),
         ]
 
-    async def fake_fetch_full_text(client, url):
-        assert url == "https://example.com/archive/2"
-        return "archive article text"
-
     monkeypatch.setattr("api.fetching.CACHE_PATH", tmp_path)
     monkeypatch.setattr(
         "api.fetching.get_cached_candidates", lambda *args, **kwargs: None
@@ -652,20 +663,18 @@ async def test_get_best_stories_merges_algolia_live_and_bigquery_archive(
     )
     monkeypatch.setattr("api.fetching.fetch_story", fake_fetch_story)
     monkeypatch.setattr(
-        "api.fetching._query_bigquery_archive_sync",
-        fake_query_bigquery_archive_sync,
+        "api.fetching.fetch_open_index_archive_stories",
+        fake_fetch_open_index_archive_stories,
     )
-    monkeypatch.setattr("api.fetching.fetch_full_text", fake_fetch_full_text)
 
     config = AppConfig(
         days=10,
         no_rss=True,
-        archive=ArchiveConfig(bigquery_enabled=True, bigquery_candidate_limit=7),
+        archive=ArchiveConfig(open_index_enabled=True, open_index_candidate_limit=7),
     )
     stories = await get_best_stories(limit=10, config=config)
 
     assert [story.id for story in stories] == [1, 2]
-    # story 2 text_content is directly returned from the fake BQ sync
     assert "archive story text" in stories[1].text_content
     assert captured["end_ts"] > captured["start_ts"]
     assert 5 * 86400 < captured["end_ts"] - captured["start_ts"] < 7 * 86400
@@ -674,7 +683,7 @@ async def test_get_best_stories_merges_algolia_live_and_bigquery_archive(
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_get_best_stories_gracefully_handles_bigquery_archive_failure(monkeypatch):
+async def test_get_best_stories_gracefully_handles_open_index_archive_failure(monkeypatch):
     respx.get(f"{ALGOLIA_BASE}/search").mock(
         return_value=Response(200, json={"hits": [{"objectID": "123"}]})
     )
@@ -688,12 +697,12 @@ async def test_get_best_stories_gracefully_handles_bigquery_archive_failure(monk
             time=1800000000,
         )
 
-    def fake_query_bigquery_archive_sync(**kwargs):
-        raise RuntimeError("BigQuery unavailable")
+    async def fake_fetch_open_index_archive_stories(**kwargs):
+        raise RuntimeError("open-index unavailable")
 
     monkeypatch.setattr(
-        "api.fetching._query_bigquery_archive_sync",
-        fake_query_bigquery_archive_sync,
+        "api.fetching.fetch_open_index_archive_stories",
+        fake_fetch_open_index_archive_stories,
     )
     monkeypatch.setattr(
         "api.fetching.get_cached_candidates",
@@ -713,7 +722,7 @@ async def test_get_best_stories_gracefully_handles_bigquery_archive_failure(monk
         days=10,
         no_rss=True,
         candidates=1,
-        archive=ArchiveConfig(bigquery_enabled=True),
+        archive=ArchiveConfig(open_index_enabled=True),
     )
     # Should not raise, should return Algolia stories
     stories = await get_best_stories(limit=1, config=config)

@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 CandidateProgressPhase = Literal[
     "hn",
     "archive_cache",
-    "archive_bigquery",
+    "archive_open_index",
     "rss_feeds",
     "rss_content",
     "complete",
@@ -67,6 +67,7 @@ HN_BIGQUERY_PROJECT_ENV: str = "HN_RERANK_BIGQUERY_PROJECT"
 HN_LIVE_WINDOW_DAYS: int = 4
 HN_BIGQUERY_MAX_COMMENT_DEPTH: int = 4
 HN_BIGQUERY_ARCHIVE_STORY_CACHE_TTL: int = CANDIDATE_CACHE_TTL_LONG
+OPEN_INDEX_HN_DATASET = "hf://datasets/open-index/hacker-news"
 SEM: asyncio.Semaphore = asyncio.Semaphore(EXTERNAL_REQUEST_SEMAPHORE)
 CACHE_PATH: Path = Path(STORY_CACHE_DIR)
 CACHE_PATH.mkdir(parents=True, exist_ok=True)
@@ -517,6 +518,168 @@ ORDER BY cs.score DESC, cs.timestamp DESC
 """
 
 
+def open_index_parquet_paths(start_ts: int, end_ts: int) -> list[str]:
+    start_dt = datetime.fromtimestamp(start_ts, UTC)
+    end_dt = datetime.fromtimestamp(max(start_ts, end_ts - 1), UTC)
+    return [
+        f"{OPEN_INDEX_HN_DATASET}/data/{year}/*.parquet"
+        for year in range(start_dt.year, end_dt.year + 1)
+    ]
+
+
+def build_open_index_sql(has_exclude_ids: bool = False) -> str:
+    exclude_clause = "AND id NOT IN (SELECT * FROM UNNEST(?))" if has_exclude_ids else ""
+    return f"""
+SELECT
+  id,
+  url,
+  score,
+  time,
+  descendants AS comment_count
+FROM read_parquet(?)
+WHERE type = 1
+  AND time >= to_timestamp(?)
+  AND time < to_timestamp(?)
+  AND coalesce(score, 0) > ?
+  AND (? <= 0 OR coalesce(descendants, 0) >= ?)
+  AND coalesce(deleted, 0) = 0
+  AND coalesce(dead, 0) = 0
+  AND title IS NOT NULL
+  AND title != ''
+  {exclude_clause}
+ORDER BY score DESC, time DESC
+LIMIT ?
+"""
+
+
+def _query_open_index_archive_ids_sync(
+    *,
+    start_ts: int,
+    end_ts: int,
+    candidate_limit: int,
+    exclude_ids: set[int],
+    exclude_urls: set[str] | None,
+    seen_urls: set[str] | None,
+) -> list[int]:
+    try:
+        import duckdb
+    except ImportError as exc:
+        raise RuntimeError("open-index archive fetching requires duckdb") from exc
+
+    conn = duckdb.connect()
+    try:
+        conn.execute("INSTALL httpfs")
+        conn.execute("LOAD httpfs")
+
+        candidates: list[tuple[int, int, datetime, str | None]] = []
+        seen_ids: set[int] = set()
+        paths = open_index_parquet_paths(start_ts, end_ts)
+        query_limit = max(candidate_limit * 3, candidate_limit)
+        has_exclude_ids = bool(exclude_ids)
+        sql = build_open_index_sql(has_exclude_ids=has_exclude_ids)
+        exclude_list = sorted(exclude_ids)
+
+        for path in paths:
+            params: list[Any] = [
+                path,
+                start_ts,
+                end_ts,
+                ALGOLIA_MIN_POINTS,
+                MIN_CANDIDATE_COMMENTS,
+                MIN_CANDIDATE_COMMENTS,
+            ]
+            if has_exclude_ids:
+                params.append(exclude_list)
+            params.append(query_limit)
+
+            rows = conn.execute(sql, params).fetchall()
+            for story_id, url, _score, _story_time, _comment_count in rows:
+                sid = int(story_id)
+                if sid in seen_ids or sid in exclude_ids:
+                    continue
+                norm_url: str | None = None
+                if url:
+                    norm_url = normalize_url(str(url))
+                    if exclude_urls and norm_url and norm_url in exclude_urls:
+                        continue
+                    if seen_urls and norm_url and norm_url in seen_urls:
+                        continue
+                candidates.append(
+                    (
+                        sid,
+                        int(_score or 0),
+                        _story_time
+                        if isinstance(_story_time, datetime)
+                        else datetime.fromtimestamp(start_ts, UTC),
+                        norm_url,
+                    )
+                )
+                seen_ids.add(sid)
+        candidates.sort(key=lambda item: (item[1], item[2]), reverse=True)
+        return [sid for sid, _score, _story_time, _norm_url in candidates[:candidate_limit]]
+    finally:
+        conn.close()
+
+
+async def fetch_open_index_archive_stories(
+    *,
+    http_client: httpx.AsyncClient,
+    start_ts: int,
+    end_ts: int,
+    candidate_limit: int,
+    exclude_ids: set[int],
+    exclude_urls: set[str] | None,
+    seen_urls: set[str] | None = None,
+    cache_only: bool = False,
+    allow_stale: bool = False,
+) -> list[Story]:
+    if cache_only:
+        return []
+
+    try:
+        candidate_ids = await asyncio.to_thread(
+            _query_open_index_archive_ids_sync,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            candidate_limit=candidate_limit,
+            exclude_ids=exclude_ids,
+            exclude_urls=exclude_urls,
+            seen_urls=seen_urls,
+        )
+    except Exception:
+        logger.exception("open-index archive fetching failed")
+        return []
+
+    results: list[Story] = []
+    seen: set[int] = set()
+    tasks: list[Awaitable[Story | None]] = [
+        fetch_story(
+            http_client,
+            sid,
+            cache_only=cache_only,
+            allow_stale=allow_stale,
+        )
+        for sid in candidate_ids
+    ]
+    for task in asyncio.as_completed(tasks):
+        story = await task
+        if story is None or story.id in seen or story.id in exclude_ids:
+            continue
+        if story.url:
+            norm_url = normalize_url(story.url)
+            if exclude_urls and norm_url and norm_url in exclude_urls:
+                continue
+            if seen_urls is not None and norm_url:
+                if norm_url in seen_urls:
+                    continue
+                seen_urls.add(norm_url)
+        results.append(story)
+        seen.add(story.id)
+
+    results.sort(key=lambda s: (s.score, s.time), reverse=True)
+    return results[:candidate_limit]
+
+
 def _query_bigquery_archive_sync(
     *,
     start_ts: int,
@@ -910,37 +1073,44 @@ async def get_best_stories(
                     "Loaded cached archive candidates",
                 )
 
-            if config.archive.bigquery_enabled and not cache_only:
+            if config.archive.open_index_enabled and not cache_only:
                 report_progress(
-                    "archive_bigquery",
+                    "archive_open_index",
                     0,
                     1,
-                    "Fetching BigQuery archive candidates",
+                    "Fetching open-index archive candidates",
                 )
-                bigquery_limit = min(
+                open_index_limit = min(
                     archive_budget,
-                    config.archive.bigquery_candidate_limit,
+                    config.archive.open_index_candidate_limit,
                 )
-                archive_stories = await fetch_bigquery_archive_stories(
-                    http_client=client,
-                    start_ts=cutoff_ts,
-                    end_ts=archive_end_ts,
-                    candidate_limit=bigquery_limit,
-                    exclude_ids=archive_exclude_ids,
-                    exclude_urls=exclude_urls,
-                    seen_urls=seen_urls,
-                    cache_only=cache_only,
-                    allow_stale=allow_stale,
-                )
+                try:
+                    archive_stories = await fetch_open_index_archive_stories(
+                        http_client=client,
+                        start_ts=cutoff_ts,
+                        end_ts=archive_end_ts,
+                        candidate_limit=open_index_limit,
+                        exclude_ids=archive_exclude_ids,
+                        exclude_urls=exclude_urls,
+                        seen_urls=seen_urls,
+                        cache_only=cache_only,
+                        allow_stale=allow_stale,
+                    )
+                except Exception:
+                    logger.exception("open-index archive fetching failed")
+                    archive_stories = []
                 results.extend(archive_stories)
                 report_progress(
-                    "archive_bigquery",
+                    "archive_open_index",
                     1,
                     1,
-                    "Fetched BigQuery archive candidates",
+                    "Fetched open-index archive candidates",
                 )
             elif not cache_only:
-                logger.info("Skipping BigQuery archive fetch; archive.bigquery_enabled=false")
+                logger.info(
+                    "Skipping open-index archive fetch; "
+                    "archive.open_index_enabled=false"
+                )
 
         if not results and not include_rss:
             report_progress("complete", 1, 1, "Candidate fetching complete")

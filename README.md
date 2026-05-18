@@ -116,9 +116,9 @@ no_tldr = true
 debug_scores = false
 
 [hn_rerank.archive]
-bigquery_enabled = false
+open_index_enabled = false
 use_cached_stories = true
-bigquery_candidate_limit = 50
+open_index_candidate_limit = 50
 
 [hn_rerank.ranking]
 negative_weight = 0.5529

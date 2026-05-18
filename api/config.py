@@ -103,9 +103,20 @@ class CrossEncoderConfig:
 @dataclass(frozen=True)
 class ArchiveConfig:
     """Historical HN archive fetching parameters."""
-    bigquery_enabled: bool = False
+    open_index_enabled: bool = False
     use_cached_stories: bool = True
-    bigquery_candidate_limit: int = 50
+    open_index_candidate_limit: int = 50
+    bigquery_enabled: bool | None = None
+    bigquery_candidate_limit: int | None = None
+
+    def __post_init__(self) -> None:
+        # Backward-compatible aliases for existing TOML/CLI usage.
+        if self.bigquery_enabled is not None and self.bigquery_enabled:
+            object.__setattr__(self, "open_index_enabled", True)
+        if self.bigquery_candidate_limit is not None:
+            object.__setattr__(
+                self, "open_index_candidate_limit", self.bigquery_candidate_limit
+            )
 
 @dataclass(frozen=True)
 class AppConfig:

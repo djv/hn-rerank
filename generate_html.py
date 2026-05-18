@@ -949,9 +949,17 @@ async def main() -> None:
         help="Disable RSS candidate fetching",
     )
     parser.add_argument(
+        "--open-index-archive",
+        action="store_true",
+        help="Enable open-index archive fetching for older HN candidates",
+    )
+    parser.add_argument(
         "--bigquery-archive",
         action="store_true",
-        help="Enable BigQuery archive fetching for older HN candidates",
+        help=(
+            "Deprecated alias for --open-index-archive; BigQuery archive "
+            "fetching has been replaced"
+        ),
     )
     parser.add_argument(
         "--no-tldr",
@@ -1032,10 +1040,10 @@ async def main() -> None:
     from dataclasses import replace
     if args.clusters:
         config = replace(config, clustering=replace(config.clustering, default_count=args.clusters, max_clusters=args.clusters))
-    if args.bigquery_archive:
+    if args.open_index_archive or args.bigquery_archive:
         config = replace(
             config,
-            archive=replace(config.archive, bigquery_enabled=True),
+            archive=replace(config.archive, open_index_enabled=True),
         )
 
     # Override provider if explicitly requested on CLI
@@ -1357,7 +1365,7 @@ async def main() -> None:
         candidate_phase_weights = {
             "hn": 55.0,
             "archive_cache": 10.0,
-            "archive_bigquery": 5.0,
+            "archive_open_index": 5.0,
             "rss_feeds": 15.0,
             "rss_content": 15.0,
         }

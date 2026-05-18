@@ -94,7 +94,7 @@ async def test_generate_html_integration(tmp_path):
                 "-o",
                 str(output_file),
                 "--tldr",
-                "--bigquery-archive",
+                "--open-index-archive",
             ],
         ):
             await main()
@@ -111,7 +111,7 @@ async def test_generate_html_integration(tmp_path):
 
         best_call = mock_best.call_args
         assert best_call is not None
-        assert best_call.kwargs["config"].archive.bigquery_enabled is True
+        assert best_call.kwargs["config"].archive.open_index_enabled is True
 
         cluster_call = mock_cluster.call_args
         assert cluster_call is not None

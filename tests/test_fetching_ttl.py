@@ -5,6 +5,13 @@ from api.constants import CANDIDATE_CACHE_TTL_LONG, CANDIDATE_CACHE_TTL_SHORT
 from api.config import AppConfig, ArchiveConfig
 
 
+def test_archive_config_maps_bigquery_aliases_to_open_index():
+    config = ArchiveConfig(bigquery_enabled=True, bigquery_candidate_limit=17)
+
+    assert config.open_index_enabled is True
+    assert config.open_index_candidate_limit == 17
+
+
 @pytest.mark.asyncio
 async def test_live_window_candidate_cache_uses_short_and_long_ttls():
     with (
@@ -37,16 +44,16 @@ async def test_live_window_candidate_cache_uses_short_and_long_ttls():
 
 
 @pytest.mark.asyncio
-async def test_archive_window_skips_bigquery_by_default():
+async def test_archive_window_skips_open_index_by_default():
     with (
         patch("api.fetching.get_cached_candidates") as mock_get_cache,
         patch("api.fetching.save_cached_candidates"),
-        patch("api.fetching.fetch_bigquery_archive_stories") as mock_bq_archive,
+        patch("api.fetching.fetch_open_index_archive_stories") as mock_archive,
         patch("api.fetching.load_cached_archive_stories") as mock_cached_archive,
         patch("api.fetching.httpx.AsyncClient") as mock_client_cls,
     ):
         mock_get_cache.return_value = None
-        mock_bq_archive.return_value = []
+        mock_archive.return_value = []
         mock_cached_archive.return_value = []
 
         mock_client = MagicMock()
@@ -65,7 +72,7 @@ async def test_archive_window_skips_bigquery_by_default():
         config = AppConfig(days=40, no_rss=True)
         await fetching.get_best_stories(limit=10, config=config)
 
-        mock_bq_archive.assert_not_called()
+        mock_archive.assert_not_called()
         mock_cached_archive.assert_called_once()
         assert all(
             call.args[1] in {CANDIDATE_CACHE_TTL_SHORT, CANDIDATE_CACHE_TTL_LONG}
@@ -74,16 +81,16 @@ async def test_archive_window_skips_bigquery_by_default():
 
 
 @pytest.mark.asyncio
-async def test_archive_window_uses_bigquery_when_enabled():
+async def test_archive_window_uses_open_index_when_enabled():
     with (
         patch("api.fetching.get_cached_candidates") as mock_get_cache,
         patch("api.fetching.save_cached_candidates"),
-        patch("api.fetching.fetch_bigquery_archive_stories") as mock_bq_archive,
+        patch("api.fetching.fetch_open_index_archive_stories") as mock_archive,
         patch("api.fetching.load_cached_archive_stories") as mock_cached_archive,
         patch("api.fetching.httpx.AsyncClient") as mock_client_cls,
     ):
         mock_get_cache.return_value = None
-        mock_bq_archive.return_value = []
+        mock_archive.return_value = []
         mock_cached_archive.return_value = []
 
         mock_client = MagicMock()
@@ -102,11 +109,11 @@ async def test_archive_window_uses_bigquery_when_enabled():
         config = AppConfig(
             days=40,
             no_rss=True,
-            archive=ArchiveConfig(bigquery_enabled=True),
+            archive=ArchiveConfig(open_index_enabled=True),
         )
         await fetching.get_best_stories(limit=10, config=config)
 
-        mock_bq_archive.assert_called_once()
+        mock_archive.assert_called_once()
         assert all(
             call.args[1] in {CANDIDATE_CACHE_TTL_SHORT, CANDIDATE_CACHE_TTL_LONG}
             for call in mock_get_cache.call_args_list
