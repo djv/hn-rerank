@@ -1,0 +1,15 @@
+[Unit]
+Description=HN Rerank Dashboard Feedback API
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/dev/hn_rerank
+ExecStart=/home/dev/.local/bin/uv run scripts/feedback_server.py
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-%h/.config/hn_rerank/secrets.env
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target

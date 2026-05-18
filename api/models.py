@@ -66,6 +66,7 @@ class StoryDisplayDict(StoryForTldr):
     rank_index: NotRequired[int]
     cross_encoder_score: NotRequired[float]
     comment_count: NotRequired[int | None]
+    feedback_action: NotRequired[Literal["up", "down"] | None]
 
 
 @dataclass
@@ -165,6 +166,7 @@ class StoryDisplay:
     rank_index: int = 0
     cross_encoder_score: float = 0.0
     comment_count: int | None = None
+    feedback_action: Literal["up", "down"] | None = None
 
     def to_dict(self) -> StoryDisplayDict:
         """Convert to dict for template rendering."""
@@ -187,6 +189,7 @@ class StoryDisplay:
             "rank_index": self.rank_index,
             "cross_encoder_score": self.cross_encoder_score,
             "comment_count": self.comment_count,
+            "feedback_action": self.feedback_action,
         }
 
     @property

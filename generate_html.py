@@ -26,6 +26,12 @@ from sklearn.metrics.pairwise import cosine_similarity
 from api import rerank, llm_utils
 from api.client import HNClient, UserSignals
 from api.fetching import CandidateProgress, get_best_stories, fetch_story
+from api.feedback import (
+    FeedbackRecord,
+    feedback_action_for_story,
+    feedback_key,
+    load_feedback,
+)
 from api.models import RankResult, Story, StoryDict, StoryDisplay
 from api.url_utils import normalize_url
 from api.config import AppConfig
@@ -185,6 +191,7 @@ HTML_TEMPLATE: str = """
         }
         .story-card { @apply bg-white border border-stone-200 rounded-lg p-2.5 shadow-sm transition-all hover:border-hn hover:shadow-md h-full flex flex-col; }
         .story-card.rss-story { @apply border-amber-200 bg-amber-50/50; }
+        .story-card.feedback-removing { opacity: 0; transform: translateY(6px) scale(0.98); pointer-events: none; }
         .rss-badge { @apply px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 text-[10px] font-bold; }
         .cluster-chip { @apply px-1.5 py-0.5 bg-stone-50 border border-stone-200 rounded text-[10px] font-medium text-stone-600 hover:border-hn hover:text-hn transition-colors cursor-default whitespace-nowrap; }
     </style>
@@ -242,6 +249,174 @@ HTML_TEMPLATE: str = """
 
             sortMode.addEventListener('change', () => renderSort(sortMode.value));
             renderSort(sortMode.value);
+        })();
+
+        (() => {
+            const TOKEN_KEY = 'hnRerankFeedbackToken';
+            const ACTED_KEYS_KEY = 'hnRerankActedFeedbackKeys';
+            const FEEDBACK_URL = window.HN_RERANK_FEEDBACK_URL || '/api/feedback';
+            const cards = Array.from(document.querySelectorAll('[data-feedback-key]'));
+            if (!cards.length) return;
+            const cardsByKey = new Map(cards.map((card) => [card.dataset.feedbackKey, card]));
+
+            const loadActedKeys = () => {
+                try {
+                    const raw = localStorage.getItem(ACTED_KEYS_KEY);
+                    const parsed = raw ? JSON.parse(raw) : [];
+                    return new Set(Array.isArray(parsed) ? parsed.filter(Boolean) : []);
+                } catch (error) {
+                    return new Set();
+                }
+            };
+
+            const saveActedKeys = (keys) => {
+                localStorage.setItem(ACTED_KEYS_KEY, JSON.stringify([...keys]));
+            };
+
+            const actedKeys = loadActedKeys();
+
+            const rememberActedKey = (key) => {
+                if (!key) return;
+                actedKeys.add(key);
+                saveActedKeys(actedKeys);
+            };
+
+            const forgetActedKey = (key) => {
+                if (!key) return;
+                actedKeys.delete(key);
+                saveActedKeys(actedKeys);
+            };
+
+            const hideCard = (card) => {
+                card.remove();
+            };
+
+            const setCardAction = (card, action) => {
+                card.dataset.feedbackAction = action || '';
+                const buttons = card.querySelectorAll('[data-feedback-button]');
+                for (const button of buttons) {
+                    const active = button.dataset.feedbackButton === action;
+                    button.classList.toggle('bg-hn', active && action === 'up');
+                    button.classList.toggle('text-white', active);
+                    button.classList.toggle('bg-stone-800', active && action === 'down');
+                    button.classList.toggle('bg-white', !active);
+                    button.classList.toggle('text-stone-500', !active);
+                }
+            };
+
+            const setStatus = (card, message, failed = false) => {
+                const status = card.querySelector('[data-feedback-status]');
+                if (!status) return;
+                status.textContent = message || '';
+                status.classList.toggle('text-red-600', failed);
+                status.classList.toggle('text-stone-400', !failed);
+            };
+
+            const removeCard = (card) => {
+                card.classList.add('feedback-removing');
+                window.setTimeout(() => card.remove(), 220);
+            };
+
+            const getToken = () => {
+                let token = localStorage.getItem(TOKEN_KEY);
+                if (!token) {
+                    token = window.prompt('Dashboard feedback token');
+                    if (token) localStorage.setItem(TOKEN_KEY, token);
+                }
+                return token;
+            };
+
+            const hidePreviouslyActedCards = () => {
+                for (const card of cards) {
+                    const action = card.dataset.feedbackAction || '';
+                    if (action === 'up' || action === 'down' || actedKeys.has(card.dataset.feedbackKey)) {
+                        hideCard(card);
+                    }
+                }
+            };
+
+            const syncServerFeedback = async () => {
+                const token = localStorage.getItem(TOKEN_KEY);
+                if (!token) return;
+                try {
+                    const response = await fetch(FEEDBACK_URL, {
+                        method: 'GET',
+                        headers: {
+                            'X-HN-RERANK-FEEDBACK-TOKEN': token,
+                        },
+                    });
+                    const payload = await response.json();
+                    if (!response.ok || !payload.records) return;
+                    for (const [key, record] of Object.entries(payload.records)) {
+                        if (!record || !['up', 'down'].includes(record.action)) continue;
+                        rememberActedKey(key);
+                        const card = cardsByKey.get(key);
+                        if (card) hideCard(card);
+                    }
+                } catch (error) {
+                    return;
+                }
+            };
+
+            hidePreviouslyActedCards();
+            syncServerFeedback();
+
+            for (const card of cards) {
+                setCardAction(card, card.dataset.feedbackAction || '');
+                for (const button of card.querySelectorAll('[data-feedback-button]')) {
+                    button.addEventListener('click', async (event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        const previousAction = card.dataset.feedbackAction || '';
+                        const buttonAction = button.dataset.feedbackButton;
+                        const nextAction = previousAction === buttonAction ? 'clear' : buttonAction;
+                        const token = getToken();
+                        if (!token) return;
+
+                        setCardAction(card, nextAction === 'clear' ? '' : nextAction);
+                        setStatus(card, 'Saving...');
+
+                        try {
+                            const response = await fetch(FEEDBACK_URL, {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                    'X-HN-RERANK-FEEDBACK-TOKEN': token,
+                                },
+                                body: JSON.stringify({
+                                    id: Number(card.dataset.storyId),
+                                    source: card.dataset.storySource,
+                                    title: card.dataset.storyTitle,
+                                    url: card.dataset.storyUrl || null,
+                                    discussion_url: card.dataset.storyDiscussionUrl || null,
+                                    text_content: card.dataset.storyTextContent || card.dataset.storyTitle,
+                                    time: Number(card.dataset.storyTime),
+                                    action: nextAction,
+                                }),
+                            });
+                            const payload = await response.json();
+                            if (!response.ok || !payload.ok) {
+                                throw new Error(payload.error || `HTTP ${response.status}`);
+                            }
+                            const mirrorFailed = payload.record && payload.record.hn_mirror_status === 'failed';
+                            setStatus(
+                                card,
+                                mirrorFailed ? 'Saved locally; HN sync failed' : 'Saved',
+                                Boolean(mirrorFailed),
+                            );
+                            if (nextAction !== 'clear') {
+                                rememberActedKey(card.dataset.feedbackKey);
+                                removeCard(card);
+                            } else {
+                                forgetActedKey(card.dataset.feedbackKey);
+                            }
+                        } catch (error) {
+                            setCardAction(card, previousAction);
+                            setStatus(card, 'Save failed', true);
+                        }
+                    });
+                }
+            }
         })();
     </script>
 </body>
@@ -362,6 +537,62 @@ def format_match_percent(score: float) -> int:
     return max(0, min(100, int(round(score * 100))))
 
 
+def split_feedback_records(
+    records: dict[str, FeedbackRecord],
+) -> tuple[list[Story], list[Story], set[int], set[str]]:
+    positive: list[Story] = []
+    negative: list[Story] = []
+    hn_ids: set[int] = set()
+    urls: set[str] = set()
+
+    for record in records.values():
+        story = record.to_story()
+        if record.action == "up":
+            positive.append(story)
+        else:
+            negative.append(story)
+        if record.source == "hn" and record.id > 0:
+            hn_ids.add(record.id)
+        if record.url:
+            normalized = normalize_url(record.url)
+            if normalized:
+                urls.add(normalized)
+    return positive, negative, hn_ids, urls
+
+
+def apply_feedback_signal_overrides(
+    data: UserSignals,
+    feedback_positive_stories: list[Story],
+    feedback_negative_stories: list[Story],
+    *,
+    signal_limit: int,
+    use_hidden_signal: bool,
+) -> tuple[list[int], list[int]]:
+    feedback_positive_hn_ids = {
+        story.id
+        for story in feedback_positive_stories
+        if story.source == "hn" and story.id > 0
+    }
+    feedback_negative_hn_ids = {
+        story.id
+        for story in feedback_negative_stories
+        if story.source == "hn" and story.id > 0
+    }
+
+    pos_baseline = data["pos"] - feedback_negative_hn_ids - feedback_positive_hn_ids
+    pos_ids = list(feedback_positive_hn_ids) + list(pos_baseline)
+    pos_ids = pos_ids[:signal_limit]
+
+    neg_ids: list[int] = []
+    if use_hidden_signal:
+        neg_baseline = (
+            data["hidden"] - feedback_positive_hn_ids - feedback_negative_hn_ids
+        )
+        neg_ids = list(feedback_negative_hn_ids) + list(neg_baseline)
+        neg_ids = neg_ids[:signal_limit]
+    return pos_ids, neg_ids
+
+
 def build_candidate_cluster_map(
     cands: list[Story],
     cluster_centroids: NDArray[np.float32] | None,
@@ -467,7 +698,7 @@ def select_ranked_results(
 
 
 STORY_CARD_TEMPLATE: str = """
-<div class="story-card group relative{% if is_external %} rss-story{% endif %}" data-rank-index="{{ rank_index }}" data-story-time="{{ story_time }}">
+<div class="story-card group relative{% if is_external %} rss-story{% endif %}" data-rank-index="{{ rank_index }}" data-story-time="{{ story_time }}" data-story-id="{{ story_id }}" data-story-source="{{ story_source }}" data-story-title="{{ title }}" data-story-url="{{ story_url or '' }}" data-story-discussion-url="{{ hn_url or '' }}" data-story-text-content="{{ text_content }}" data-feedback-key="{{ feedback_key }}" data-feedback-action="{{ feedback_action or '' }}">
     {% if card_url %}
     <a href="{{ card_url }}" target="_blank" class="absolute inset-0 z-10 rounded-lg" aria-label="{{ card_aria_label }}"></a>
     {% endif %}
@@ -488,6 +719,11 @@ STORY_CARD_TEMPLATE: str = """
         {% endif %}
         <span class="text-[10px] text-stone-400 font-mono">{{ points }} pts</span>
         <span class="text-[10px] text-stone-400 font-mono">{{ time_ago }}</span>
+        <span class="ml-auto flex items-center gap-1 pointer-events-auto" aria-label="Dashboard feedback">
+            <button type="button" class="h-6 w-6 rounded border border-stone-200 bg-white text-xs text-stone-500 hover:border-hn hover:text-hn" title="Upvote for future dashboards" data-feedback-button="up">▲</button>
+            <button type="button" class="h-6 w-6 rounded border border-stone-200 bg-white text-xs text-stone-500 hover:border-stone-700 hover:text-stone-900" title="Downvote for future dashboards" data-feedback-button="down">▼</button>
+        </span>
+        <span class="text-[10px] text-stone-400 font-mono pointer-events-none" data-feedback-status></span>
     </div>
     <h2 class="text-sm font-semibold text-stone-900 leading-snug mb-1{% if card_url %} relative z-20 pointer-events-none{% endif %}">
         <a href="{{ url }}" target="_blank" class="hover:text-hn transition-colors pointer-events-auto">{{ title }}</a>
@@ -535,6 +771,12 @@ def generate_story_html(story: StoryDisplay) -> str:
         time_ago=story.time_ago,
         story_time=story.time,
         rank_index=story.rank_index,
+        story_id=story.id,
+        story_source=story.source,
+        story_url=story.url,
+        text_content=story.text_content[:2000],
+        feedback_key=feedback_key(story.source, story.id, story.url),
+        feedback_action=story.feedback_action,
         card_url=card_url,
         card_aria_label=card_aria_label,
         url=link_url,
@@ -870,6 +1112,13 @@ async def main() -> None:
                 progress.start()
 
             data: UserSignals = await hn.fetch_user_data(config.username)
+            feedback_records = load_feedback()
+            (
+                feedback_positive_stories,
+                feedback_negative_stories,
+                feedback_hn_ids,
+                feedback_urls,
+            ) = split_feedback_records(feedback_records)
             progress.update(p_task, description="[*] Fetching signal details...")
 
             # Helper for progress-aware batch fetch
@@ -900,11 +1149,13 @@ async def main() -> None:
                 return results
 
             # Positive signals = Favorites + Upvoted (merged in fetch_user_data)
-            pos_ids: list[int] = list(data["pos"])[: args.signals]
-
-            neg_ids: list[int] = []
-            if args.use_hidden_signal:
-                neg_ids = list(data["hidden"])[: args.signals]
+            pos_ids, neg_ids = apply_feedback_signal_overrides(
+                data,
+                feedback_positive_stories,
+                feedback_negative_stories,
+                signal_limit=args.signals,
+                use_hidden_signal=args.use_hidden_signal,
+            )
 
             # Split profile weight between positive and negative fetches
             pos_weight = PROGRESS_WEIGHTS["profile"] * 0.7
@@ -915,6 +1166,12 @@ async def main() -> None:
             pos_stories: list[Story] = await fetch_with_progress(
                 pos_ids, "Positive signals", pos_weight
             )
+            pos_story_ids = {story.id for story in pos_stories if story.source == "hn"}
+            pos_stories.extend(
+                story
+                for story in feedback_positive_stories
+                if story.source != "hn" or story.id not in pos_story_ids
+            )
             neg_stories: list[Story] = []
             if neg_ids:
                 neg_stories = await fetch_with_progress(
@@ -922,6 +1179,12 @@ async def main() -> None:
                 )
             elif neg_weight > 0:
                 progress.update(overall_task, advance=neg_weight)
+            neg_story_ids = {story.id for story in neg_stories if story.source == "hn"}
+            neg_stories.extend(
+                story
+                for story in feedback_negative_stories
+                if story.source != "hn" or story.id not in neg_story_ids
+            )
 
             progress.update(
                 p_task, completed=100, description="[green][+] Profile built."
@@ -1132,10 +1395,12 @@ async def main() -> None:
 
         # Exclude everything we've already interacted with
         exclude_ids: set[int] = data["favorites"] | data["upvoted"] | data["hidden"]
+        exclude_ids |= feedback_hn_ids
         exclude_urls: set[str] = set()
         exclude_urls |= data.get("hidden_urls", set())
         exclude_urls |= data.get("favorites_urls", set())
         exclude_urls |= data.get("upvoted_urls", set())
+        exclude_urls |= feedback_urls
 
         cands: list[Story] = await get_best_stories(
             config.candidates,
@@ -1265,6 +1530,12 @@ async def main() -> None:
                 text_content=s.text_content,
                 cross_encoder_score=result.cross_encoder_score,
                 comment_count=s.comment_count,
+                feedback_action=feedback_action_for_story(
+                    feedback_records,
+                    source=s.source,
+                    story_id=s.id,
+                    url=s.url,
+                ),
             )
 
         for rank_index, result in enumerate(selected_results):

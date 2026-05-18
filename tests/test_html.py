@@ -14,6 +14,7 @@ from generate_html import (
     _extract_hn_dupe_target,
     _fetch_hn_dupe_target,
     _load_cached_hn_dupe_target,
+    apply_feedback_signal_overrides,
     build_candidate_cluster_map,
     filter_top_ranked_hn_dupes,
     generate_story_html,
@@ -21,7 +22,9 @@ from generate_html import (
     get_relative_time,
     resolve_cluster_name,
     select_ranked_results,
+    split_feedback_records,
 )
+from api.feedback import FeedbackRecord
 from api.models import RankResult, Story, StoryDisplay
 
 
@@ -98,6 +101,33 @@ def test_generate_story_html_includes_comment_count_after_icon():
 
     assert 'aria-label="Open comments for Story with discussion"' in html
     assert 'title="Comments">💬 42</a>' in html
+
+
+def test_generate_story_html_includes_feedback_controls_and_metadata():
+    story = StoryDisplay(
+        id=123,
+        match_percent=90,
+        cluster_name="",
+        points=42,
+        time_ago="1h",
+        time=1700000000,
+        url="https://example.com/story",
+        title="Feedback story",
+        hn_url="https://news.ycombinator.com/item?id=123",
+        reason="",
+        reason_url="",
+        comments=[],
+        text_content="Feedback story text",
+        feedback_action="up",
+    )
+
+    html = generate_story_html(story)
+
+    assert 'data-feedback-button="up"' in html
+    assert 'data-feedback-button="down"' in html
+    assert 'data-story-id="123"' in html
+    assert 'data-story-source="hn"' in html
+    assert 'data-feedback-action="up"' in html
 
 
 def test_generate_story_html_hides_unknown_comment_count():
@@ -448,6 +478,66 @@ def test_index_template_includes_sort_control_and_defaults_to_date():
     assert "renderSort(sortMode.value);" in html
 
 
+def test_index_template_removes_feedback_cards_after_vote():
+    html = _INDEX_TEMPLATE.render(
+        username="test",
+        n_clusters=1,
+        timestamp="now",
+        stories_html="",
+    )
+
+    assert "feedback-removing" in html
+    assert "const removeCard = (card) =>" in html
+    assert "window.setTimeout(() => card.remove(), 220);" in html
+    assert "if (nextAction !== 'clear')" in html
+
+
+def test_index_template_hides_previously_acted_feedback_cards_on_load():
+    html = _INDEX_TEMPLATE.render(
+        username="test",
+        n_clusters=1,
+        timestamp="now",
+        stories_html="",
+    )
+
+    assert "const ACTED_KEYS_KEY = 'hnRerankActedFeedbackKeys';" in html
+    assert "const hidePreviouslyActedCards = () =>" in html
+    assert "action === 'up' || action === 'down'" in html
+    assert "actedKeys.has(card.dataset.feedbackKey)" in html
+    assert "hidePreviouslyActedCards();" in html
+
+
+def test_index_template_persists_successful_feedback_keys_locally():
+    html = _INDEX_TEMPLATE.render(
+        username="test",
+        n_clusters=1,
+        timestamp="now",
+        stories_html="",
+    )
+
+    assert "const rememberActedKey = (key) =>" in html
+    assert "const forgetActedKey = (key) =>" in html
+    assert "rememberActedKey(card.dataset.feedbackKey);" in html
+    assert "forgetActedKey(card.dataset.feedbackKey);" in html
+    assert "localStorage.setItem(ACTED_KEYS_KEY" in html
+
+
+def test_index_template_syncs_server_feedback_without_prompting_on_load():
+    html = _INDEX_TEMPLATE.render(
+        username="test",
+        n_clusters=1,
+        timestamp="now",
+        stories_html="",
+    )
+
+    assert "const syncServerFeedback = async () =>" in html
+    assert "const token = localStorage.getItem(TOKEN_KEY);" in html
+    assert "method: 'GET'" in html
+    assert "'X-HN-RERANK-FEEDBACK-TOKEN': token" in html
+    assert "for (const [key, record] of Object.entries(payload.records))" in html
+    assert "syncServerFeedback();" in html
+
+
 def test_build_candidate_cluster_map_respects_threshold_for_external(monkeypatch):
     cands = [
         Story(
@@ -716,6 +806,98 @@ def test_select_ranked_results_preserves_existing_hn_heavy_top_slice():
     assert len(selected) == 6
     assert external_count == 1
     assert hn_count == 5
+
+
+def test_split_feedback_records_builds_signals_and_exclusions():
+    records = {
+        "hn:1": FeedbackRecord(
+            key="hn:1",
+            action="up",
+            id=1,
+            source="hn",
+            title="HN up",
+            url=None,
+            discussion_url="https://news.ycombinator.com/item?id=1",
+            text_content="HN up",
+            time=1700000000,
+        ),
+        "https://example.com/down": FeedbackRecord(
+            key="https://example.com/down",
+            action="down",
+            id=-2,
+            source="rss",
+            title="External down",
+            url="https://example.com/down",
+            discussion_url=None,
+            text_content="External down",
+            time=1700000000,
+        ),
+    }
+
+    positive, negative, hn_ids, urls = split_feedback_records(records)
+
+    assert [story.title for story in positive] == ["HN up"]
+    assert [story.title for story in negative] == ["External down"]
+    assert hn_ids == {1}
+    assert urls == {"https://example.com/down"}
+
+
+def test_apply_feedback_signal_overrides_preserves_hn_and_overrides_conflicts():
+    data = {
+        "pos": {1, 2},
+        "upvoted": {1},
+        "hidden": {3, 4},
+        "hidden_urls": set(),
+        "favorites": {2},
+        "favorites_urls": set(),
+        "upvoted_urls": set(),
+    }
+    feedback_positive = [
+        Story(id=3, title="Hidden but liked", url=None, score=0, time=1, source="hn")
+    ]
+    feedback_negative = [
+        Story(id=2, title="Favorite but disliked", url=None, score=0, time=1, source="hn")
+    ]
+
+    pos_ids, neg_ids = apply_feedback_signal_overrides(
+        data,
+        feedback_positive,
+        feedback_negative,
+        signal_limit=10,
+        use_hidden_signal=True,
+    )
+
+    assert set(pos_ids) == {1, 3}
+    assert set(neg_ids) == {2, 4}
+
+
+def test_apply_feedback_signal_overrides_prioritizes_dashboard_votes_at_limit():
+    data = {
+        "pos": {1, 2, 3},
+        "upvoted": {1},
+        "hidden": {4, 5, 6},
+        "hidden_urls": set(),
+        "favorites": {2, 3},
+        "favorites_urls": set(),
+        "upvoted_urls": set(),
+    }
+    feedback_positive = [
+        Story(id=99, title="Dashboard up", url=None, score=0, time=1, source="hn")
+    ]
+    feedback_negative = [
+        Story(id=98, title="Dashboard down", url=None, score=0, time=1, source="hn")
+    ]
+
+    pos_ids, neg_ids = apply_feedback_signal_overrides(
+        data,
+        feedback_positive,
+        feedback_negative,
+        signal_limit=1,
+        use_hidden_signal=True,
+    )
+
+    assert pos_ids == [99]
+    assert neg_ids == [98]
 
 
 def test_get_cluster_id_prefers_candidate_assignment():

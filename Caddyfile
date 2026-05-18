@@ -1,4 +1,8 @@
 :8000 {
+    handle /api/feedback* {
+        reverse_proxy 127.0.0.1:8765
+    }
+
     handle_path /public/* {
         root * public
         file_server

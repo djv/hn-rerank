@@ -179,6 +179,40 @@ systemctl --user start hn_rerank.service
 journalctl --user -u hn_rerank.service -n 50 --no-pager
 ```
 
+## Dashboard Feedback
+
+The generated dashboard can save upvote/downvote feedback through a tiny local
+writer service. The dashboard remains static, and button clicks are designed to
+POST to `/api/feedback`; expose that route to the local writer service only in
+the deployment layer you already use.
+
+Setup:
+
+```bash
+printf 'HN_RERANK_FEEDBACK_TOKEN=%s\n' '<choose-a-long-random-token>' >> ~/.config/hn_rerank/secrets.env
+cp /home/dev/hn_rerank/hn_rerank_feedback.service ~/.config/systemd/user/hn_rerank_feedback.service
+systemctl --user daemon-reload
+systemctl --user enable --now hn_rerank_feedback.service
+```
+
+The service listens on `127.0.0.1:8765`. Expose it through the existing dashboard
+Caddy server by adding a narrow `/api/feedback*` reverse proxy to that local
+service before the static file handler:
+
+```caddyfile
+handle /api/feedback* {
+    reverse_proxy 127.0.0.1:8765
+}
+```
+
+Feedback is stored locally at `.cache/user_feedback/dashboard_feedback.json`.
+Existing HN favorites, upvotes, and hidden stories remain the main historical
+signals. Dashboard feedback is layered on top for stories explicitly voted in
+the dashboard: upvotes become extra positive signals, downvotes become extra
+negative signals, and voted stories are excluded from future candidate results.
+For HN stories, dashboard upvote attempts an HN upvote and dashboard downvote
+attempts HN hide; local feedback is kept even if that HN sync fails.
+
 ## Documentation
 
 - [ARCHITECTURE.md](ARCHITECTURE.md): runtime data flow, ranking, clustering, and caching
