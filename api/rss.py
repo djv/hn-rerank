@@ -311,6 +311,21 @@ def _extract_score(entry: feedparser.FeedParserDict, source: StorySource, summar
     return 0
 
 
+def _extract_comment_count(entry: feedparser.FeedParserDict, source: StorySource) -> int | None:
+    if source != "slashdot":
+        return None
+
+    for key in ("slash_comments", "comments_count", "comment_count"):
+        value = entry.get(key)
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 def _parse_feed(
     feed_xml: str,
     feed_url: str,
@@ -380,6 +395,7 @@ def _parse_feed(
             comments=[],
             text_content=text_content,
             source=source,
+            comment_count=_extract_comment_count(entry, source),
         )
         stories.append(story)
         if len(stories) >= max_items:

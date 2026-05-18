@@ -54,6 +54,12 @@ SOURCE_SPECS: tuple[ExternalSourceSpec, ...] = (
         curated=True,
     ),
     ExternalSourceSpec(
+        source="slashdot",
+        badge_label="Slashdot",
+        domains=("rss.slashdot.org", "slashdot.org", "www.slashdot.org"),
+        curated=True,
+    ),
+    ExternalSourceSpec(
         source="reddit_machinelearning",
         badge_label="r/MachineLearning",
         domains=("www.reddit.com", "reddit.com", "old.reddit.com"),

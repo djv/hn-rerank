@@ -57,6 +57,7 @@ RSS_EXTRA_FEEDS = [
     "https://lobste.rs/top/rss",
     "https://tildes.net/topics.rss",
     "https://www.lesswrong.com/feed.xml?view=frontpage&karmaThreshold=20",
+    "https://rss.slashdot.org/Slashdot/slashdotMain",
     "https://www.reddit.com/r/MachineLearning/top/.rss?t=week&limit=25",
     "https://www.reddit.com/r/programming/top/.rss?t=week&limit=25",
     "https://www.reddit.com/r/compsci/top/.rss?t=week&limit=25",

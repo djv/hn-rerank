@@ -13,6 +13,7 @@ StorySource = Literal[
     "lobsters",
     "tildes",
     "lesswrong",
+    "slashdot",
     "reddit",
     "reddit_machinelearning",
     "reddit_programming",

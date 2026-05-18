@@ -277,6 +277,39 @@ def test_parse_feed_entries_marks_lesswrong_source():
     assert stories[0].badge_label == "LessWrong"
 
 
+def test_parse_feed_entries_marks_slashdot_source_and_comments():
+    xml = """
+    <rss version="2.0" xmlns:slash="http://purl.org/rss/1.0/modules/slash/">
+      <channel>
+        <language>en</language>
+        <item>
+          <title>Slashdot Post</title>
+          <link>https://slashdot.org/story/26/02/02/123456/example</link>
+          <comments>https://slashdot.org/story/26/02/02/123456/example#comments</comments>
+          <pubDate>Mon, 02 Feb 2026 12:00:00 GMT</pubDate>
+          <description>Slashdot summary</description>
+          <slash:comments>42</slash:comments>
+        </item>
+      </channel>
+    </rss>
+    """
+    stories = _parse_feed_entries(
+        xml,
+        feed_url="https://rss.slashdot.org/Slashdot/slashdotMain",
+        max_items=5,
+        min_ts=0,
+    )
+
+    assert len(stories) == 1
+    story = stories[0]
+    assert story.source == "slashdot"
+    assert story.badge_label == "Slashdot"
+    assert story.url == "https://slashdot.org/story/26/02/02/123456/example"
+    assert story.discussion_url == "https://slashdot.org/story/26/02/02/123456/example#comments"
+    assert story.score == 0
+    assert story.comment_count == 42
+
+
 def test_parse_feed_entries_marks_tildes_source_and_score():
     xml = """
     <rss version="2.0">
@@ -439,6 +472,10 @@ def test_feed_item_limit_uses_registry_curated_flag():
     )
     assert (
         _feed_item_limit("https://www.lesswrong.com/feed.xml?view=frontpage", 5)
+        == rss.RSS_CURATED_NEWS_PER_FEED_LIMIT
+    )
+    assert (
+        _feed_item_limit("https://rss.slashdot.org/Slashdot/slashdotMain", 5)
         == rss.RSS_CURATED_NEWS_PER_FEED_LIMIT
     )
     assert (
