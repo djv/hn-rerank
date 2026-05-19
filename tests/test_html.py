@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 import httpx
 import numpy as np
 import pytest
+import respx
 
 import generate_html
 from generate_html import (
@@ -20,6 +21,7 @@ from generate_html import (
     generate_story_html,
     get_cluster_id_for_result,
     get_relative_time,
+    refresh_hn_story_metadata,
     resolve_cluster_name,
     select_ranked_results,
     split_feedback_records,
@@ -563,7 +565,9 @@ def test_build_candidate_cluster_map_respects_threshold_for_external(monkeypatch
     monkeypatch.setattr(
         generate_html.rerank,
         "get_cluster_embeddings",
-        lambda _texts: np.array([[1.0, 0.0], [1.0, 0.0]], dtype=np.float32),
+        lambda _texts, **_kwargs: np.array(
+            [[1.0, 0.0], [1.0, 0.0]], dtype=np.float32
+        ),
     )
 
     cluster_map = build_candidate_cluster_map(
@@ -695,6 +699,39 @@ async def test_filter_top_ranked_hn_dupes_skips_known_duplicate(monkeypatch):
     )
 
     assert [result.index for result in filtered] == [1, 2]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_refresh_hn_story_metadata_updates_comment_count_and_score():
+    story = Story(
+        id=48179130,
+        title="Cached HN story",
+        url="https://example.com/story",
+        score=10,
+        time=1,
+        text_content="cached story",
+        source="hn",
+        comment_count=3,
+    )
+    progress: list[tuple[int, int]] = []
+    respx.get(
+        generate_html.HN_FIREBASE_ITEM_URL.format(sid=48179130)
+    ).mock(
+        return_value=httpx.Response(
+            200,
+            json={"id": 48179130, "score": 44, "descendants": 17},
+        )
+    )
+
+    await refresh_hn_story_metadata(
+        stories=[story],
+        progress_callback=lambda curr, total: progress.append((curr, total)),
+    )
+
+    assert story.comment_count == 17
+    assert story.score == 44
+    assert progress == [(1, 1)]
 
 
 def test_select_ranked_results_caps_external_results_at_quota():

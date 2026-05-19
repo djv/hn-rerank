@@ -7,7 +7,7 @@ import logging
 import os
 import re
 import time
-from typing import cast
+from typing import Callable, cast
 from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -43,6 +43,7 @@ HN_DUPE_CACHE_DIR = Path(".cache/hn_dupes")
 HN_DUPE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 HN_DUPE_TRUE_CACHE_TTL = 15 * 24 * 60 * 60
 HN_DUPE_FALSE_CACHE_TTL = 30 * 60
+HN_FIREBASE_ITEM_URL = "https://hacker-news.firebaseio.com/v0/item/{sid}.json"
 
 
 def _extract_hn_dupe_target(page_html: str, sid: int) -> tuple[bool, int | None]:
@@ -124,6 +125,7 @@ async def filter_top_ranked_hn_dupes(
     cands: list[Story],
     exclude_ids: set[int],
     count: int,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> list[RankResult]:
     """Drop [dupe]-marked HN submissions from the final page results."""
     if not ranked:
@@ -147,6 +149,8 @@ async def filter_top_ranked_hn_dupes(
             checked_by_index[ranked[pos].index] = await _fetch_hn_dupe_target(
                 client, cands[ranked[pos].index].id
             )
+            if progress_callback:
+                progress_callback(idx + 1, len(checked_positions))
 
     filtered: list[RankResult] = []
     skipped = 0
@@ -162,6 +166,34 @@ async def filter_top_ranked_hn_dupes(
     if skipped:
         print(f"[+] Filtered {skipped} duplicate HN submissions from final results")
     return filtered
+
+
+async def refresh_hn_story_metadata(
+    stories: list[Story],
+    progress_callback: Callable[[int, int], None] | None = None,
+) -> None:
+    """Refresh volatile HN metadata used directly in dashboard cards."""
+    hn_stories = [story for story in stories if story.is_hn and story.id > 0]
+    if not hn_stories:
+        return
+
+    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+        for idx, story in enumerate(hn_stories):
+            try:
+                resp = await client.get(HN_FIREBASE_ITEM_URL.format(sid=story.id))
+                if resp.status_code == 200:
+                    payload = resp.json()
+                    if isinstance(payload, dict):
+                        descendants = payload.get("descendants")
+                        if isinstance(descendants, int):
+                            story.comment_count = descendants
+                        score = payload.get("score")
+                        if isinstance(score, int):
+                            story.score = score
+            except Exception as exc:
+                logging.debug("Failed to refresh HN metadata for %s: %s", story.id, exc)
+            if progress_callback:
+                progress_callback(idx + 1, len(hn_stories))
 
 
 HTML_TEMPLATE: str = """
@@ -514,7 +546,8 @@ PROGRESS_WEIGHTS = {
     "naming": 200,
     "candidates": 100,
     "rank": 50,
-    "tldr": 380,
+    "prepare": 50,
+    "tldr": 330,
 }
 
 
@@ -597,13 +630,17 @@ def build_candidate_cluster_map(
     cands: list[Story],
     cluster_centroids: NDArray[np.float32] | None,
     threshold: float,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> dict[int, int]:
     """Assign candidates to clusters based on centroid similarity."""
     if cluster_centroids is None or not cands:
         return {}
 
     cand_texts = [c.text_content for c in cands]
-    cand_emb = rerank.get_cluster_embeddings(cand_texts)
+    cand_emb = rerank.get_cluster_embeddings(
+        cand_texts,
+        progress_callback=progress_callback,
+    )
     if len(cand_emb) == 0:
         return {}
 
@@ -1476,24 +1513,86 @@ async def main() -> None:
             r_task, completed=100, description="[green][+] Reranking complete."
         )
 
-        # 5. TL;DR Generation
-        # Move TL;DR generation inside the progress context
+        # 5. Final result preparation
         stories_data: list[StoryDisplay] = []
         # Temporary stories_data list for make_story_display logic
         seen_urls: set[str] = set()
         seen_titles: set[str] = set()
 
+        prep_task: TaskID = progress.add_task(
+            "[*] Preparing final story cards...", total=100
+        )
+        prep_phase_weights = {
+            "cluster_map": 45.0,
+            "select": 5.0,
+            "dupes": 30.0,
+            "metadata": 10.0,
+            "cards": 10.0,
+        }
+        prep_phase_completed = dict.fromkeys(prep_phase_weights, 0.0)
+        last_prep_completed = 0.0
+
+        def update_prep(
+            phase: str,
+            current: int,
+            total: int,
+            description: str,
+        ) -> None:
+            nonlocal last_prep_completed
+            phase_fraction = min(max(current / max(total, 1), 0.0), 1.0)
+            prep_phase_completed[phase] = prep_phase_weights[phase] * phase_fraction
+            completed = min(sum(prep_phase_completed.values()), 100.0)
+            progress.update(prep_task, completed=completed, description=description)
+            delta = completed - last_prep_completed
+            if delta > 0:
+                progress.update(
+                    overall_task,
+                    advance=(delta / 100.0) * PROGRESS_WEIGHTS["prepare"],
+                )
+                last_prep_completed = completed
+
         # Pre-build StoryDisplay items (without TL;DRs yet)
         cand_cluster_map = build_candidate_cluster_map(
-            cands, cluster_centroids, config.clustering.similarity_threshold
+            cands,
+            cluster_centroids,
+            config.clustering.similarity_threshold,
+            progress_callback=lambda curr, total: update_prep(
+                "cluster_map",
+                curr,
+                total,
+                "[*] Assigning story clusters...",
+            ),
         )
+        update_prep("cluster_map", 1, 1, "[*] Assigning story clusters...")
 
         selected_results = select_ranked_results(
             ranked, cands, cluster_labels, cluster_names, cand_cluster_map, config.count
         )
+        update_prep("select", 1, 1, "[*] Selecting final stories...")
         selected_results = await filter_top_ranked_hn_dupes(
-            selected_results, cands, exclude_ids=exclude_ids, count=config.count
+            selected_results,
+            cands,
+            exclude_ids=exclude_ids,
+            count=config.count,
+            progress_callback=lambda curr, total: update_prep(
+                "dupes",
+                curr,
+                total,
+                "[*] Checking duplicate HN submissions...",
+            ),
         )
+        update_prep("dupes", 1, 1, "[*] Checking duplicate HN submissions...")
+        selected_stories = [cands[result.index] for result in selected_results]
+        await refresh_hn_story_metadata(
+            selected_stories,
+            progress_callback=lambda curr, total: update_prep(
+                "metadata",
+                curr,
+                total,
+                "[*] Refreshing HN comment counts...",
+            ),
+        )
+        update_prep("metadata", 1, 1, "[*] Refreshing HN comment counts...")
 
         def make_story_display_local(result: RankResult) -> StoryDisplay | None:
             s: Story = cands[result.index]
@@ -1551,7 +1650,16 @@ async def main() -> None:
             if sd:
                 sd.rank_index = rank_index
                 stories_data.append(sd)
+            update_prep(
+                "cards",
+                rank_index + 1,
+                len(selected_results),
+                "[*] Building story cards...",
+            )
+        update_prep("cards", 1, 1, "[green][+] Final story cards prepared.")
 
+        # 6. TL;DR Generation
+        # Move TL;DR generation inside the progress context
         if not config.no_tldr and stories_data:
             llm_task: TaskID = progress.add_task(
                 "[cyan]Generating TL;DRs...", total=len(stories_data)
