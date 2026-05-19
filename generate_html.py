@@ -209,8 +209,8 @@ HTML_TEMPLATE: str = """
                 <label for="sort-mode" class="flex flex-col gap-1 text-[10px] text-stone-400 font-mono">
                     <span>SORT</span>
                     <select id="sort-mode" class="rounded border border-stone-200 bg-white px-2 py-1 text-xs text-stone-700">
-                        <option value="current">Similarity</option>
-                        <option value="date" selected>Date</option>
+                        <option value="current" selected>Similarity</option>
+                        <option value="date">Date</option>
                     </select>
                 </label>
                 <p class="text-[10px] text-stone-400 font-mono">{{ timestamp }}</p>

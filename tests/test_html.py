@@ -464,7 +464,7 @@ def test_generate_story_html_includes_sort_metadata():
     assert 'data-story-time="1710000000"' in html
 
 
-def test_index_template_includes_sort_control_and_defaults_to_date():
+def test_index_template_includes_sort_control_and_defaults_to_similarity():
     html = _INDEX_TEMPLATE.render(
         username="alice",
         n_clusters=4,
@@ -473,8 +473,8 @@ def test_index_template_includes_sort_control_and_defaults_to_date():
     )
 
     assert 'id="sort-mode"' in html
-    assert '<option value="current">Similarity</option>' in html
-    assert '<option value="date" selected>Date</option>' in html
+    assert '<option value="current" selected>Similarity</option>' in html
+    assert '<option value="date">Date</option>' in html
     assert "renderSort(sortMode.value);" in html
 
 
