@@ -69,6 +69,10 @@ RSS_CACHE_PATH: Path = Path(RSS_CACHE_DIR)
 RSS_CACHE_PATH.mkdir(parents=True, exist_ok=True)
 
 
+def _log_rss_request_error(label: str, url: str, exc: httpx.RequestError) -> None:
+    logger.warning("%s %s failed: %s", label, url, exc)
+
+
 class FeedCache(TypedDict):
     version: int
     language: str | None
@@ -490,6 +494,9 @@ async def fetch_rss_stories(
                     _write_cache_json(opml_cache, feed_urls)
                 else:
                     feed_urls = []
+            except httpx.RequestError as exc:
+                _log_rss_request_error("OPML fetch", opml_url, exc)
+                feed_urls = []
             except Exception:
                 logger.exception("Failed to fetch OPML")
                 feed_urls = []
@@ -532,8 +539,8 @@ async def fetch_rss_stories(
                 else:
                     try:
                         resp = await client.get(feed_url)
-                    except Exception:
-                        logger.exception(f"Failed to fetch feed {feed_url}")
+                    except httpx.RequestError as exc:
+                        _log_rss_request_error("Feed fetch", feed_url, exc)
                         continue
                     if resp.status_code != 200 or not resp.text:
                         continue

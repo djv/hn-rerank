@@ -690,6 +690,33 @@ async def test_fetch_rss_stories_uses_extra_feeds_when_opml_is_empty(monkeypatch
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_fetch_rss_stories_logs_feed_timeouts_without_traceback(
+    monkeypatch, caplog
+):
+    opml_url = "https://example.com/feeds.opml"
+    feed_url = "https://example.com/slow-feed.xml"
+    monkeypatch.setattr(rss, "RSS_EXTRA_FEEDS", [feed_url])
+
+    respx.get(opml_url).mock(return_value=Response(200, text=""))
+    respx.get(feed_url).mock(side_effect=rss.httpx.ReadTimeout("read timed out"))
+
+    caplog.set_level(logging.WARNING, logger="api.rss")
+
+    stories = await fetch_rss_stories(
+        opml_url=opml_url,
+        days=3650,
+        max_feeds=5,
+        per_feed=10,
+        fetch_full_content=False,
+    )
+
+    assert stories == []
+    assert f"Feed fetch {feed_url} failed: read timed out" in caplog.text
+    assert all(record.exc_info is None for record in caplog.records)
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_fetch_rss_stories_preserves_github_trending_readme_text(monkeypatch):
     opml_url = "https://example.com/feeds.opml"
     feed_url = "https://mshibanami.github.io/GitHubTrendingRSS/monthly/python.xml"
