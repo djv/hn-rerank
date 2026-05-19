@@ -25,7 +25,7 @@ Responsibilities:
 Notable runtime behavior:
 - top-level config is loaded from `[hn_rerank]`
 - `HN_RERANK_FORCE_NO_TLDR=1` hard-disables TL;DR generation for automated runs
-- the displayed match badge uses `knn_score`
+- the displayed match badge uses `max_cluster_score`, while the small `CE` value is the normalized cross-encoder rerank score
 - final selection targets a best-effort `2:1` HN:RSS mix
 
 ## User Signals
@@ -47,13 +47,21 @@ Signal semantics:
 
 ### `api/fetching.py`
 
-Candidate discovery uses Algolia plus optional RSS expansion.
+Candidate discovery uses Algolia, optional open-index archive fetching, cached
+archive stories, and optional RSS expansion.
 
 Algolia path:
 - queries are split into a live window plus archive windows to work around the 1000-hit cap
 - live windows are cached with short TTLs, older windows with longer TTLs
 - story detail fetches use Algolia item endpoints, not HN HTML scraping
 - non-story items and stories with too few usable comments are cached negatively as `None`
+
+Open-index archive path:
+- Algolia is still the source for the recent live window; open-index only fills older archive-window candidates.
+- Scheduled runs enable this through `[hn_rerank.archive].open_index_enabled = true` in `hn_rerank.toml`, not by passing `--open-index-archive`.
+- The current archive query is capped by `open_index_candidate_limit = 50` and uses DuckDB over `hf://datasets/open-index/hacker-news`.
+- `use_cached_stories = true` loads local archive cache before querying open-index.
+- Open-index failures are logged and treated as non-fatal; the run continues with live, cached, and RSS candidates.
 
 Story content path:
 - comment text is cleaned, filtered, and depth-penalized
@@ -64,6 +72,19 @@ RSS path:
 - parses RSS/Atom entries into synthetic negative IDs
 - optionally fetches full article text for embedding enrichment
 - excludes URLs already seen in favorites, upvotes, or hidden items
+- curated source types include Lobsters, Tildes, LessWrong, Slashdot, GitHub Trending, Reddit topic feeds, and Digg AI
+- GitHub Trending RSS entries preserve feed-provided README text instead of fetching and replacing it with GitHub page chrome
+
+## Scheduled Runs
+
+The user-level systemd service calls `update_dashboard.sh`, which runs
+`uv run generate_html.py` from `/home/dev/hn_rerank`. Scheduled behavior should
+therefore be changed through `hn_rerank.toml` unless the service/script contract
+itself needs to change.
+
+The installed timer may differ from the repo sample. As of the latest check, the
+installed user timer runs every 2 hours, while the repo `hn_rerank.timer` sample
+uses a 4-hour interval.
 
 ## Embeddings and Clustering
 
