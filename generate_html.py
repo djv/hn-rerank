@@ -41,7 +41,7 @@ console: Console = Console()
 DEFAULT_CONFIG_PATH = Path("hn_rerank.toml")
 HN_DUPE_CACHE_DIR = Path(".cache/hn_dupes")
 HN_DUPE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-HN_DUPE_TRUE_CACHE_TTL = 30 * 24 * 60 * 60
+HN_DUPE_TRUE_CACHE_TTL = 15 * 24 * 60 * 60
 HN_DUPE_FALSE_CACHE_TTL = 30 * 60
 
 
