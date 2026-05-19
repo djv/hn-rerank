@@ -310,6 +310,41 @@ def test_parse_feed_entries_marks_slashdot_source_and_comments():
     assert story.comment_count == 42
 
 
+def test_parse_feed_entries_marks_github_trending_source_and_readme_text():
+    xml = """
+    <rss version="2.0">
+      <channel>
+        <language>en</language>
+        <item>
+          <title>owner/project</title>
+          <link>https://github.com/owner/project</link>
+          <pubDate>Mon, 02 Feb 2026 12:00:00 GMT</pubDate>
+          <description><![CDATA[
+            <p>Short repository summary.</p>
+            <hr>
+            <h1>Project README</h1>
+            <p>Install it with <code>uv tool install owner-project</code>.</p>
+          ]]></description>
+        </item>
+      </channel>
+    </rss>
+    """
+    stories = _parse_feed_entries(
+        xml,
+        feed_url="https://mshibanami.github.io/GitHubTrendingRSS/monthly/python.xml",
+        max_items=5,
+        min_ts=0,
+    )
+
+    assert len(stories) == 1
+    story = stories[0]
+    assert story.source == "github_trending"
+    assert story.badge_label == "GitHub Trending"
+    assert story.url == "https://github.com/owner/project"
+    assert "Project README" in story.text_content
+    assert "uv tool install owner-project" in story.text_content
+
+
 def test_parse_feed_entries_marks_tildes_source_and_score():
     xml = """
     <rss version="2.0">
@@ -480,6 +515,12 @@ def test_feed_item_limit_uses_registry_curated_flag():
     )
     assert (
         _feed_item_limit(
+            "https://mshibanami.github.io/GitHubTrendingRSS/monthly/python.xml", 5
+        )
+        == rss.RSS_CURATED_NEWS_PER_FEED_LIMIT
+    )
+    assert (
+        _feed_item_limit(
             "https://www.reddit.com/r/MachineLearning/top/.rss?t=week&limit=25", 5
         )
         == rss.RSS_CURATED_NEWS_PER_FEED_LIMIT
@@ -587,6 +628,55 @@ async def test_fetch_rss_stories_uses_extra_feeds_when_opml_is_empty(monkeypatch
     assert stories[0].title == "Lobsters Post"
     assert stories[0].url == "https://example.com/post"
     assert stories[0].discussion_url == "https://lobste.rs/s/example/post"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_fetch_rss_stories_preserves_github_trending_readme_text(monkeypatch):
+    opml_url = "https://example.com/feeds.opml"
+    feed_url = "https://mshibanami.github.io/GitHubTrendingRSS/monthly/python.xml"
+    repo_url = "https://github.com/owner/project"
+    monkeypatch.setattr(rss, "RSS_EXTRA_FEEDS", [feed_url])
+
+    rss_xml = f"""
+    <rss version="2.0">
+      <channel>
+        <language>en</language>
+        <item>
+          <title>owner/project</title>
+          <link>{repo_url}</link>
+          <pubDate>Mon, 02 Feb 2026 12:00:00 GMT</pubDate>
+          <description><![CDATA[
+            <p>Short repository summary.</p>
+            <hr>
+            <h1>README from feed</h1>
+            <p>Repository setup instructions from the README.</p>
+          ]]></description>
+        </item>
+      </channel>
+    </rss>
+    """
+
+    respx.get(opml_url).mock(return_value=Response(200, text=""))
+    respx.get(feed_url).mock(return_value=Response(200, text=rss_xml))
+    repo_route = respx.get(repo_url).mock(
+        return_value=Response(200, text="<html><body>GitHub chrome text</body></html>")
+    )
+
+    stories = await fetch_rss_stories(
+        opml_url=opml_url,
+        days=3650,
+        max_feeds=5,
+        per_feed=10,
+        fetch_full_content=True,
+    )
+
+    assert len(stories) == 1
+    assert not repo_route.called
+    assert stories[0].source == "github_trending"
+    assert "README from feed" in stories[0].text_content
+    assert "Repository setup instructions" in stories[0].text_content
+    assert "GitHub chrome text" not in stories[0].text_content
 
 
 @pytest.mark.asyncio

@@ -14,6 +14,7 @@ StorySource = Literal[
     "tildes",
     "lesswrong",
     "slashdot",
+    "github_trending",
     "reddit",
     "reddit_machinelearning",
     "reddit_programming",

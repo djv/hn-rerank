@@ -60,6 +60,13 @@ SOURCE_SPECS: tuple[ExternalSourceSpec, ...] = (
         curated=True,
     ),
     ExternalSourceSpec(
+        source="github_trending",
+        badge_label="GitHub Trending",
+        domains=("mshibanami.github.io",),
+        path_prefixes=("/GitHubTrendingRSS/",),
+        curated=True,
+    ),
+    ExternalSourceSpec(
         source="reddit_machinelearning",
         badge_label="r/MachineLearning",
         domains=("www.reddit.com", "reddit.com", "old.reddit.com"),

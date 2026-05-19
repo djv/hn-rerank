@@ -146,6 +146,10 @@ def _is_reddit_source(source: StorySource) -> bool:
     return source == "reddit" or source.startswith("reddit_")
 
 
+def _preserves_feed_text_content(source: StorySource) -> bool:
+    return source == "github_trending"
+
+
 def _is_digg_ai_source(feed_url: str) -> bool:
     return detect_source(feed_url, feed_url).parser == "digg_ai"
 
@@ -560,7 +564,10 @@ async def fetch_rss_stories(
                         }
                     )
 
-        if fetch_full_content and stories:
+        stories_for_full_content = [
+            story for story in stories if not _preserves_feed_text_content(story.source)
+        ]
+        if fetch_full_content and stories_for_full_content:
             def content_progress(curr: int, total: int) -> None:
                 if progress_callback:
                     progress_callback(
@@ -573,7 +580,7 @@ async def fetch_rss_stories(
                     )
 
             await enrich_stories_with_full_text(
-                client, stories, progress_callback=content_progress
+                client, stories_for_full_content, progress_callback=content_progress
             )
 
         return stories
