@@ -154,6 +154,17 @@ def _is_digg_ai_source(feed_url: str) -> bool:
     return detect_source(feed_url, feed_url).parser == "digg_ai"
 
 
+def _parsed_feed_timestamp(parsed: feedparser.FeedParserDict) -> int | None:
+    feed_meta = getattr(parsed, "feed", {})
+    for key in ("published_parsed", "updated_parsed", "created_parsed"):
+        parsed_time = feed_meta.get(key)
+        if parsed_time:
+            return int(calendar.timegm(parsed_time))
+
+    date_text = feed_meta.get("published") or feed_meta.get("updated") or ""
+    return _parse_date(str(date_text))
+
+
 def _decode_next_string(value: str) -> str:
     try:
         decoded = json.loads(f'"{value}"')
@@ -351,10 +362,12 @@ def _parse_feed(
         return feed_language, []
 
     stories: list[Story] = []
+    feed_timestamp = _parsed_feed_timestamp(parsed)
 
     for entry in parsed.entries:
         title = str(entry.get("title", "")).strip()
         link = str(entry.get("link", "") or "").strip()
+        source = _feed_source(feed_url, link)
 
         summary = ""
         content_list = entry.get("content") or []
@@ -375,13 +388,15 @@ def _parse_feed(
             date_text = entry.get("published") or entry.get("updated") or ""
             ts = _parse_date(str(date_text))
 
+        if ts is None and source == "github_trending":
+            ts = feed_timestamp
+
         if ts is None:
             continue
 
         if ts < min_ts:
             continue
 
-        source = _feed_source(feed_url, link)
         story_url = link or None
         discussion_url = str(entry.get("comments") or "").strip() or None
         if _is_reddit_source(source):

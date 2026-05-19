@@ -145,6 +145,64 @@ def test_parse_feed_entries_skips_undated_items():
     assert stories == []
 
 
+def test_parse_feed_entries_uses_feed_date_for_github_trending_items():
+    xml = """
+    <rss version="2.0">
+      <channel>
+        <title>GitHub All Languages Monthly Trending</title>
+        <language>en</language>
+        <pubDate>Tue, 19 May 2026 01:56:32 GMT</pubDate>
+        <item>
+          <title>mattpocock/skills</title>
+          <link>https://github.com/mattpocock/skills</link>
+          <description>Skills for Real Engineers.</description>
+        </item>
+        <item>
+          <title>multica-ai/andrej-karpathy-skills</title>
+          <link>https://github.com/multica-ai/andrej-karpathy-skills</link>
+          <description>AI agent skills collection.</description>
+        </item>
+      </channel>
+    </rss>
+    """
+    feed_ts = _parse_date("Tue, 19 May 2026 01:56:32 GMT")
+    stories = _parse_feed_entries(
+        xml,
+        feed_url="https://mshibanami.github.io/GitHubTrendingRSS/monthly/all.xml",
+        max_items=5,
+        min_ts=0,
+    )
+
+    assert len(stories) == 2
+    assert {story.source for story in stories} == {"github_trending"}
+    assert [story.time for story in stories] == [feed_ts, feed_ts]
+
+
+def test_parse_feed_entries_does_not_use_feed_date_for_generic_items():
+    xml = """
+    <rss version="2.0">
+      <channel>
+        <title>Generic Feed</title>
+        <language>en</language>
+        <pubDate>Tue, 19 May 2026 01:56:32 GMT</pubDate>
+        <item>
+          <title>Undated generic post</title>
+          <link>https://example.com/generic</link>
+          <description>No item-level date metadata here</description>
+        </item>
+      </channel>
+    </rss>
+    """
+    stories = _parse_feed_entries(
+        xml,
+        feed_url="https://example.com/feed.xml",
+        max_items=5,
+        min_ts=0,
+    )
+
+    assert stories == []
+
+
 def test_parse_digg_ai_page_extracts_embedded_stories():
     html = r"""
     <script>self.__next_f.push([1,"{\"id\":\"b2f851a5-0a26-459e-ac2e-35bb611ba02a\",\"shortId\":\"svp61dsd\",\"title\":\"OpenAI launches ChatGPT personal finance preview\",\"tldr\":\"OpenAI is testing personal finance features for ChatGPT Pro users.\",\"createdAt\":\"2026-05-15T16:12:17.887072+00:00\",\"firstPostAt\":\"2026-05-15T16:01:19+00:00\",\"lastFrozenPostAt\":\"2026-05-16T03:55:22+00:00\",\"postCount\":31}"])</script>
