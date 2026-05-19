@@ -68,7 +68,7 @@ refine_iters = 2
 
 [hn_rerank.cross_encoder]
 enabled = true
-top_n = 80
+top_n = 150
 weight = 0.06953
 
 [hn_rerank.archive]
