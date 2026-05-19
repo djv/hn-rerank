@@ -72,6 +72,6 @@ top_n = 80
 weight = 0.06953
 
 [hn_rerank.archive]
-open_index_enabled = false
+open_index_enabled = true
 use_cached_stories = true
 open_index_candidate_limit = 50
