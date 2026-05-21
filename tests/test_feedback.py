@@ -93,6 +93,40 @@ def test_feedback_store_round_trips_records(tmp_path):
     assert loaded[record.key].action == "down"
 
 
+def test_feedback_store_round_trips_rank_diagnostics(tmp_path):
+    path = tmp_path / "feedback.json"
+    _, record = apply_feedback_payload(
+        {
+            "id": 123,
+            "source": "hn",
+            "title": "Ranked",
+            "url": "https://example.com/ranked",
+            "discussion_url": "https://news.ycombinator.com/item?id=123",
+            "text_content": "Ranked text",
+            "time": 1700000000,
+            "action": "up",
+            "hybrid_score": 0.9,
+            "semantic_score": 0.8,
+            "hn_score": 0.7,
+            "freshness_boost": 0.1,
+            "knn_score": 0.6,
+            "max_sim_score": 0.5,
+            "max_cluster_score": 0.4,
+            "cross_encoder_score": 0.3,
+        },
+        path=path,
+    )
+    assert record is not None
+
+    loaded = load_feedback(path)[record.key]
+    rank_result = loaded.to_rank_result()
+
+    assert rank_result is not None
+    assert rank_result.hybrid_score == pytest.approx(0.9)
+    assert rank_result.semantic_score == pytest.approx(0.8)
+    assert rank_result.cross_encoder_score == pytest.approx(0.3)
+
+
 def test_feedback_payload_requires_record_for_clear():
     with pytest.raises(ValueError):
         record_from_payload(

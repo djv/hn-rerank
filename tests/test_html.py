@@ -120,6 +120,14 @@ def test_generate_story_html_includes_feedback_controls_and_metadata():
         reason_url="",
         comments=[],
         text_content="Feedback story text",
+        hybrid_score=0.91,
+        semantic_score=0.82,
+        hn_score=0.73,
+        freshness_boost=0.04,
+        knn_score=0.65,
+        max_sim_score=0.77,
+        max_cluster_score=0.9,
+        cross_encoder_score=0.5,
         feedback_action="up",
     )
 
@@ -130,6 +138,9 @@ def test_generate_story_html_includes_feedback_controls_and_metadata():
     assert 'data-story-id="123"' in html
     assert 'data-story-source="hn"' in html
     assert 'data-feedback-action="up"' in html
+    assert 'data-hybrid-score="0.91"' in html
+    assert 'data-semantic-score="0.82"' in html
+    assert 'data-max-cluster-score="0.9"' in html
 
 
 def test_generate_story_html_hides_unknown_comment_count():

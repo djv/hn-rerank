@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Literal, NotRequired, TypedDict, cast
 
 from api.cache_utils import atomic_write_json
-from api.models import Story, StorySource
+from api.models import RankResult, Story, StorySource
 from api.url_utils import normalize_url
 
 FeedbackAction = Literal["up", "down"]
@@ -32,6 +32,14 @@ class FeedbackRecordDict(TypedDict):
     hn_mirror_status: FeedbackMirrorStatus
     hn_mirror_error: str | None
     updated_at: float
+    hybrid_score: NotRequired[float | None]
+    semantic_score: NotRequired[float | None]
+    hn_score: NotRequired[float | None]
+    freshness_boost: NotRequired[float | None]
+    knn_score: NotRequired[float | None]
+    max_sim_score: NotRequired[float | None]
+    max_cluster_score: NotRequired[float | None]
+    cross_encoder_score: NotRequired[float | None]
 
 
 class FeedbackStoreFile(TypedDict):
@@ -48,6 +56,14 @@ class FeedbackPayload(TypedDict):
     text_content: NotRequired[str]
     time: NotRequired[int]
     action: Literal["up", "down", "clear"]
+    hybrid_score: NotRequired[float]
+    semantic_score: NotRequired[float]
+    hn_score: NotRequired[float]
+    freshness_boost: NotRequired[float]
+    knn_score: NotRequired[float]
+    max_sim_score: NotRequired[float]
+    max_cluster_score: NotRequired[float]
+    cross_encoder_score: NotRequired[float]
 
 
 @dataclass(frozen=True)
@@ -64,6 +80,14 @@ class FeedbackRecord:
     hn_mirror_status: FeedbackMirrorStatus = "none"
     hn_mirror_error: str | None = None
     updated_at: float = 0.0
+    hybrid_score: float | None = None
+    semantic_score: float | None = None
+    hn_score: float | None = None
+    freshness_boost: float | None = None
+    knn_score: float | None = None
+    max_sim_score: float | None = None
+    max_cluster_score: float | None = None
+    cross_encoder_score: float | None = None
 
     @classmethod
     def from_dict(cls, data: FeedbackRecordDict) -> FeedbackRecord:
@@ -82,6 +106,14 @@ class FeedbackRecord:
             ),
             hn_mirror_error=data.get("hn_mirror_error"),
             updated_at=float(data.get("updated_at", 0.0)),
+            hybrid_score=_optional_float(data.get("hybrid_score")),
+            semantic_score=_optional_float(data.get("semantic_score")),
+            hn_score=_optional_float(data.get("hn_score")),
+            freshness_boost=_optional_float(data.get("freshness_boost")),
+            knn_score=_optional_float(data.get("knn_score")),
+            max_sim_score=_optional_float(data.get("max_sim_score")),
+            max_cluster_score=_optional_float(data.get("max_cluster_score")),
+            cross_encoder_score=_optional_float(data.get("cross_encoder_score")),
         )
 
     def to_dict(self) -> FeedbackRecordDict:
@@ -98,6 +130,14 @@ class FeedbackRecord:
             "hn_mirror_status": self.hn_mirror_status,
             "hn_mirror_error": self.hn_mirror_error,
             "updated_at": self.updated_at,
+            "hybrid_score": self.hybrid_score,
+            "semantic_score": self.semantic_score,
+            "hn_score": self.hn_score,
+            "freshness_boost": self.freshness_boost,
+            "knn_score": self.knn_score,
+            "max_sim_score": self.max_sim_score,
+            "max_cluster_score": self.max_cluster_score,
+            "cross_encoder_score": self.cross_encoder_score,
         }
 
     def to_story(self) -> Story:
@@ -113,6 +153,38 @@ class FeedbackRecord:
             text_content=text_content,
             source=self.source,
         )
+
+    def to_rank_result(self) -> RankResult | None:
+        required = (
+            self.hybrid_score,
+            self.semantic_score,
+            self.hn_score,
+            self.freshness_boost,
+            self.knn_score,
+            self.max_sim_score,
+            self.max_cluster_score,
+            self.cross_encoder_score,
+        )
+        if any(value is None for value in required):
+            return None
+        return RankResult(
+            index=-1,
+            hybrid_score=float(self.hybrid_score),
+            best_fav_index=-1,
+            max_sim_score=float(self.max_sim_score),
+            knn_score=float(self.knn_score),
+            max_cluster_score=float(self.max_cluster_score),
+            semantic_score=float(self.semantic_score),
+            hn_score=float(self.hn_score),
+            freshness_boost=float(self.freshness_boost),
+            cross_encoder_score=float(self.cross_encoder_score),
+        )
+
+
+def _optional_float(value: object) -> float | None:
+    if isinstance(value, int | float):
+        return float(value)
+    return None
 
 
 def feedback_key(source: str, story_id: int, url: str | None) -> str:
@@ -152,6 +224,14 @@ def record_from_payload(
         hn_mirror_status=mirror_status,
         hn_mirror_error=mirror_error,
         updated_at=time.time(),
+        hybrid_score=_optional_float(payload.get("hybrid_score")),
+        semantic_score=_optional_float(payload.get("semantic_score")),
+        hn_score=_optional_float(payload.get("hn_score")),
+        freshness_boost=_optional_float(payload.get("freshness_boost")),
+        knn_score=_optional_float(payload.get("knn_score")),
+        max_sim_score=_optional_float(payload.get("max_sim_score")),
+        max_cluster_score=_optional_float(payload.get("max_cluster_score")),
+        cross_encoder_score=_optional_float(payload.get("cross_encoder_score")),
     )
 
 
@@ -227,4 +307,3 @@ def feedback_action_for_story(
 ) -> FeedbackAction | None:
     record = records.get(feedback_key(source, story_id, url))
     return record.action if record else None
-

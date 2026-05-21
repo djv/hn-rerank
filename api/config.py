@@ -119,6 +119,22 @@ class ArchiveConfig:
             )
 
 @dataclass(frozen=True)
+class LearnedRankerConfig:
+    """Shadow/active learned final ranking parameters."""
+    shadow_enabled: bool = False
+    active_enabled: bool = False
+    model_path: Path = Path(".cache/learned_ranker/final_ranker.joblib")
+    min_positive_labels: int = 10
+    min_negative_labels: int = 10
+    training_sources: str = "dashboard_feedback"
+    source_feature_weight: float = 0.0
+    balance_training_labels: bool = True
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.model_path, Path):
+            object.__setattr__(self, "model_path", Path(self.model_path))
+
+@dataclass(frozen=True)
 class AppConfig:
     """Root configuration object."""
     username: str = field(default_factory=lambda: os.getlogin() if os.name != "nt" else "user")
@@ -146,6 +162,7 @@ class AppConfig:
     llm: LLMConfig = field(default_factory=LLMConfig)
     cross_encoder: CrossEncoderConfig = field(default_factory=CrossEncoderConfig)
     archive: ArchiveConfig = field(default_factory=ArchiveConfig)
+    learned_ranker: LearnedRankerConfig = field(default_factory=LearnedRankerConfig)
 
     @classmethod
     def load(cls, toml_path: Path | str | None = None, **overrides: Any) -> Self:
@@ -172,6 +189,7 @@ class AppConfig:
         llm = LLMConfig(**_get_section("llm"))
         cross_encoder = CrossEncoderConfig(**_get_section("cross_encoder"))
         archive = ArchiveConfig(**_get_section("archive"))
+        learned_ranker = LearnedRankerConfig(**_get_section("learned_ranker"))
 
         def _get_root(key: str, default: Any) -> Any:
             val = overrides.get(key)
@@ -205,4 +223,5 @@ class AppConfig:
             llm=llm,
             cross_encoder=cross_encoder,
             archive=archive,
+            learned_ranker=learned_ranker,
         )

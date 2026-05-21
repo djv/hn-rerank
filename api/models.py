@@ -66,6 +66,13 @@ class StoryDisplayDict(StoryForTldr):
     tldr: str
     rank_index: NotRequired[int]
     cross_encoder_score: NotRequired[float]
+    hybrid_score: NotRequired[float]
+    semantic_score: NotRequired[float]
+    hn_score: NotRequired[float]
+    freshness_boost: NotRequired[float]
+    knn_score: NotRequired[float]
+    max_sim_score: NotRequired[float]
+    max_cluster_score: NotRequired[float]
     comment_count: NotRequired[int | None]
     feedback_action: NotRequired[Literal["up", "down"] | None]
 
@@ -143,6 +150,8 @@ class RankResult:
     hn_score: float = 0.0  # HN score contribution (log-scaled)
     freshness_boost: float = 0.0  # Freshness boost applied to hybrid score
     cross_encoder_score: float = 0.0
+    learned_score: float = 0.0
+    learned_ranker_used: bool = False
 
 
 @dataclass
@@ -166,6 +175,13 @@ class StoryDisplay:
     text_content: str = ""
     rank_index: int = 0
     cross_encoder_score: float = 0.0
+    hybrid_score: float = 0.0
+    semantic_score: float = 0.0
+    hn_score: float = 0.0
+    freshness_boost: float = 0.0
+    knn_score: float = 0.0
+    max_sim_score: float = 0.0
+    max_cluster_score: float = 0.0
     comment_count: int | None = None
     feedback_action: Literal["up", "down"] | None = None
 
@@ -189,6 +205,13 @@ class StoryDisplay:
             "text_content": self.text_content,
             "rank_index": self.rank_index,
             "cross_encoder_score": self.cross_encoder_score,
+            "hybrid_score": self.hybrid_score,
+            "semantic_score": self.semantic_score,
+            "hn_score": self.hn_score,
+            "freshness_boost": self.freshness_boost,
+            "knn_score": self.knn_score,
+            "max_sim_score": self.max_sim_score,
+            "max_cluster_score": self.max_cluster_score,
             "comment_count": self.comment_count,
             "feedback_action": self.feedback_action,
         }
