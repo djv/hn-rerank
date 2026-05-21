@@ -37,6 +37,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+archive-vector = [
+    "sentence-transformers>=5.2.0",
+]
 model-export = [
     "optimum[onnxruntime]>=2.1.0",
 ]

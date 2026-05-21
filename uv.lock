@@ -1264,6 +1264,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+archive-vector = [
+    { name = "sentence-transformers" },
+]
 model-export = [
     { name = "optimum", extra = ["onnxruntime"] },
 ]
@@ -1305,6 +1308,7 @@ requires-dist = [
     { name = "ruff", specifier = ">=0.14.10" },
     { name = "runpod", marker = "extra == 'train'", specifier = ">=1.8.1" },
     { name = "scikit-learn", specifier = ">=1.8.0" },
+    { name = "sentence-transformers", marker = "extra == 'archive-vector'", specifier = ">=5.2.0" },
     { name = "sentence-transformers", marker = "extra == 'train'", specifier = ">=5.2.0" },
     { name = "structlog", specifier = ">=24.1.0" },
     { name = "tenacity", specifier = ">=9.0.0" },
@@ -1315,7 +1319,7 @@ requires-dist = [
     { name = "types-tqdm", specifier = ">=4.67.0.20250809" },
     { name = "url-normalize", specifier = ">=2.2.1" },
 ]
-provides-extras = ["model-export", "train"]
+provides-extras = ["archive-vector", "model-export", "train"]
 
 [[package]]
 name = "htmldate"
