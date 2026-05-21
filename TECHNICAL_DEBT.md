@@ -31,12 +31,13 @@ Target:
 - pass scoring and clustering parameters into evaluation and ranking explicitly
 - remove `patch.multiple(...)` from the steady-state tuning path
 
-### 3. Runtime Contract Drift Between Code, Tests, and Docs
+### 3. Runtime Contract Drift Prevention
 
-Recent examples:
-- the UI badge displays `knn_score`, not `hybrid_score`
-- README examples previously showed flat TOML even though nested sections are live
-- architecture text previously described agglomerative clustering as the default although the code defaults to spectral clustering
+Recently fixed drift:
+- the UI match badge is documented as `max_cluster_score`, while `knn_score` remains a debug diagnostic
+- README examples use nested TOML sections for the values loaded by `api/constants.py`
+- architecture docs now describe `public/index.html` and `public/clusters.html`, not root-level artifacts
+- scheduled open-index usage is documented as `[hn_rerank.archive].open_index_enabled = true`
 
 Impact:
 - new contributors get the wrong mental model
@@ -45,6 +46,7 @@ Impact:
 Target:
 - treat docs and integration tests as part of the public runtime contract
 - keep one source of truth for score naming and config examples
+- keep demo docs as executable workflows instead of stale captured output dumps
 
 ## Medium Priority
 
@@ -78,6 +80,7 @@ Impact:
 
 Target:
 - push ranking, selection, and rendering helpers into separate modules with narrower interfaces
+- longer term, reduce `generate_html.py` to CLI parsing plus pipeline invocation
 
 ### 6. Comment and Signal Coverage Gaps
 
@@ -106,6 +109,17 @@ There is a structured logging module, but the repo mostly still uses ad hoc logg
 Target:
 - converge on one logging approach for CLI runs, scheduled runs, and tuning utilities
 
+### 9. Typed Pipeline and Policy Objects
+
+The clean target is a pipeline with explicit domain policies and adapters:
+- a single typed `AppConfig` loaded once
+- explicit `RunRequest`, `RunState`, and `RunArtifacts` objects
+- selection, clustering, and cache freshness rules represented as testable policy objects
+- side effects isolated behind source, model, cache, renderer, and verification adapters
+
+This is the direction for larger refactors, but it should be introduced
+incrementally to avoid changing ranking behavior while moving code.
+
 ## Security Notes
 
 - Session cookies are stored locally in `.cache/user/cookies.json`.
@@ -115,7 +129,7 @@ Target:
 ## Verification Notes
 
 For user-visible changes, the current minimum bar is:
-- `uv run pytest`
+- relevant `uv run pytest ...` subset, or the full suite for broad behavior changes
 - `uv run ruff check .`
 - `uv run ty check .`
 - relevant Showboat/Rodney verification when output changes are visible in the generated dashboard

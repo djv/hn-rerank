@@ -2,12 +2,15 @@
 
 ## Overview
 
-HN Rerank is a local-first recommendation pipeline for Hacker News. It combines cached HN signals, locally generated embeddings, candidate discovery from Algolia and RSS, and static HTML rendering.
+HN Rerank is a local-first recommendation pipeline for Hacker News. It combines
+cached HN signals, locally generated embeddings, candidate discovery from
+Algolia, cached/open-index archive data, and RSS, then renders static dashboard
+artifacts.
 
 The system is local for ranking and artifact generation, but not fully offline:
 - HN and Algolia provide source data.
-- RSS feeds and article fetches expand the candidate pool.
-- Groq is optional and only used for cluster naming and TL;DR generation.
+- RSS feeds, article fetches, and the Hugging Face open-index dataset expand the candidate pool.
+- Mistral or Groq is optional and only used for cluster naming and TL;DR generation.
 - The generated HTML currently pulls Tailwind from a CDN at render time.
 
 ## Main Entry Point
@@ -20,7 +23,7 @@ Responsibilities:
 - fetch signal details and candidate stories
 - embed, cluster, rank, and select final stories
 - optionally generate cluster names and TL;DRs
-- render `index.html` and `clusters.html`
+- render `public/index.html` and `public/clusters.html` by default
 
 Notable runtime behavior:
 - top-level config is loaded from `[hn_rerank]`
@@ -78,13 +81,13 @@ RSS path:
 ## Scheduled Runs
 
 The user-level systemd service calls `update_dashboard.sh`, which runs
-`uv run generate_html.py` from `/home/dev/hn_rerank`. Scheduled behavior should
-therefore be changed through `hn_rerank.toml` unless the service/script contract
-itself needs to change.
+`uv run generate_html.py` from `/home/dev/hn_rerank`. Runtime generation
+settings live in `hn_rerank.toml`; the execution cadence lives in the systemd
+timer.
 
 The installed timer may differ from the repo sample. As of the latest check, the
-installed user timer runs every 2 hours, while the repo `hn_rerank.timer` sample
-uses a 4-hour interval.
+repo `hn_rerank.timer` sample runs every 3 hours after a 15-minute boot delay,
+with up to 5 minutes of randomized delay.
 
 ## Embeddings and Clustering
 
@@ -132,11 +135,13 @@ The current production architecture uses **Pairwise Logistic Regression** with *
 Final ranking behavior:
 - hybrid score blends semantic relevance, adaptive HN weighting, and freshness
 - MMR-style diversification suppresses redundant candidates
+- the learned final ranker can score the ranked list in shadow mode; active mode
+  reorders by `learned_score` only when explicitly enabled
 - the UI match badge uses `max_cluster_score`, while ordering uses `hybrid_score`
 
 ## LLM Enrichment
 
-Optional Groq-backed stages:
+Optional configured-provider LLM stages:
 - Cluster naming via `generate_batch_cluster_names()`:
     - Uses "Rich Context": passes all cluster titles, plus the first 250 characters of `text_content` or top comments for the top 3 stories.
     - Ensures "Global Uniqueness": maintains a list of `already_used_names` to prevent duplicate labels within a single report.
@@ -147,23 +152,26 @@ Optional Groq-backed stages:
     - Focuses on technical insights and trade-offs rather than summary-style descriptions.
 
 Operational rules:
-- `GROQ_API_KEY` is required only when naming or TL;DRs are enabled.
+- The default config uses `provider = "mistral"`.
+- `MISTRAL_API_KEY` is required for Mistral calls, and `GROQ_API_KEY` is required for Groq calls.
+- The CLI preflight currently still checks for `GROQ_API_KEY` whenever naming or TL;DRs are enabled.
 - Singleton clusters are left unnamed unless generic fallback naming is used.
 - Cluster naming and TL;DR results are cached under `.cache/` with versioning (e.g., `v12` for naming) to force refreshes when logic changes.
 
 ## Rendered Artifacts
 
-### `index.html`
+### `public/index.html`
 Contains:
 - ranked story cards
 - match badge from `max_cluster_score`
+- normalized `CE` score when the story was included in the cross-encoder pass
 - RSS badge for RSS items
 - optional cluster chip
 - HN points and relative age
 - external story link and optional HN discussion link
 - optional TL;DR block
 
-### `clusters.html`
+### `public/clusters.html`
 Contains:
 - all positive signals grouped by cluster label
 - cluster sizes
