@@ -61,6 +61,8 @@ class ClassifierConfig:
     use_pos_knn_feature: bool = True
     use_neg_knn_feature: bool = True
     use_log_points_feature: bool = False
+    use_log_comments_feature: bool = False
+    use_comment_ratio_feature: bool = False
 
 @dataclass(frozen=True)
 class ClusteringConfig:

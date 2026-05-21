@@ -124,6 +124,10 @@ def _classifier_metadata_features(
         width = 0
         if config.classifier.use_log_points_feature:
             width += 1
+        if config.classifier.use_log_comments_feature:
+            width += 1
+        if config.classifier.use_comment_ratio_feature:
+            width += 1
         return np.zeros((expected_len, width), dtype=np.float32)
 
     columns: list[NDArray[np.float32]] = []
@@ -132,6 +136,18 @@ def _classifier_metadata_features(
         normalizer = np.log1p(config.adaptive_hn.score_normalization_cap)
         points = np.array([max(float(s.score), 0.0) for s in stories], dtype=np.float32)
         columns.append((np.log1p(points) / normalizer).reshape(-1, 1))
+
+    if config.classifier.use_log_comments_feature:
+        comment_normalization_cap = 500.0
+        normalizer = np.log1p(comment_normalization_cap)
+        comments = np.array([max(float(s.comment_count if s.comment_count is not None else 0.0), 0.0) for s in stories], dtype=np.float32)
+        columns.append((np.log1p(comments) / normalizer).reshape(-1, 1))
+
+    if config.classifier.use_comment_ratio_feature:
+        comments = np.array([max(float(s.comment_count if s.comment_count is not None else 0.0), 0.0) for s in stories], dtype=np.float32)
+        points = np.array([max(float(s.score), 0.0) for s in stories], dtype=np.float32)
+        ratio = np.log1p(comments) / (np.log1p(points) + 1.0)
+        columns.append(ratio.reshape(-1, 1))
 
     if not columns:
         return np.zeros((expected_len, 0), dtype=np.float32)

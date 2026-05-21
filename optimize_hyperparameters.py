@@ -474,6 +474,10 @@ async def main():
             )
         else:
             classifier_k_feat = CLASSIFIER_K_FEAT
+        use_log_points_feature = trial.suggest_categorical("use_log_points_feature", [True, False])
+        use_log_comments_feature = trial.suggest_categorical("use_log_comments_feature", [True, False])
+        use_comment_ratio_feature = trial.suggest_categorical("use_comment_ratio_feature", [True, False])
+
         trial_params = {
             "knn_k": knn_k,
             "adaptive_hn_min": adaptive_hn_min,
@@ -483,6 +487,9 @@ async def main():
             "hn_threshold_young": hn_threshold_young,
             "hn_score_cap": hn_score_cap,
             "classifier_k_feat": classifier_k_feat,
+            "use_log_points_feature": use_log_points_feature,
+            "use_log_comments_feature": use_log_comments_feature,
+            "use_comment_ratio_feature": use_comment_ratio_feature,
         }
 
         with tuned_config(trial_params) as (config, resolved):

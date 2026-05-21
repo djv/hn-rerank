@@ -25,6 +25,8 @@ from api.constants import (
     CLASSIFIER_PAIRWISE_NEGATIVES,
     CLASSIFIER_PAIRWISE_C,
     CLASSIFIER_USE_LOG_POINTS_FEATURE,
+    CLASSIFIER_USE_LOG_COMMENTS_FEATURE,
+    CLASSIFIER_USE_COMMENT_RATIO_FEATURE,
     CLUSTER_AGGLOMERATIVE_THRESHOLD,
     CROSS_ENCODER_ENABLED,
     CROSS_ENCODER_TOP_N,
@@ -197,6 +199,12 @@ def resolve_params(params: Mapping[str, float | int]) -> ResolvedParams:
             "use_log_points_feature": bool(
                 params.get("use_log_points_feature", CLASSIFIER_USE_LOG_POINTS_FEATURE)
             ),
+            "use_log_comments_feature": bool(
+                params.get("use_log_comments_feature", CLASSIFIER_USE_LOG_COMMENTS_FEATURE)
+            ),
+            "use_comment_ratio_feature": bool(
+                params.get("use_comment_ratio_feature", CLASSIFIER_USE_COMMENT_RATIO_FEATURE)
+            ),
         },
         "clustering": {
             "distance_threshold": float(params.get("cluster_distance_threshold", CLUSTER_AGGLOMERATIVE_THRESHOLD)),
@@ -288,6 +296,8 @@ def render_promoted_toml(resolved: ResolvedParams) -> str:
         f"k_feat = {int(classifier['k_feat'])}\n"
         f"use_balanced_class_weight = {str(bool(classifier['use_balanced_class_weight'])).lower()}\n"
         f"use_log_points_feature = {str(bool(classifier['use_log_points_feature'])).lower()}\n"
+        f"use_log_comments_feature = {str(bool(classifier['use_log_comments_feature'])).lower()}\n"
+        f"use_comment_ratio_feature = {str(bool(classifier['use_comment_ratio_feature'])).lower()}\n"
     )
     
     if clustering:

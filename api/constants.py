@@ -138,6 +138,8 @@ CLASSIFIER_USE_CENTROID_FEATURE = _config.classifier.use_centroid_feature
 CLASSIFIER_USE_POS_KNN_FEATURE = _config.classifier.use_pos_knn_feature
 CLASSIFIER_USE_NEG_KNN_FEATURE = _config.classifier.use_neg_knn_feature
 CLASSIFIER_USE_LOG_POINTS_FEATURE = _config.classifier.use_log_points_feature
+CLASSIFIER_USE_LOG_COMMENTS_FEATURE = _config.classifier.use_log_comments_feature
+CLASSIFIER_USE_COMMENT_RATIO_FEATURE = _config.classifier.use_comment_ratio_feature
 
 # Clustering
 CLUSTER_ALGORITHM = _config.clustering.algorithm

@@ -1,10 +1,9 @@
 [hn_rerank]
 username = "pure_coder"
 output = "public/index.html"
-days = 7
+days = 30
 clusters = 30
-count = 50
-candidates = 1000
+count = 40
 no_rss = false
 no_tldr = false
 debug_scores = false
@@ -15,22 +14,20 @@ provider = "mistral"
 # Balanced Hybrid Ranking (Linear 85/5/10 split)
 
 [hn_rerank.ranking]
-negative_weight = 0.26932
-non_semantic_weight = 1.0
-comment_ratio = 0.9585070171
+negative_weight = 0.6
 max_results = 500
 
 [hn_rerank.adaptive_hn]
-weight_min = 0.3502787529
-weight_max = 0.6978254022
-threshold_young = 58.7963940864
-threshold_old = 100.7963940864
-score_normalization_cap = 624.5991883601
+weight_min = 0.3980629107
+weight_max = 0.6782178714
+threshold_young = 28.2732914198
+threshold_old = 70.2732914198
+score_normalization_cap = 304.9893877427
 
 [hn_rerank.freshness]
 enabled = true
-half_life_hours = 55.4628588745
-max_boost = 0.10
+half_life_hours = 51.9894220266
+max_boost = 0.0843468960
 
 [hn_rerank.recency]
 enabled = false
@@ -38,14 +35,14 @@ enabled = false
 [hn_rerank.semantic]
 maxsim_weight = 1.0
 meansim_weight = 0.0
-knn_neighbors = 4
+knn_neighbors = 5
 
 [hn_rerank.classifier]
 scoring_mode = "pairwise_logistic"
 feature_mode = "bottleneck"
 pairwise_negatives = 15
-pairwise_c = 0.21448
-k_feat = 7
+pairwise_c = 1.4700450168
+k_feat = 12
 use_balanced_class_weight = false
 cv_scoring = "f1"
 use_local_hidden_penalty = false
@@ -53,12 +50,14 @@ local_hidden_penalty_weight = 0.0
 local_hidden_penalty_k = 3
 use_neg_knn_feature = true
 use_log_points_feature = false
+use_log_comments_feature = false
+use_comment_ratio_feature = false
 
 [hn_rerank.clustering]
 algorithm = "agglomerative"
 linkage = "ward"
 metric = "euclidean"
-distance_threshold = 1.57824
+distance_threshold = 1.3282321556
 similarity_threshold = 0.75
 outlier_similarity_threshold = 0.0
 min_samples_per_cluster = 1
