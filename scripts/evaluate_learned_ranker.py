@@ -4,17 +4,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from dataclasses import asdict
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-from api.config import AppConfig  # noqa: E402
-from api.feedback import FeedbackRecord, load_feedback  # noqa: E402
-from api.learned_ranker import LabeledStory, evaluate_labeled_order  # noqa: E402
+from api.config import AppConfig
+from api.feedback import FeedbackRecord, load_feedback
+from api.learned_ranker import LabeledStory, evaluate_labeled_order
 
 
 def build_labels(records: dict[str, FeedbackRecord]) -> list[LabeledStory]:

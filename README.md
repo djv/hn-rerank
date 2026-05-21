@@ -243,7 +243,7 @@ after inspecting shadow diagnostics.
 To compare learned scoring against the current hybrid scores on stored feedback:
 
 ```bash
-uv run scripts/evaluate_learned_ranker.py
+uv run python -m scripts.evaluate_learned_ranker
 ```
 
 ## Systemd Timer
