@@ -21,15 +21,15 @@ comment_ratio = 0.9585070171
 max_results = 500
 
 [hn_rerank.adaptive_hn]
-weight_min = 0.3963567514
-weight_max = 0.4454707212
-threshold_young = 69.1427531319
-threshold_old = 720.0
-score_normalization_cap = 212.4038210119
+weight_min = 0.3502787529
+weight_max = 0.6978254022
+threshold_young = 58.7963940864
+threshold_old = 100.7963940864
+score_normalization_cap = 624.5991883601
 
 [hn_rerank.freshness]
 enabled = true
-half_life_hours = 168.0
+half_life_hours = 55.4628588745
 max_boost = 0.10
 
 [hn_rerank.recency]
@@ -38,7 +38,7 @@ enabled = false
 [hn_rerank.semantic]
 maxsim_weight = 1.0
 meansim_weight = 0.0
-knn_neighbors = 6
+knn_neighbors = 4
 
 [hn_rerank.classifier]
 scoring_mode = "pairwise_logistic"
@@ -75,3 +75,9 @@ weight = 0.06953
 open_index_enabled = true
 use_cached_stories = true
 open_index_candidate_limit = 50
+
+[hn_rerank.learned_ranker]
+shadow_enabled = true
+active_enabled = false
+source_feature_weight = 0.0
+balance_training_labels = true
