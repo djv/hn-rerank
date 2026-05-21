@@ -6,20 +6,16 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import sys
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, cast
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT))
+from bs4 import BeautifulSoup
+from bs4.element import Tag
 
-from bs4 import BeautifulSoup  # noqa: E402
-from bs4.element import Tag  # noqa: E402
-
-from api.client import HNClient  # noqa: E402
-from api.feedback import (  # noqa: E402
+from api.client import HNClient
+from api.feedback import (
     FEEDBACK_STORE_PATH,
     FeedbackMirrorStatus,
     FeedbackPayload,

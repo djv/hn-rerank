@@ -7,16 +7,11 @@ import contextlib
 import hashlib
 import json
 import statistics
-import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-from api.model_metadata import load_model_spec  # noqa: E402
+from api.model_metadata import load_model_spec
 
 
 IMPORTANT_METRICS = [

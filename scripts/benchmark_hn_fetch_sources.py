@@ -6,7 +6,6 @@ import asyncio
 import json
 import os
 import statistics
-import sys
 import tempfile
 import time
 from collections.abc import Callable
@@ -17,26 +16,22 @@ from typing import Any
 
 import httpx
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-from api.constants import (  # noqa: E402
+from api.constants import (
     ALGOLIA_DEFAULT_DAYS,
     ALGOLIA_MIN_POINTS,
     MIN_CANDIDATE_COMMENTS,
     TOP_COMMENTS_FOR_RANKING,
 )
-from api.content import ARTICLE_SEM, compose_story_text, fetch_full_text  # noqa: E402
-import api.fetching as fetching  # noqa: E402
-from api.fetching import (  # noqa: E402
+from api.content import ARTICLE_SEM, compose_story_text, fetch_full_text
+import api.fetching as fetching
+from api.fetching import (
     HN_FULL_TABLE,
     build_bigquery_sql,
     get_best_stories,
     story_from_bigquery_row,
 )
-from api.models import Story  # noqa: E402
-from api.config import AppConfig  # noqa: E402
+from api.models import Story
+from api.config import AppConfig
 
 DEFAULT_BIGQUERY_PROJECT = "gen-lang-client-0444855014"
 

@@ -3,17 +3,11 @@ import asyncio
 import json
 import time
 import httpx
-import sys
-from pathlib import Path
 from typing import List
 
-# Add project root to path
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-
-from api.fetching import get_best_stories  # noqa: E402
-from api.llm_utils import _build_tldr_prompt  # noqa: E402
-from api.config import AppConfig  # noqa: E402
+from api.fetching import get_best_stories
+from api.llm_utils import _build_tldr_prompt
+from api.config import AppConfig
 
 MODELS = [
     "phi4-mini:latest",

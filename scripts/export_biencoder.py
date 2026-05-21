@@ -3,14 +3,9 @@ from __future__ import annotations
 
 import argparse
 import subprocess
-import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-from api.model_metadata import BIENCODER_BAKEOFF_SPECS, write_model_spec  # noqa: E402
+from api.model_metadata import BIENCODER_BAKEOFF_SPECS, write_model_spec
 
 MODEL_EXPORT_EXTRA_HINT = (
     "export_biencoder.py requires the 'model-export' extra. "

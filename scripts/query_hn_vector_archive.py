@@ -19,17 +19,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+import httpx
+import numpy as np
 
-import httpx  # noqa: E402
-import numpy as np  # noqa: E402
-
-from api.client import USER_CACHE_DIR_PATH  # noqa: E402
-from api.fetching import fetch_story  # noqa: E402
-from api.feedback import load_feedback  # noqa: E402
-from api.models import Story  # noqa: E402
+from api.client import USER_CACHE_DIR_PATH
+from api.fetching import fetch_story
+from api.feedback import load_feedback
+from api.models import Story
 
 VECTOR_DATASET_REPO = "labofsahil/hackernews-vector-search-dataset"
 VECTOR_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"

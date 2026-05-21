@@ -101,7 +101,7 @@ embeddings for historical HN items. To search it with your cached HN upvotes:
 
 ```bash
 uv sync --extra archive-vector
-uv run scripts/query_hn_vector_archive.py <your-hn-username> --top-k 10 --cache-only --min-score 10 --min-comments 1
+uv run python -m scripts.query_hn_vector_archive <your-hn-username> --top-k 10 --cache-only --min-score 10 --min-comments 1
 ```
 
 The script embeds your cached upvoted story texts with

@@ -5,13 +5,8 @@ import argparse
 import asyncio
 from datetime import datetime, UTC
 from pathlib import Path
-import sys
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-from evaluate_quality import RankingEvaluator  # noqa: E402
+from evaluate_quality import RankingEvaluator
 
 
 def build_parser() -> argparse.ArgumentParser:

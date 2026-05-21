@@ -1,15 +1,9 @@
 #!/usr/bin/env -S uv run
 import asyncio
-import sys
-from pathlib import Path
 
-# Add project root to path
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-
-from api.fetching import get_best_stories  # noqa: E402
-from api.config import AppConfig  # noqa: E402
-from api.llm_utils import _build_tldr_prompt  # noqa: E402
+from api.fetching import get_best_stories
+from api.config import AppConfig
+from api.llm_utils import _build_tldr_prompt
 
 async def main():
     print("Fetching 3 real candidate stories...")

@@ -7,21 +7,16 @@ import json
 from pathlib import Path
 from statistics import fmean, pstdev
 from typing import cast
-import sys
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-from api.config import (  # noqa: E402
+from api.config import (
     AppConfig,
     RankingConfig,
     SemanticConfig,
     ClassifierConfig,
 )
-from evaluate_quality import RankingEvaluator  # noqa: E402
+from evaluate_quality import RankingEvaluator
 
 
 FEATURE_VARIANTS: list[tuple[str, dict[str, bool]]] = [

@@ -6,20 +6,15 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import fmean
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-from api.config import AppConfig  # noqa: E402
-from evaluate_quality import RankingEvaluator  # noqa: E402
-from tuning_common import (  # noqa: E402
+from api.config import AppConfig
+from evaluate_quality import RankingEvaluator
+from tuning_common import (
     VALIDATION_GUARD_METRICS,
     VALIDATION_PRIMARY_METRICS,
     score_metrics,
