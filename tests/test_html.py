@@ -134,9 +134,12 @@ def test_generate_story_html_includes_feedback_controls_and_metadata():
     html = generate_story_html(story)
 
     assert 'data-feedback-button="up"' in html
+    assert 'data-feedback-button="neutral"' in html
     assert 'data-feedback-button="down"' in html
     assert 'data-story-id="123"' in html
     assert 'data-story-source="hn"' in html
+    assert 'data-story-score="42"' in html
+    assert 'data-story-comment-count=""' in html
     assert 'data-feedback-action="up"' in html
     assert 'data-hybrid-score="0.91"' in html
     assert 'data-semantic-score="0.82"' in html
@@ -515,7 +518,7 @@ def test_index_template_hides_previously_acted_feedback_cards_on_load():
 
     assert "const ACTED_KEYS_KEY = 'hnRerankActedFeedbackKeys';" in html
     assert "const hidePreviouslyActedCards = () =>" in html
-    assert "action === 'up' || action === 'down'" in html
+    assert "action === 'up' || action === 'neutral' || action === 'down'" in html
     assert "actedKeys.has(card.dataset.feedbackKey)" in html
     assert "hidePreviouslyActedCards();" in html
 
@@ -548,6 +551,7 @@ def test_index_template_syncs_server_feedback_without_prompting_on_load():
     assert "method: 'GET'" in html
     assert "'X-HN-RERANK-FEEDBACK-TOKEN': token" in html
     assert "for (const [key, record] of Object.entries(payload.records))" in html
+    assert "['up', 'neutral', 'down'].includes(record.action)" in html
     assert "syncServerFeedback();" in html
 
 
@@ -869,6 +873,17 @@ def test_split_feedback_records_builds_signals_and_exclusions():
             text_content="HN up",
             time=1700000000,
         ),
+        "https://example.com/neutral": FeedbackRecord(
+            key="https://example.com/neutral",
+            action="neutral",
+            id=-3,
+            source="rss",
+            title="External neutral",
+            url="https://example.com/neutral",
+            discussion_url=None,
+            text_content="External neutral",
+            time=1700000000,
+        ),
         "https://example.com/down": FeedbackRecord(
             key="https://example.com/down",
             action="down",
@@ -887,7 +902,7 @@ def test_split_feedback_records_builds_signals_and_exclusions():
     assert [story.title for story in positive] == ["HN up"]
     assert [story.title for story in negative] == ["External down"]
     assert hn_ids == {1}
-    assert urls == {"https://example.com/down"}
+    assert urls == {"https://example.com/down", "https://example.com/neutral"}
 
 
 def test_apply_feedback_signal_overrides_preserves_hn_and_overrides_conflicts():

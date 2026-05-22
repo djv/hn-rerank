@@ -12,7 +12,7 @@ from api.cache_utils import atomic_write_json
 from api.models import RankResult, Story, StorySource
 from api.url_utils import normalize_url
 
-FeedbackAction = Literal["up", "down"]
+FeedbackAction = Literal["up", "neutral", "down"]
 FeedbackMirrorStatus = Literal["none", "success", "failed"]
 
 FEEDBACK_STORE_PATH = Path(".cache/user_feedback/dashboard_feedback.json")
@@ -29,6 +29,8 @@ class FeedbackRecordDict(TypedDict):
     discussion_url: str | None
     text_content: str
     time: int
+    score: NotRequired[int | None]
+    comment_count: NotRequired[int | None]
     hn_mirror_status: FeedbackMirrorStatus
     hn_mirror_error: str | None
     updated_at: float
@@ -55,7 +57,9 @@ class FeedbackPayload(TypedDict):
     discussion_url: str | None
     text_content: NotRequired[str]
     time: NotRequired[int]
-    action: Literal["up", "down", "clear"]
+    score: NotRequired[int | float | None]
+    comment_count: NotRequired[int | None]
+    action: Literal["up", "neutral", "down", "clear"]
     hybrid_score: NotRequired[float]
     semantic_score: NotRequired[float]
     hn_score: NotRequired[float]
@@ -77,6 +81,8 @@ class FeedbackRecord:
     discussion_url: str | None
     text_content: str
     time: int
+    score: int | None = None
+    comment_count: int | None = None
     hn_mirror_status: FeedbackMirrorStatus = "none"
     hn_mirror_error: str | None = None
     updated_at: float = 0.0
@@ -101,6 +107,8 @@ class FeedbackRecord:
             discussion_url=data.get("discussion_url"),
             text_content=str(data.get("text_content", "")),
             time=int(data.get("time", 0)),
+            score=_optional_int(data.get("score")),
+            comment_count=_optional_int(data.get("comment_count")),
             hn_mirror_status=cast(
                 FeedbackMirrorStatus, data.get("hn_mirror_status", "none")
             ),
@@ -127,6 +135,8 @@ class FeedbackRecord:
             "discussion_url": self.discussion_url,
             "text_content": self.text_content,
             "time": self.time,
+            "score": self.score,
+            "comment_count": self.comment_count,
             "hn_mirror_status": self.hn_mirror_status,
             "hn_mirror_error": self.hn_mirror_error,
             "updated_at": self.updated_at,
@@ -146,12 +156,13 @@ class FeedbackRecord:
             id=self.id,
             title=self.title,
             url=self.url,
-            score=0,
+            score=int(self.score or 0),
             time=self.time,
             discussion_url=self.discussion_url,
             comments=[],
             text_content=text_content,
             source=self.source,
+            comment_count=self.comment_count,
         )
 
     def to_rank_result(self) -> RankResult | None:
@@ -184,6 +195,16 @@ class FeedbackRecord:
 def _optional_float(value: object) -> float | None:
     if isinstance(value, int | float):
         return float(value)
+    return None
+
+
+def _optional_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
     return None
 
 
@@ -221,6 +242,8 @@ def record_from_payload(
         discussion_url=payload.get("discussion_url"),
         text_content=text_content,
         time=int(payload.get("time", 0)),
+        score=_optional_int(payload.get("score")),
+        comment_count=_optional_int(payload.get("comment_count")),
         hn_mirror_status=mirror_status,
         hn_mirror_error=mirror_error,
         updated_at=time.time(),

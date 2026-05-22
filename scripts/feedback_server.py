@@ -48,8 +48,10 @@ def _extract_hn_action_path(html: str, story_id: int, action: str) -> str | None
     soup = BeautifulSoup(html, "html.parser")
     if action == "up":
         prefix = f"vote?id={story_id}&how=up"
-    else:
+    elif action == "down":
         prefix = f"hide?id={story_id}"
+    else:
+        return None
 
     for link in soup.find_all("a"):
         if not isinstance(link, Tag):
@@ -68,7 +70,7 @@ async def _mirror_hn_action(payload: FeedbackPayload) -> tuple[FeedbackMirrorSta
         return "none", None
 
     action = payload.get("action")
-    if action == "clear":
+    if action in {"clear", "neutral"}:
         return "none", None
     try:
         async with HNClient() as hn:
@@ -166,8 +168,8 @@ class FeedbackHandler(BaseHTTPRequestHandler):
 
     @staticmethod
     def _validate_payload(payload: FeedbackPayload) -> None:
-        if payload.get("action") not in {"up", "down", "clear"}:
-            raise ValueError("action must be up, down, or clear")
+        if payload.get("action") not in {"up", "neutral", "down", "clear"}:
+            raise ValueError("action must be up, neutral, down, or clear")
         if not isinstance(payload.get("id"), int):
             raise ValueError("id must be an integer")
         if not payload.get("source"):

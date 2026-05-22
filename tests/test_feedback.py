@@ -45,6 +45,13 @@ def test_feedback_store_latest_vote_wins_and_clear_removes(tmp_path):
         url="https://example.com/story",
     ) == "up"
 
+    payload["action"] = "neutral"
+    records, record = apply_feedback_payload(payload, path=path)
+
+    assert record is not None
+    assert len(records) == 1
+    assert records[record.key].action == "neutral"
+
     payload["action"] = "down"
     records, record = apply_feedback_payload(payload, path=path)
 
@@ -104,6 +111,8 @@ def test_feedback_store_round_trips_rank_diagnostics(tmp_path):
             "discussion_url": "https://news.ycombinator.com/item?id=123",
             "text_content": "Ranked text",
             "time": 1700000000,
+            "score": 321,
+            "comment_count": 45,
             "action": "up",
             "hybrid_score": 0.9,
             "semantic_score": 0.8,
@@ -119,8 +128,11 @@ def test_feedback_store_round_trips_rank_diagnostics(tmp_path):
     assert record is not None
 
     loaded = load_feedback(path)[record.key]
+    story = loaded.to_story()
     rank_result = loaded.to_rank_result()
 
+    assert story.score == 321
+    assert story.comment_count == 45
     assert rank_result is not None
     assert rank_result.hybrid_score == pytest.approx(0.9)
     assert rank_result.semantic_score == pytest.approx(0.8)

@@ -32,7 +32,11 @@ from api.feedback import (
     feedback_key,
     load_feedback,
 )
-from api.learned_ranker import LabeledStory, train_or_load_and_score
+from api.learned_ranker import (
+    LabeledStory,
+    build_labels_from_feedback,
+    train_or_load_and_score,
+)
 from api.models import RankResult, Story, StoryDict, StoryDisplay
 from api.url_utils import normalize_url
 from api.config import AppConfig
@@ -328,12 +332,15 @@ HTML_TEMPLATE: str = """
                 card.dataset.feedbackAction = action || '';
                 const buttons = card.querySelectorAll('[data-feedback-button]');
                 for (const button of buttons) {
-                    const active = button.dataset.feedbackButton === action;
+                    const buttonAction = button.dataset.feedbackButton;
+                    const active = buttonAction === action;
                     button.classList.toggle('bg-hn', active && action === 'up');
-                    button.classList.toggle('text-white', active);
+                    button.classList.toggle('bg-emerald-600', active && action === 'neutral');
                     button.classList.toggle('bg-stone-800', active && action === 'down');
+                    button.classList.toggle('text-white', active);
                     button.classList.toggle('bg-white', !active);
                     button.classList.toggle('text-stone-500', !active);
+                    button.classList.toggle('text-emerald-700', !active && buttonAction === 'neutral');
                 }
             };
 
@@ -362,7 +369,7 @@ HTML_TEMPLATE: str = """
             const hidePreviouslyActedCards = () => {
                 for (const card of cards) {
                     const action = card.dataset.feedbackAction || '';
-                    if (action === 'up' || action === 'down' || actedKeys.has(card.dataset.feedbackKey)) {
+                    if (action === 'up' || action === 'neutral' || action === 'down' || actedKeys.has(card.dataset.feedbackKey)) {
                         hideCard(card);
                     }
                 }
@@ -381,7 +388,7 @@ HTML_TEMPLATE: str = """
                     const payload = await response.json();
                     if (!response.ok || !payload.records) return;
                     for (const [key, record] of Object.entries(payload.records)) {
-                        if (!record || !['up', 'down'].includes(record.action)) continue;
+                        if (!record || !['up', 'neutral', 'down'].includes(record.action)) continue;
                         rememberActedKey(key);
                         const card = cardsByKey.get(key);
                         if (card) hideCard(card);
@@ -424,6 +431,8 @@ HTML_TEMPLATE: str = """
                                     discussion_url: card.dataset.storyDiscussionUrl || null,
                                     text_content: card.dataset.storyTextContent || card.dataset.storyTitle,
                                     time: Number(card.dataset.storyTime),
+                                    score: Number(card.dataset.storyScore),
+                                    comment_count: card.dataset.storyCommentCount === '' ? null : Number(card.dataset.storyCommentCount),
                                     hybrid_score: Number(card.dataset.hybridScore),
                                     semantic_score: Number(card.dataset.semanticScore),
                                     hn_score: Number(card.dataset.hnScore),
@@ -591,7 +600,7 @@ def split_feedback_records(
         story = record.to_story()
         if record.action == "up":
             positive.append(story)
-        else:
+        elif record.action == "down":
             negative.append(story)
         if record.source == "hn" and record.id > 0:
             hn_ids.add(record.id)
@@ -600,24 +609,6 @@ def split_feedback_records(
             if normalized:
                 urls.add(normalized)
     return positive, negative, hn_ids, urls
-
-
-def build_learned_ranker_labels(
-    records: dict[str, FeedbackRecord],
-) -> list[LabeledStory]:
-    labels: list[LabeledStory] = []
-    for record in records.values():
-        rank_result = record.to_rank_result()
-        if rank_result is None:
-            continue
-        labels.append(
-            LabeledStory(
-                story=record.to_story(),
-                label=1 if record.action == "up" else 0,
-                rank_result=rank_result,
-            )
-        )
-    return labels
 
 
 def apply_feedback_signal_overrides(
@@ -785,8 +776,9 @@ def apply_learned_ranker(
     else:
         print(
             "[+] Learned ranker "
-            f"{result.mode}: {result.positive_labels} positive, "
-            f"{result.negative_labels} negative labels"
+            f"{result.mode}: {result.positive_labels} upvote, "
+            f"{result.neutral_labels} neutral, "
+            f"{result.negative_labels} downvote labels"
         )
 
     if not result.has_scores:
@@ -802,7 +794,7 @@ def apply_learned_ranker(
 
 
 STORY_CARD_TEMPLATE: str = """
-<div class="story-card group relative{% if is_external %} rss-story{% endif %}" data-rank-index="{{ rank_index }}" data-story-time="{{ story_time }}" data-story-id="{{ story_id }}" data-story-source="{{ story_source }}" data-story-title="{{ title }}" data-story-url="{{ story_url or '' }}" data-story-discussion-url="{{ hn_url or '' }}" data-story-text-content="{{ text_content }}" data-feedback-key="{{ feedback_key }}" data-feedback-action="{{ feedback_action or '' }}" data-hybrid-score="{{ hybrid_score }}" data-semantic-score="{{ semantic_score }}" data-hn-score="{{ hn_score }}" data-freshness-boost="{{ freshness_boost }}" data-knn-score="{{ knn_score }}" data-max-sim-score="{{ max_sim_score }}" data-max-cluster-score="{{ max_cluster_score }}" data-cross-encoder-score="{{ ce_score }}">
+<div class="story-card group relative{% if is_external %} rss-story{% endif %}" data-rank-index="{{ rank_index }}" data-story-time="{{ story_time }}" data-story-id="{{ story_id }}" data-story-source="{{ story_source }}" data-story-title="{{ title }}" data-story-url="{{ story_url or '' }}" data-story-discussion-url="{{ hn_url or '' }}" data-story-text-content="{{ text_content }}" data-story-score="{{ story_score }}" data-story-comment-count="{{ story_comment_count if story_comment_count is not none else '' }}" data-feedback-key="{{ feedback_key }}" data-feedback-action="{{ feedback_action or '' }}" data-hybrid-score="{{ hybrid_score }}" data-semantic-score="{{ semantic_score }}" data-hn-score="{{ hn_score }}" data-freshness-boost="{{ freshness_boost }}" data-knn-score="{{ knn_score }}" data-max-sim-score="{{ max_sim_score }}" data-max-cluster-score="{{ max_cluster_score }}" data-cross-encoder-score="{{ ce_score }}">
     {% if card_url %}
     <a href="{{ card_url }}" target="_blank" class="absolute inset-0 z-10 rounded-lg" aria-label="{{ card_aria_label }}"></a>
     {% endif %}
@@ -825,6 +817,7 @@ STORY_CARD_TEMPLATE: str = """
         <span class="text-[10px] text-stone-400 font-mono">{{ time_ago }}</span>
         <span class="ml-auto flex items-center gap-1 pointer-events-auto" aria-label="Dashboard feedback">
             <button type="button" class="h-6 w-6 rounded border border-stone-200 bg-white text-xs text-stone-500 hover:border-hn hover:text-hn" title="Upvote for future dashboards" data-feedback-button="up">▲</button>
+            <button type="button" class="h-6 w-6 rounded border border-stone-200 bg-white text-xs text-emerald-700 hover:border-emerald-500 hover:text-emerald-700" title="Mark neutral for future dashboards" data-feedback-button="neutral">✓</button>
             <button type="button" class="h-6 w-6 rounded border border-stone-200 bg-white text-xs text-stone-500 hover:border-stone-700 hover:text-stone-900" title="Downvote for future dashboards" data-feedback-button="down">▼</button>
         </span>
         <span class="text-[10px] text-stone-400 font-mono pointer-events-none" data-feedback-status></span>
@@ -879,6 +872,8 @@ def generate_story_html(story: StoryDisplay) -> str:
         story_source=story.source,
         story_url=story.url,
         text_content=story.text_content[:2000],
+        story_score=story.points,
+        story_comment_count=story.comment_count,
         feedback_key=feedback_key(story.source, story.id, story.url),
         feedback_action=story.feedback_action,
         hybrid_score=story.hybrid_score,
@@ -914,63 +909,6 @@ def resolve_cluster_name(
             return f"Group {cluster_id + 1}"
         return ""
     return f"Group {cluster_id + 1}"
-
-
-def _similarity_stats(values: NDArray[np.float32]) -> dict[str, float]:
-    if values.size == 0:
-        return {
-            "count": 0,
-            "mean": 0.0,
-            "median": 0.0,
-            "min": 0.0,
-            "max": 0.0,
-            "p10": 0.0,
-            "p90": 0.0,
-        }
-    return {
-        "count": int(values.size),
-        "mean": float(np.mean(values)),
-        "median": float(np.median(values)),
-        "min": float(np.min(values)),
-        "max": float(np.max(values)),
-        "p10": float(np.percentile(values, 10)),
-        "p90": float(np.percentile(values, 90)),
-    }
-
-
-def build_cluster_stats(
-    embeddings: NDArray[np.float32],
-    labels: NDArray[np.int32],
-    centroids: NDArray[np.float32],
-    cluster_names: dict[int, str],
-) -> dict[str, object]:
-    if embeddings.size == 0 or labels.size == 0 or centroids.size == 0:
-        return {}
-    emb_norm = embeddings / np.maximum(
-        np.linalg.norm(embeddings, axis=1, keepdims=True), 1e-9
-    )
-    cent_norm = centroids / np.maximum(
-        np.linalg.norm(centroids, axis=1, keepdims=True), 1e-9
-    )
-    sims = np.sum(emb_norm * cent_norm[labels], axis=1)
-    cluster_ids = sorted(set(int(lbl) for lbl in labels))
-    clusters_payload: list[dict[str, object]] = []
-    for cid in cluster_ids:
-        mask = labels == cid
-        cluster_sims = sims[mask]
-        clusters_payload.append(
-            {
-                "cluster_id": cid,
-                "name": cluster_names.get(cid, ""),
-                "stats": _similarity_stats(cluster_sims),
-            }
-        )
-    return {
-        "total_signals": int(labels.size),
-        "n_clusters": int(len(cluster_ids)),
-        "overall": _similarity_stats(sims),
-        "clusters": clusters_payload,
-    }
 
 
 async def main() -> None:
@@ -1090,11 +1028,6 @@ async def main() -> None:
         help="Write score breakdown JSON for selected stories",
     )
     parser.add_argument(
-        "--debug-scores-path",
-        default=None,
-        help="Optional path for score breakdown JSON (defaults next to output)",
-    )
-    parser.add_argument(
         "--mistral",
         action="store_true",
         default=True,
@@ -1110,21 +1043,6 @@ async def main() -> None:
         "--debug-clusters",
         action="store_true",
         help="Write cluster naming prompts/responses to JSON for debugging",
-    )
-    parser.add_argument(
-        "--debug-clusters-path",
-        default=None,
-        help="Optional path for cluster naming debug JSON (defaults next to output)",
-    )
-    parser.add_argument(
-        "--cluster-stats",
-        action="store_true",
-        help="Write cluster similarity stats to JSON",
-    )
-    parser.add_argument(
-        "--cluster-stats-path",
-        default=None,
-        help="Optional path for cluster stats JSON (defaults next to output)",
     )
     args: argparse.Namespace = parser.parse_args()
 
@@ -1157,18 +1075,9 @@ async def main() -> None:
             archive=replace(config.archive, open_index_enabled=True),
         )
 
-    # Override provider if explicitly requested on CLI
-    if args.mistral or not args.mistral:  # args.mistral is always either True or False
-         from dataclasses import replace
-         config = replace(config, llm=replace(config.llm, provider=provider_choice))
+    config = replace(config, llm=replace(config.llm, provider=provider_choice))
 
     os.environ["LLM_PROVIDER"] = config.llm.provider
-
-    # Scheduled/automated runs may set this env var to hard-disable TL;DR generation.
-    if os.environ.get("HN_RERANK_FORCE_NO_TLDR") == "1":
-        # Note: AppConfig is frozen, so we'd need to recreate it if we wanted to change it.
-        # But we can just use the local flag for the LLM call later if needed.
-        pass
 
     if config.debug_clusters:
         logging.basicConfig(
@@ -1442,11 +1351,7 @@ async def main() -> None:
                 try:
                     debug_path = None
                     if config.debug_clusters:
-                        debug_path = (
-                            config.debug_clusters_path
-                            if config.debug_clusters_path
-                            else config.output_path.with_name("cluster_name_debug.json")
-                        )
+                        debug_path = config.output_path.with_name("cluster_name_debug.json")
                     cluster_profiles = await llm_utils.generate_batch_cluster_names(
                         clusters_for_naming,
                         progress_callback=name_cb,
@@ -1587,7 +1492,7 @@ async def main() -> None:
             r_task, completed=100, description="[green][+] Reranking complete."
         )
 
-        learned_ranker_labels = build_learned_ranker_labels(feedback_records)
+        learned_ranker_labels = build_labels_from_feedback(feedback_records)
         ranked, learned_ranker_mode = apply_learned_ranker(
             ranked,
             cands,
@@ -1789,11 +1694,7 @@ async def main() -> None:
     print(f"[+] Selected sources: {counts_summary}")
 
     if config.debug_scores:
-        debug_path = (
-            config.debug_scores_path
-            if config.debug_scores_path
-            else config.output_path.with_name("scores_debug.json")
-        )
+        debug_path = config.output_path.with_name("scores_debug.json")
         debug_rows: list[dict[str, object]] = []
         for result in selected_results:
             story = cands[result.index]

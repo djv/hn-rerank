@@ -74,7 +74,7 @@ class StoryDisplayDict(StoryForTldr):
     max_sim_score: NotRequired[float]
     max_cluster_score: NotRequired[float]
     comment_count: NotRequired[int | None]
-    feedback_action: NotRequired[Literal["up", "down"] | None]
+    feedback_action: NotRequired[Literal["up", "neutral", "down"] | None]
 
 
 @dataclass
@@ -183,7 +183,7 @@ class StoryDisplay:
     max_sim_score: float = 0.0
     max_cluster_score: float = 0.0
     comment_count: int | None = None
-    feedback_action: Literal["up", "down"] | None = None
+    feedback_action: Literal["up", "neutral", "down"] | None = None
 
     def to_dict(self) -> StoryDisplayDict:
         """Convert to dict for template rendering."""
