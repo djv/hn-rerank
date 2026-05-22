@@ -23,6 +23,8 @@ from tenacity import (
 
 from api.cache_utils import atomic_write_json
 from api.constants import (
+    LLM_CLUSTER_CONTEXT_MAX_CHARS,
+    LLM_CLUSTER_CONTEXT_STORY_COUNT,
     LLM_CLUSTER_MAX_RETRIES,
     LLM_CLUSTER_MAX_ROUNDS,
     LLM_CLUSTER_MAX_TOKENS,
@@ -30,6 +32,7 @@ from api.constants import (
     LLM_CLUSTER_NAME_MODEL_FALLBACK,
     LLM_CLUSTER_NAME_MODEL_PRIMARY,
     LLM_CLUSTER_NAME_MAX_WORDS,
+    LLM_CLUSTER_NAME_PROMPT_VERSION,
     LLM_CLUSTER_TITLE_MAX_CHARS,
     LLM_429_COOLDOWN_BASE,
     LLM_429_COOLDOWN_MAX,
@@ -188,8 +191,22 @@ CLUSTER_NAME_CACHE_PATH = Path(".cache/cluster_names.json")
 
 def _cluster_name_cache_key(story_ids: Sequence[str], model: str) -> str:
     key_src = ",".join(story_ids)
-    key_src += f"|model={model}|prompt=v14"
+    key_src += f"|model={model}|prompt={LLM_CLUSTER_NAME_PROMPT_VERSION}"
     return hashlib.sha256(key_src.encode()).hexdigest()
+
+
+def _normalize_cluster_context_text(title: str, text: str) -> str:
+    normalized_text = " ".join(text.split())
+    if not normalized_text:
+        return ""
+
+    normalized_title = " ".join(title.split())
+    if normalized_title and normalized_text.casefold().startswith(normalized_title.casefold()):
+        remainder = normalized_text[len(normalized_title):].lstrip(" .:-")
+        if remainder:
+            normalized_text = remainder
+
+    return normalized_text
 
 
 def _finalize_cluster_name(raw_name: str) -> str | None:
@@ -481,7 +498,8 @@ async def generate_batch_cluster_names(
     payloads: dict[int, list[str]] = {}
     for cid, items in to_generate.items():
         # Use top items only to keep prompts compact and reduce latency.
-        # We include context (text/comments) for the top 3 stories to help with vague titles.
+        # Include more context for the top-ranked stories, but avoid wasting
+        # prompt space by repeating the title in the snippet.
         sorted_items = sorted(items, key=lambda x: -x[1])
         cluster_info: list[str] = []
         for i, (s, _) in enumerate(sorted_items):
@@ -493,14 +511,17 @@ async def generate_batch_cluster_names(
                 title = title[:LLM_CLUSTER_TITLE_MAX_CHARS].rstrip()
             
             entry = f"Title: {title}"
-            # Add snippet for top 3 stories
-            if i < 3:
+            # Add context for the highest-signal stories only.
+            if i < LLM_CLUSTER_CONTEXT_STORY_COUNT:
                 text = s.get("text_content") or ""
                 if not text and s.get("comments"):
                     text = s["comments"][0]
                 if text:
-                    snippet = " ".join(text.split())[:200]
-                    entry += f"\n  Context: {snippet}..."
+                    source_text = _normalize_cluster_context_text(title, str(text))
+                    snippet = source_text[:LLM_CLUSTER_CONTEXT_MAX_CHARS]
+                    if snippet:
+                        ellipsis = "..." if len(source_text) > len(snippet) else ""
+                        entry += f"\n  Context: {snippet}{ellipsis}"
             cluster_info.append(entry)
 
         payloads[cid] = cluster_info

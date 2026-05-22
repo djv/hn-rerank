@@ -22,7 +22,13 @@ from api.rerank import (
 from api.config import ClusteringConfig
 
 
-def make_story(story_id: int, title: str) -> StoryDict:
+def make_story(
+    story_id: int,
+    title: str,
+    *,
+    text_content: str | None = None,
+    comments: list[str] | None = None,
+) -> StoryDict:
     return StoryDict(
         id=story_id,
         title=title,
@@ -30,8 +36,8 @@ def make_story(story_id: int, title: str) -> StoryDict:
         score=0,
         time=0,
         discussion_url=None,
-        comments=[],
-        text_content=title,
+        comments=comments or [],
+        text_content=title if text_content is None else text_content,
         source="hn",
     )
 
@@ -461,6 +467,76 @@ async def test_llm_cluster_name_truncates_overlong_label():
         names = await generate_batch_cluster_names(clusters)
 
     assert names[0] == "Graph Neural Networks for Drug Discovery"
+
+
+@pytest.mark.asyncio
+async def test_cluster_naming_prompt_uses_cleaner_longer_context_for_top_five():
+    long_body = (
+        "This article covers routing, memory pressure, and infrastructure "
+        + ("detail " * 45)
+        + "TAILMARK"
+    )
+    clusters = {
+        0: [
+            (
+                make_story(
+                    100 + i,
+                    f"Story {i}",
+                    text_content=f"Story {i}. {long_body} {i}",
+                ),
+                float(10 - i),
+            )
+            for i in range(6)
+        ],
+    }
+
+    mock_gen = AsyncMock(
+        return_value='{"name": "Infrastructure Systems", "keywords": "routing"}'
+    )
+    with (
+        patch.dict("os.environ", {"GROQ_API_KEY": "fake_key"}),
+        patch("api.llm_utils._load_cluster_name_cache", return_value={}),
+        patch("api.llm_utils._save_cluster_name_cache", lambda _cache: None),
+        patch("api.llm_utils._generate_with_retry", new=mock_gen),
+    ):
+        await generate_batch_cluster_names(clusters)
+
+    prompt = mock_gen.await_args.kwargs["contents"]
+    assert prompt.count("Context:") == 5
+    assert "Title: Story 0\n  Context: Story 0." not in prompt
+    assert "TAILMARK" in prompt
+    assert "Title: Story 5\n  Context:" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_cluster_naming_prompt_falls_back_to_comment_context():
+    clusters = {
+        0: [
+            (
+                make_story(
+                    200,
+                    "Comment-only story",
+                    text_content="",
+                    comments=["Comment body with enough detail to name the topic."],
+                ),
+                1.0,
+            ),
+        ],
+    }
+
+    mock_gen = AsyncMock(
+        return_value='{"name": "Topic Review", "keywords": "detail"}'
+    )
+    with (
+        patch.dict("os.environ", {"GROQ_API_KEY": "fake_key"}),
+        patch("api.llm_utils._load_cluster_name_cache", return_value={}),
+        patch("api.llm_utils._save_cluster_name_cache", lambda _cache: None),
+        patch("api.llm_utils._generate_with_retry", new=mock_gen),
+    ):
+        await generate_batch_cluster_names(clusters)
+
+    prompt = mock_gen.await_args.kwargs["contents"]
+    assert "Context: Comment body with enough detail to name the topic." in prompt
 
 @given(
     seed=st.integers(min_value=0, max_value=2**32 - 1),
