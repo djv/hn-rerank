@@ -39,13 +39,14 @@ async def test_cluster_name_cache_hit(temp_cache_file):
     )
 
     # Seed cache
-    cache_content = {cache_key: "Cached Cluster Name"}
+    profile = {"name": "Cached Cluster Name", "keywords": "keyword1, keyword2"}
+    cache_content = {cache_key: json.dumps(profile)}
     temp_cache_file.write_text(json.dumps(cache_content))
 
     # Call function
     names = await llm_utils.generate_batch_cluster_names(clusters)
 
-    assert names[0] == "Cached Cluster Name"
+    assert names[0] == profile
 
 
 @pytest.mark.asyncio
@@ -58,7 +59,8 @@ async def test_cluster_name_cache_miss_and_save(temp_cache_file):
     clusters: dict[int, list[tuple[StoryDict, float]]] = {0: items}
 
     # Mock API via internal helper to avoid real HTTP
-    mock_gen = AsyncMock(return_value="New Cluster Name")
+    profile = {"name": "New Cluster Name", "keywords": "keyword1"}
+    mock_gen = AsyncMock(return_value=json.dumps(profile))
     with (
         patch.dict("os.environ", {"GROQ_API_KEY": "fake_key"}),
         patch("api.llm_utils._generate_with_retry", new=mock_gen),
@@ -66,7 +68,7 @@ async def test_cluster_name_cache_miss_and_save(temp_cache_file):
         # Call function
         names = await llm_utils.generate_batch_cluster_names(clusters)
 
-        assert names[0] == "New Cluster Name"
+        assert names[0] == profile
         assert mock_gen.await_count >= 1
 
         # Verify cache was updated
@@ -78,7 +80,7 @@ async def test_cluster_name_cache_miss_and_save(temp_cache_file):
         )
 
         assert cache_key in cache_content
-        assert cache_content[cache_key] == "New Cluster Name"
+        assert json.loads(cache_content[cache_key]) == profile
 
 
 @pytest.mark.asyncio

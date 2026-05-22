@@ -68,10 +68,10 @@ class TestBuildRangesDefaults:
         )
 
     def test_param_counts(self):
-        assert len(_DEFAULTS_CORE) == 7, (
+        assert len(_DEFAULTS_CORE) == 8, (
             f"core got {len(_DEFAULTS_CORE)}: {sorted(_DEFAULTS_CORE)}"
         )
-        assert len(_DEFAULTS_FULL) == 8, (
+        assert len(_DEFAULTS_FULL) == 10, (
             f"full got {len(_DEFAULTS_FULL)}: {sorted(_DEFAULTS_FULL)}"
         )
 
@@ -79,7 +79,7 @@ class TestBuildRangesDefaults:
         assert _DEFAULTS_CORE.keys() <= _DEFAULTS_FULL.keys()
 
     def test_core_drops_expected_keys(self):
-        dropped = {"freshness_boost"}
+        dropped = {"knn_k", "classifier_k_feat"}
         assert dropped.isdisjoint(_DEFAULTS_CORE)
         assert dropped <= _DEFAULTS_FULL.keys()
 
