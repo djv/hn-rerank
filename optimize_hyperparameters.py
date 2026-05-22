@@ -12,6 +12,7 @@ import os
 import re
 import sys
 from contextlib import suppress
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
@@ -59,6 +60,13 @@ from api.constants import (  # noqa: E402
     FRESHNESS_HALF_LIFE_HOURS,
     HN_SCORE_NORMALIZATION_CAP,
     KNN_NEIGHBORS,
+    RANKING_COMMENT_RATIO,
+    RANKING_NON_SEMANTIC_WEIGHT,
+)
+from api.feedback import load_feedback  # noqa: E402
+from api.learned_ranker import (  # noqa: E402
+    build_labels_from_feedback,
+    compare_dashboard_feedback_configs,
 )
 import tuning_common as _tuning_common  # noqa: E402
 
@@ -157,6 +165,8 @@ def _build_ranges(
     - Tight where top-10 converged.
     """
     full_defaults: dict[str, tuple[float, float]] = {
+        "non_semantic_weight": (0.0, 0.20),
+        "comment_ratio": (0.0, 0.60),
         "knn_k": (3, 10),
         "adaptive_hn_min": (0.20, 0.45),
         "adaptive_hn_max": (0.45, 0.80),
@@ -168,15 +178,34 @@ def _build_ranges(
     }
     spaces: dict[str, set[str]] = {
         "full": set(full_defaults.keys()),
-        "core": set(full_defaults.keys()) - {"freshness_boost"},
+        "core": {
+            "non_semantic_weight",
+            "comment_ratio",
+            "adaptive_hn_min",
+            "adaptive_hn_max",
+            "freshness_boost",
+            "freshness_half_life",
+            "hn_threshold_young",
+            "hn_score_cap",
+        },
         "cat_relevance": {
+            "non_semantic_weight",
+            "comment_ratio",
             "knn_k",
             "classifier_k_feat",
         },
         "cat_freshness": {"freshness_boost", "freshness_half_life"},
         "cat_semantic": {"knn_k"},
-        "cat_hn": {"adaptive_hn_min", "hn_threshold_young", "hn_score_cap"},
+        "cat_hn": {
+            "non_semantic_weight",
+            "comment_ratio",
+            "adaptive_hn_min",
+            "hn_threshold_young",
+            "hn_score_cap",
+        },
         "cat_hn_decoupled": {
+            "non_semantic_weight",
+            "comment_ratio",
             "adaptive_hn_min",
             "adaptive_hn_max",
             "hn_threshold_young",
@@ -369,6 +398,42 @@ async def main():
         default=0.0,
         help="Minimum score delta required for a candidate to be promotable.",
     )
+    parser.add_argument(
+        "--dashboard-feedback",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use stored dashboard feedback as an extra validation gate when usable labels exist.",
+    )
+    parser.add_argument(
+        "--dashboard-feedback-path",
+        type=Path,
+        default=None,
+        help="Optional dashboard feedback JSON path (defaults to the main store).",
+    )
+    parser.add_argument(
+        "--dashboard-holdout-fraction",
+        type=float,
+        default=0.25,
+        help="Newest-label fraction reserved for dashboard temporal holdout.",
+    )
+    parser.add_argument(
+        "--dashboard-min-holdout-count",
+        type=int,
+        default=20,
+        help="Minimum temporal holdout size for dashboard feedback validation.",
+    )
+    parser.add_argument(
+        "--dashboard-min-class-count",
+        type=int,
+        default=2,
+        help="Minimum positive and negative labels required in the dashboard holdout.",
+    )
+    parser.add_argument(
+        "--dashboard-score-tolerance",
+        type=float,
+        default=0.0,
+        help="Minimum dashboard-feedback score delta required for promotion.",
+    )
     args = parser.parse_args()
     if args.top_trials_json_limit < 1:
         raise SystemExit("--top-trials-json-limit must be >= 1")
@@ -410,6 +475,19 @@ async def main():
         print("Failed to load data.")
         sys.exit(1)
 
+    dashboard_labels = []
+    if args.dashboard_feedback:
+        records = (
+            load_feedback(args.dashboard_feedback_path)
+            if args.dashboard_feedback_path
+            else load_feedback()
+        )
+        dashboard_labels = build_labels_from_feedback(records)
+        print(
+            "Loaded dashboard feedback labels: "
+            f"{len(dashboard_labels)} records with rank diagnostics"
+        )
+
     print(
         f"Data loaded. Starting {args.trials}-trial optimization "
         f"({args.cv_folds}-fold CV, {args.n_jobs} workers)..."
@@ -427,6 +505,17 @@ async def main():
             knn_k = trial.suggest_int("knn_k", knn_lo, knn_hi)
         else:
             knn_k = KNN_NEIGHBORS
+
+        non_semantic_weight = (
+            trial.suggest_float("non_semantic_weight", *r["non_semantic_weight"])
+            if "non_semantic_weight" in r
+            else RANKING_NON_SEMANTIC_WEIGHT
+        )
+        comment_ratio = (
+            trial.suggest_float("comment_ratio", *r["comment_ratio"])
+            if "comment_ratio" in r
+            else RANKING_COMMENT_RATIO
+        )
 
         adaptive_hn_min = (
             trial.suggest_float("adaptive_hn_min", *r["adaptive_hn_min"])
@@ -474,11 +563,24 @@ async def main():
             )
         else:
             classifier_k_feat = CLASSIFIER_K_FEAT
-        use_log_points_feature = trial.suggest_categorical("use_log_points_feature", [True, False])
-        use_log_comments_feature = trial.suggest_categorical("use_log_comments_feature", [True, False])
-        use_comment_ratio_feature = trial.suggest_categorical("use_comment_ratio_feature", [True, False])
+        if args.space == "full":
+            use_log_points_feature = trial.suggest_categorical(
+                "use_log_points_feature", [True, False]
+            )
+            use_log_comments_feature = trial.suggest_categorical(
+                "use_log_comments_feature", [True, False]
+            )
+            use_comment_ratio_feature = trial.suggest_categorical(
+                "use_comment_ratio_feature", [True, False]
+            )
+        else:
+            use_log_points_feature = _tuning_common.CLASSIFIER_USE_LOG_POINTS_FEATURE
+            use_log_comments_feature = _tuning_common.CLASSIFIER_USE_LOG_COMMENTS_FEATURE
+            use_comment_ratio_feature = _tuning_common.CLASSIFIER_USE_COMMENT_RATIO_FEATURE
 
         trial_params = {
+            "non_semantic_weight": non_semantic_weight,
+            "comment_ratio": comment_ratio,
             "knn_k": knn_k,
             "adaptive_hn_min": adaptive_hn_min,
             "adaptive_hn_max": adaptive_hn_max,
@@ -642,9 +744,34 @@ async def main():
         score_tolerance=args.validation_score_tolerance,
         guard_tolerance=args.validation_guard_tolerance,
     )
+    dashboard_validation = None
+    dashboard_validation_status = "disabled"
+    dashboard_validation_error = None
+    if args.dashboard_feedback:
+        with tuned_config(best) as (candidate_config, _):
+            with tuned_config({}) as (current_config, _):
+                try:
+                    dashboard_validation = compare_dashboard_feedback_configs(
+                        dashboard_labels,
+                        current_config,
+                        candidate_config,
+                        holdout_fraction=args.dashboard_holdout_fraction,
+                        min_holdout_count=args.dashboard_min_holdout_count,
+                        min_class_count=args.dashboard_min_class_count,
+                        score_tolerance=args.dashboard_score_tolerance,
+                    )
+                    dashboard_validation_status = (
+                        "passed" if dashboard_validation.passed else "failed"
+                    )
+                except ValueError as exc:
+                    dashboard_validation_status = "skipped"
+                    dashboard_validation_error = str(exc)
+    combined_promotable = validation["promotable"] and (
+        dashboard_validation is None or dashboard_validation.passed
+    )
 
     rprint("\nCandidate Validation:")
-    rprint(f"  Promotable: {validation['promotable']}")
+    rprint(f"  Promotable: {combined_promotable}")
     rprint(
         f"  Score Delta: {validation['score_delta']:.4f} "
         f"(candidate={validation['candidate_score']:.4f}, current={validation['incumbent_score']:.4f})"
@@ -655,6 +782,44 @@ async def main():
         )
     if validation["guard_failures"]:
         rprint(f"  Guard metric regressions: {', '.join(validation['guard_failures'])}")
+    if dashboard_validation is not None:
+        rprint("\nDashboard Feedback Validation:")
+        rprint(f"  Status: {dashboard_validation_status}")
+        rprint(
+            f"  Labels: usable={dashboard_validation.summary.usable_label_count}/"
+            f"{dashboard_validation.summary.label_count}, "
+            f"holdout={dashboard_validation.summary.holdout_label_count}"
+        )
+        rprint(
+            f"  Score Delta: {dashboard_validation.score_delta:.4f} "
+            f"(candidate={dashboard_validation.candidate_score:.4f}, "
+            f"current={dashboard_validation.incumbent_score:.4f})"
+        )
+        rprint(
+            "  Candidate: "
+            f"pairwise={dashboard_validation.candidate.pairwise_accuracy:.3f}, "
+            f"P@10={dashboard_validation.candidate.precision_at_10:.3f}, "
+            f"P@5={dashboard_validation.candidate.precision_at_5:.3f}"
+        )
+        rprint(
+            "  Current: "
+            f"pairwise={dashboard_validation.incumbent.pairwise_accuracy:.3f}, "
+            f"P@10={dashboard_validation.incumbent.precision_at_10:.3f}, "
+            f"P@5={dashboard_validation.incumbent.precision_at_5:.3f}"
+        )
+        if dashboard_validation.primary_failures:
+            rprint(
+                "  Primary metric regressions: "
+                f"{', '.join(dashboard_validation.primary_failures)}"
+            )
+        if dashboard_validation.guard_failures:
+            rprint(
+                "  Guard metric regressions: "
+                f"{', '.join(dashboard_validation.guard_failures)}"
+            )
+    elif dashboard_validation_status == "skipped":
+        rprint("\nDashboard Feedback Validation:")
+        rprint(f"  Status: {dashboard_validation_status} ({dashboard_validation_error})")
 
     rprint("\nCandidate Metrics:")
     rprint(f"  MRR: {candidate_metrics.get('mrr', 0):.3f}")
@@ -724,8 +889,11 @@ async def main():
     # Write best params to file for easy reference
     with open("optimized_params.txt", "w") as f:
         f.write(f"Best Combined Score: {study.best_value:.4f}\n")
-        f.write(f"Promotable: {validation['promotable']}\n")
+        f.write(f"Promotable: {combined_promotable}\n")
         f.write(f"Validation Score Delta: {validation['score_delta']:.4f}\n")
+        f.write(f"Dashboard Feedback Status: {dashboard_validation_status}\n")
+        if dashboard_validation is not None:
+            f.write(f"Dashboard Score Delta: {dashboard_validation.score_delta:.4f}\n")
         f.write(f"MRR: {candidate_metrics.get('mrr', 0):.3f}\n")
         f.write(f"NDCG@10: {candidate_metrics.get('ndcg@10', 0):.3f}\n")
         f.write(f"NDCG@20: {candidate_metrics.get('ndcg@20', 0):.3f}\n")
@@ -763,6 +931,12 @@ async def main():
                 "current_metrics": current_metrics,
                 "current_diagnostics": current_diagnostics,
                 "validation": validation,
+                "combined_promotable": combined_promotable,
+                "dashboard_feedback_validation_status": dashboard_validation_status,
+                "dashboard_feedback_validation_error": dashboard_validation_error,
+                "dashboard_feedback_validation": (
+                    None if dashboard_validation is None else asdict(dashboard_validation)
+                ),
                 "n_trials": args.trials,
                 "cv_folds": args.cv_folds,
                 "std_penalty": args.std_penalty,

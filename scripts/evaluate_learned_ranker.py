@@ -8,24 +8,8 @@ from dataclasses import asdict
 from pathlib import Path
 
 from api.config import AppConfig
-from api.feedback import FeedbackRecord, load_feedback
-from api.learned_ranker import LabeledStory, evaluate_labeled_order
-
-
-def build_labels(records: dict[str, FeedbackRecord]) -> list[LabeledStory]:
-    labels: list[LabeledStory] = []
-    for record in records.values():
-        rank_result = record.to_rank_result()
-        if rank_result is None:
-            continue
-        labels.append(
-            LabeledStory(
-                story=record.to_story(),
-                label=1 if record.action == "up" else 0,
-                rank_result=rank_result,
-            )
-        )
-    return labels
+from api.feedback import load_feedback
+from api.learned_ranker import build_labels_from_feedback, evaluate_labeled_order
 
 
 def parse_args() -> argparse.Namespace:
@@ -55,7 +39,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     config = AppConfig.load(toml_path=args.config)
-    labels = build_labels(load_feedback())
+    labels = build_labels_from_feedback(load_feedback())
     report = evaluate_labeled_order(
         labels,
         config.learned_ranker,
