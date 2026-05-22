@@ -474,15 +474,6 @@ class SnapshotPayload(TypedDict):
     test_ids: list[int]
 
 
-@dataclass
-class CrossValFold:
-    """Single fold for cross-validation."""
-
-    train_emb: NDArray[np.float32]
-    test_ids: set[int]
-    candidates: list[Story]
-
-
 class RankingEvaluator:
     def __init__(self, username: str):
         self.username = username

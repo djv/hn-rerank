@@ -114,11 +114,6 @@ _DETECTABLE_SPECS = tuple(
 def source_badge_label(source: str) -> str | None:
     return SOURCE_BADGE_LABELS.get(source, "RSS")
 
-
-def source_spec(source: str) -> ExternalSourceSpec:
-    return _SOURCE_BY_NAME[source]
-
-
 def detect_source(feed_url: str, link: str = "") -> ExternalSourceSpec:
     for spec in _DETECTABLE_SPECS:
         if spec.matches_url(feed_url) or spec.matches_url(link):

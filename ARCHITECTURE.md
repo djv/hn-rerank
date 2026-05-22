@@ -27,7 +27,6 @@ Responsibilities:
 
 Notable runtime behavior:
 - top-level config is loaded from `[hn_rerank]`
-- `HN_RERANK_FORCE_NO_TLDR=1` hard-disables TL;DR generation for automated runs
 - the displayed match badge uses `max_cluster_score`, while the small `CE` value is the normalized cross-encoder rerank score
 - final selection targets a best-effort `2:1` HN:RSS mix
 

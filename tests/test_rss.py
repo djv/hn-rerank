@@ -10,7 +10,7 @@ from api.rss import (
     _feed_item_limit,
     _parse_date,
     _parse_digg_ai_page,
-    _parse_feed_entries,
+    _parse_feed,
     fetch_rss_stories,
 )
 
@@ -20,6 +20,11 @@ def isolate_rss_cache(tmp_path, monkeypatch):
     cache_dir = tmp_path / "rss-cache"
     cache_dir.mkdir()
     monkeypatch.setattr(rss, "RSS_CACHE_PATH", Path(cache_dir))
+
+
+def _stories_from_feed(feed_xml: str, feed_url: str, max_items: int, min_ts: int):
+    _, stories = _parse_feed(feed_xml, feed_url, max_items, min_ts)
+    return stories
 
 
 def test_extract_opml_feed_urls():
@@ -59,7 +64,7 @@ def test_parse_rss_entries():
       </channel>
     </rss>
     """
-    stories = _parse_feed_entries(
+    stories = _stories_from_feed(
         xml,
         feed_url="https://example.com/feed.xml",
         max_items=5,
@@ -88,7 +93,7 @@ def test_parse_rss_prefers_content_encoded():
       </channel>
     </rss>
     """
-    stories = _parse_feed_entries(
+    stories = _stories_from_feed(
         xml,
         feed_url="https://example.com/feed.xml",
         max_items=5,
@@ -110,7 +115,7 @@ def test_parse_atom_entries():
       </entry>
     </feed>
     """
-    stories = _parse_feed_entries(
+    stories = _stories_from_feed(
         xml,
         feed_url="https://example.com/atom.xml",
         max_items=5,
@@ -136,7 +141,7 @@ def test_parse_feed_entries_skips_undated_items():
       </channel>
     </rss>
     """
-    stories = _parse_feed_entries(
+    stories = _stories_from_feed(
         xml,
         feed_url="https://example.com/feed.xml",
         max_items=5,
@@ -166,7 +171,7 @@ def test_parse_feed_entries_uses_feed_date_for_github_trending_items():
     </rss>
     """
     feed_ts = _parse_date("Tue, 19 May 2026 01:56:32 GMT")
-    stories = _parse_feed_entries(
+    stories = _stories_from_feed(
         xml,
         feed_url="https://mshibanami.github.io/GitHubTrendingRSS/monthly/all.xml",
         max_items=5,
@@ -193,7 +198,7 @@ def test_parse_feed_entries_does_not_use_feed_date_for_generic_items():
       </channel>
     </rss>
     """
-    stories = _parse_feed_entries(
+    stories = _stories_from_feed(
         xml,
         feed_url="https://example.com/feed.xml",
         max_items=5,
@@ -241,7 +246,7 @@ def test_parse_feed_entries_allows_supported_feed_language():
       </channel>
     </rss>
     """
-    stories = _parse_feed_entries(
+    stories = _stories_from_feed(
         xml,
         feed_url="https://example.com/feed.xml",
         max_items=5,
@@ -273,7 +278,7 @@ def test_parse_feed_entries_filters_unsupported_feed_language_by_detection():
       </channel>
     </rss>
     """
-    stories = _parse_feed_entries(
+    stories = _stories_from_feed(
         xml,
         feed_url="https://voorbeeld.nl/feed.xml",
         max_items=5,
@@ -297,7 +302,7 @@ def test_parse_feed_entries_preserves_discussion_url_for_curated_sources():
       </channel>
     </rss>
     """
-    stories = _parse_feed_entries(
+    stories = _stories_from_feed(
         xml,
         feed_url="https://lobste.rs/rss",
         max_items=5,
@@ -323,7 +328,7 @@ def test_parse_feed_entries_marks_lesswrong_source():
       </channel>
     </rss>
     """
-    stories = _parse_feed_entries(
+    stories = _stories_from_feed(
         xml,
         feed_url="https://www.lesswrong.com/feed.xml",
         max_items=5,
@@ -351,7 +356,7 @@ def test_parse_feed_entries_marks_slashdot_source_and_comments():
       </channel>
     </rss>
     """
-    stories = _parse_feed_entries(
+    stories = _stories_from_feed(
         xml,
         feed_url="https://rss.slashdot.org/Slashdot/slashdotMain",
         max_items=5,
@@ -387,7 +392,7 @@ def test_parse_feed_entries_marks_github_trending_source_and_readme_text():
       </channel>
     </rss>
     """
-    stories = _parse_feed_entries(
+    stories = _stories_from_feed(
         xml,
         feed_url="https://mshibanami.github.io/GitHubTrendingRSS/monthly/python.xml",
         max_items=5,
@@ -417,7 +422,7 @@ def test_parse_feed_entries_marks_tildes_source_and_score():
       </channel>
     </rss>
     """
-    stories = _parse_feed_entries(
+    stories = _stories_from_feed(
         xml,
         feed_url="https://tildes.net/topics.rss",
         max_items=5,
@@ -447,7 +452,7 @@ def test_parse_feed_entries_marks_reddit_source_and_external_link():
       </entry>
     </feed>
     """
-    stories = _parse_feed_entries(
+    stories = _stories_from_feed(
         xml,
         feed_url="https://www.reddit.com/r/MachineLearning/top/.rss?t=week&limit=25",
         max_items=5,
@@ -480,7 +485,7 @@ def test_parse_feed_entries_marks_other_subreddits_as_reddit():
       </entry>
     </feed>
     """
-    stories = _parse_feed_entries(
+    stories = _stories_from_feed(
         xml,
         feed_url="https://www.reddit.com/r/programming/top/.rss?t=week&limit=25",
         max_items=5,
@@ -515,7 +520,7 @@ def test_parse_feed_entries_reddit_self_post_uses_comments_url():
       </entry>
     </feed>
     """
-    stories = _parse_feed_entries(
+    stories = _stories_from_feed(
         xml,
         feed_url="https://www.reddit.com/r/MachineLearning/top/.rss?t=week&limit=25",
         max_items=5,
@@ -542,7 +547,7 @@ def test_parse_feed_entries_extracts_reddit_score():
       </entry>
     </feed>
     """
-    stories = _parse_feed_entries(
+    stories = _stories_from_feed(
         xml,
         feed_url="https://www.reddit.com/r/MachineLearning/top/.rss?t=week&limit=25",
         max_items=5,

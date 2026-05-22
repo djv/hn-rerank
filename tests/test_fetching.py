@@ -5,7 +5,7 @@ import pytest
 import respx
 import httpx
 from httpx import Response
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 from api.constants import (
     MIN_CANDIDATE_COMMENTS,
     MIN_COMMENT_LENGTH,
@@ -17,13 +17,11 @@ from api.fetching import (
     AlgoliaComment,
     _clean_text,
     _extract_comments_recursive,
-    build_bigquery_sql,
     build_candidate_filters,
     build_open_index_sql,
     fetch_story,
     get_best_stories,
     open_index_parquet_paths,
-    story_from_bigquery_row,
 )
 from api.models import Story
 from api.config import AppConfig, ArchiveConfig
@@ -244,54 +242,6 @@ async def test_fetch_story_refetches_cached_hn_story_without_comment_count(
     assert story is not None
     assert story.title == "Fresh with count"
     assert story.comment_count == 31
-
-
-def test_story_from_bigquery_row_converts_to_story():
-    row = {
-        "id": 123,
-        "title": "A &amp; B",
-        "url": "https://example.com/post",
-        "text": "<p>Self text</p>",
-        "score": 42,
-        "timestamp": datetime(2026, 4, 29, 12, 0, tzinfo=UTC),
-        "comment_count": 17,
-        "comments": [
-            {"text": "<p>First &amp; useful comment</p>", "score": 5},
-            {"text": "", "score": 4},
-            {"text": "<i>Second comment</i>", "score": 3},
-        ],
-    }
-
-    story = story_from_bigquery_row(row)
-
-    assert story is not None
-    assert story.id == 123
-    assert story.title == "A & B"
-    assert story.url == "https://example.com/post"
-    assert story.score == 42
-    assert story.time == 1777464000
-    assert story.discussion_url == "https://news.ycombinator.com/item?id=123"
-    assert story.comment_count == 17
-    assert story.comments == ["First & useful comment", "Second comment"]
-    assert "A & B" in story.text_content
-    assert "Self text" in story.text_content
-    assert "First & useful comment" in story.text_content
-
-
-def test_story_from_bigquery_row_rejects_empty_payload():
-    assert story_from_bigquery_row({"id": 0}) is None
-    assert story_from_bigquery_row({"id": 123, "title": "", "comments": []}) is None
-
-
-def test_build_bigquery_sql_uses_archive_bounds_and_public_table():
-    sql = build_bigquery_sql()
-
-    assert "`bigquery-public-data.hacker_news.full`" in sql
-    assert "WITH RECURSIVE" in sql
-    assert "TIMESTAMP_SECONDS(@start_ts)" in sql
-    assert "TIMESTAMP_SECONDS(@end_ts)" in sql
-    assert "@candidate_limit" in sql
-    assert "@max_comment_depth" in sql
 
 
 def test_open_index_parquet_paths_selects_years():
@@ -733,7 +683,7 @@ async def test_get_best_stories_gracefully_handles_open_index_archive_failure(mo
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_get_best_stories_uses_cached_archive_without_bigquery(monkeypatch, tmp_path):
+async def test_get_best_stories_uses_cached_archive_without_archive_fetch(monkeypatch, tmp_path):
     now_ts = 1800000000
     cached_story = Story(
         id=999,
@@ -761,13 +711,10 @@ async def test_get_best_stories_uses_cached_archive_without_bigquery(monkeypatch
         return_value=Response(200, json={"hits": []})
     )
 
-    def fail_bigquery(**kwargs):
-        raise AssertionError("BigQuery should not be called by default")
-
     monkeypatch.setattr("api.fetching.CACHE_PATH", tmp_path)
     monkeypatch.setattr(
-        "api.fetching._query_bigquery_archive_sync",
-        fail_bigquery,
+        "api.fetching.fetch_open_index_archive_stories",
+        AsyncMock(side_effect=AssertionError("Archive fetch should not run by default")),
     )
 
     config = AppConfig(days=10, no_rss=True)

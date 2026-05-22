@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import html
 import json
 import os
+import re
 import statistics
 import tempfile
 import time
@@ -21,19 +23,152 @@ from api.constants import (
     ALGOLIA_MIN_POINTS,
     MIN_CANDIDATE_COMMENTS,
     TOP_COMMENTS_FOR_RANKING,
+    TOP_COMMENTS_FOR_UI,
 )
-from api.content import ARTICLE_SEM, compose_story_text, fetch_full_text
+from api.content import ARTICLE_SEM, compose_story_text, fetch_full_text, strip_html
 import api.fetching as fetching
 from api.fetching import (
-    HN_FULL_TABLE,
-    build_bigquery_sql,
     get_best_stories,
-    story_from_bigquery_row,
 )
 from api.models import Story
 from api.config import AppConfig
 
 DEFAULT_BIGQUERY_PROJECT = "gen-lang-client-0444855014"
+HN_FULL_TABLE = "bigquery-public-data.hacker_news.full"
+
+
+def _clean_bigquery_comment(text: str) -> str:
+    text = html.unescape(strip_html(text))
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _timestamp_to_unix(value: Any) -> int:
+    if isinstance(value, datetime):
+        dt = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+        return int(dt.timestamp())
+    return int(value or 0)
+
+
+def story_from_bigquery_row(row: Any) -> Story | None:
+    get = row.get if hasattr(row, "get") else row.__getitem__
+    story_id = int(get("id") or 0)
+    if story_id <= 0:
+        return None
+
+    title = html.unescape(str(get("title") or "")).strip()
+    self_text = strip_html(str(get("text") or ""))
+    url = str(get("url") or "").strip() or None
+    score = int(get("score") or 0)
+    created_at = _timestamp_to_unix(get("timestamp") or get("time"))
+    comment_count = get("comment_count")
+    comments_raw = get("comments") or []
+
+    comments: list[str] = []
+    for item in comments_raw:
+        if isinstance(item, dict):
+            text = str(item.get("text") or "")
+        else:
+            text = str(getattr(item, "text", "") or "")
+        text = _clean_bigquery_comment(text)
+        if text:
+            comments.append(text)
+
+    text_content = compose_story_text(
+        title=title,
+        self_text=self_text,
+        comments=comments[:TOP_COMMENTS_FOR_RANKING],
+    )
+    if not text_content:
+        return None
+
+    return Story(
+        id=story_id,
+        title=title,
+        url=url,
+        score=score,
+        time=created_at,
+        discussion_url=f"https://news.ycombinator.com/item?id={story_id}",
+        comments=comments[:TOP_COMMENTS_FOR_UI],
+        text_content=text_content,
+        source="hn",
+        comment_count=int(comment_count) if comment_count is not None else None,
+    )
+
+
+def build_bigquery_sql(table: str = HN_FULL_TABLE) -> str:
+    return f"""
+WITH RECURSIVE candidate_stories AS (
+  SELECT
+    id,
+    title,
+    url,
+    text,
+    score,
+    timestamp,
+    descendants AS comment_count
+  FROM `{table}`
+  WHERE type = 'story'
+    AND timestamp >= TIMESTAMP_SECONDS(@start_ts)
+    AND timestamp < TIMESTAMP_SECONDS(@end_ts)
+    AND IFNULL(score, 0) > @min_points
+    AND (@min_comments <= 0 OR IFNULL(descendants, 0) >= @min_comments)
+    AND NOT IFNULL(deleted, FALSE)
+    AND NOT IFNULL(dead, FALSE)
+  ORDER BY score DESC, timestamp DESC
+  LIMIT @candidate_limit
+),
+descendant_items AS (
+  SELECT id AS story_id, id AS item_id, 0 AS depth
+  FROM candidate_stories
+  UNION ALL
+  SELECT d.story_id, child.id AS item_id, d.depth + 1 AS depth
+  FROM descendant_items AS d
+  JOIN `{table}` AS child
+    ON child.parent = d.item_id
+  WHERE d.depth < @max_comment_depth
+    AND child.type = 'comment'
+    AND NOT IFNULL(child.deleted, FALSE)
+    AND NOT IFNULL(child.dead, FALSE)
+),
+ranked_comments AS (
+  SELECT
+    d.story_id,
+    child.text,
+    IFNULL(child.score, 0) AS score,
+    ROW_NUMBER() OVER (
+      PARTITION BY d.story_id
+      ORDER BY IFNULL(child.score, 0) DESC, child.timestamp DESC
+    ) AS rn
+  FROM descendant_items AS d
+  JOIN `{table}` AS child
+    ON child.id = d.item_id
+  WHERE d.depth > 0
+    AND child.text IS NOT NULL
+    AND child.text != ''
+),
+comments_agg AS (
+  SELECT
+    story_id,
+    ARRAY_AGG(STRUCT(text, score) ORDER BY score DESC) AS comments
+  FROM ranked_comments
+  WHERE rn <= @comments_per_story
+  GROUP BY story_id
+)
+SELECT
+  cs.id,
+  cs.title,
+  cs.url,
+  cs.text,
+  cs.score,
+  cs.timestamp,
+  cs.comment_count,
+  IFNULL(ca.comments, []) AS comments
+FROM candidate_stories AS cs
+LEFT JOIN comments_agg AS ca
+  ON ca.story_id = cs.id
+ORDER BY cs.score DESC, cs.timestamp DESC
+"""
 
 
 @dataclass(frozen=True)

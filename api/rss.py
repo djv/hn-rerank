@@ -73,12 +73,6 @@ def _log_rss_request_error(label: str, url: str, exc: httpx.RequestError) -> Non
     logger.warning("%s %s failed: %s", label, url, exc)
 
 
-class FeedCache(TypedDict):
-    version: int
-    language: str | None
-    stories: list[StoryDict]
-
-
 def _write_cache_json(path: Path, data: dict[str, object] | Sequence[object]) -> None:
     atomic_write_json(path, data)
     evict_old_cache_files(RSS_CACHE_PATH, "*.json", RSS_CACHE_MAX_FILES)
@@ -425,16 +419,6 @@ def _parse_feed(
             break
 
     return feed_language, stories
-
-
-def _parse_feed_entries(
-    feed_xml: str,
-    feed_url: str,
-    max_items: int,
-    min_ts: int,
-) -> list[Story]:
-    _, stories = _parse_feed(feed_xml, feed_url, max_items, min_ts)
-    return stories
 
 
 def _cache_path(prefix: str, key: str) -> Path:

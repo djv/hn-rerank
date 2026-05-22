@@ -151,9 +151,7 @@ class AppConfig:
     no_tldr: bool = False
     no_naming: bool = False
     debug_scores: bool = False
-    debug_scores_path: Path | None = None
     debug_clusters: bool = False
-    debug_clusters_path: Path | None = None
     
     ranking: RankingConfig = field(default_factory=RankingConfig)
     adaptive_hn: AdaptiveHNConfig = field(default_factory=AdaptiveHNConfig)

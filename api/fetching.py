@@ -4,7 +4,6 @@ import hashlib
 import html
 import json
 import math
-import os
 import re
 import time
 import logging
@@ -62,10 +61,7 @@ class CandidateProgress(TypedDict):
 CandidateProgressCallback = Callable[[CandidateProgress], None]
 
 ALGOLIA_BASE: str = "https://hn.algolia.com/api/v1"
-HN_FULL_TABLE: str = "bigquery-public-data.hacker_news.full"
-HN_BIGQUERY_PROJECT_ENV: str = "HN_RERANK_BIGQUERY_PROJECT"
 HN_LIVE_WINDOW_DAYS: int = 4
-HN_BIGQUERY_MAX_COMMENT_DEPTH: int = 4
 HN_BIGQUERY_ARCHIVE_STORY_CACHE_TTL: int = CANDIDATE_CACHE_TTL_LONG
 OPEN_INDEX_HN_DATASET = "hf://datasets/open-index/hacker-news"
 SEM: asyncio.Semaphore = asyncio.Semaphore(EXTERNAL_REQUEST_SEMAPHORE)
@@ -188,21 +184,6 @@ def _load_cached_story(
     except Exception as e:
         logger.debug(f"Failed to load story cache {cache_file}: {e}")
         return None
-
-
-def _save_cached_story(story: Story | None) -> None:
-    sid = story.id if story is not None else None
-    if sid is None:
-        return
-    cache_file = CACHE_PATH / f"{sid}.json"
-    cache_payload = {
-        "ts": time.time(),
-        "version": STORY_CACHE_VERSION,
-        "story": story.to_dict() if story else None,
-    }
-
-    atomic_write_json(cache_file, cache_payload)
-    evict_old_cache_files(CACHE_PATH, "*.json", STORY_CACHE_MAX_FILES)
 
 
 def _extract_comments_recursive(
@@ -385,139 +366,6 @@ def build_candidate_filters(ts_start: int, ts_end: int) -> list[str]:
     return filters
 
 
-def _clean_bigquery_comment(text: str) -> str:
-    text = html.unescape(strip_html(text))
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
-
-
-def _timestamp_to_unix(value: Any) -> int:
-    if isinstance(value, datetime):
-        dt = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
-        return int(dt.timestamp())
-    return int(value or 0)
-
-
-def story_from_bigquery_row(row: Any) -> Story | None:
-    get = row.get if hasattr(row, "get") else row.__getitem__
-    story_id = int(get("id") or 0)
-    if story_id <= 0:
-        return None
-
-    title = html.unescape(str(get("title") or "")).strip()
-    self_text = strip_html(str(get("text") or ""))
-    url = str(get("url") or "").strip() or None
-    score = int(get("score") or 0)
-    created_at = _timestamp_to_unix(get("timestamp") or get("time"))
-    comment_count = get("comment_count")
-    comments_raw = get("comments") or []
-
-    comments: list[str] = []
-    for item in comments_raw:
-        if isinstance(item, dict):
-            text = str(item.get("text") or "")
-        else:
-            text = str(getattr(item, "text", "") or "")
-        text = _clean_bigquery_comment(text)
-        if text:
-            comments.append(text)
-
-    text_content = compose_story_text(
-        title=title,
-        self_text=self_text,
-        comments=comments[:TOP_COMMENTS_FOR_RANKING],
-    )
-    if not text_content:
-        return None
-
-    return Story(
-        id=story_id,
-        title=title,
-        url=url,
-        score=score,
-        time=created_at,
-        discussion_url=f"https://news.ycombinator.com/item?id={story_id}",
-        comments=comments[:TOP_COMMENTS_FOR_UI],
-        text_content=text_content,
-        source="hn",
-        comment_count=int(comment_count) if comment_count is not None else None,
-    )
-
-
-def build_bigquery_sql(table: str = HN_FULL_TABLE, has_exclude_ids: bool = False) -> str:
-    exclude_clause = "AND id NOT IN UNNEST(@exclude_ids)" if has_exclude_ids else ""
-    return f"""
-WITH RECURSIVE candidate_stories AS (
-  SELECT
-    id,
-    title,
-    url,
-    text,
-    score,
-    timestamp,
-    descendants AS comment_count
-  FROM `{table}`
-  WHERE type = 'story'
-    AND timestamp >= TIMESTAMP_SECONDS(@start_ts)
-    AND timestamp < TIMESTAMP_SECONDS(@end_ts)
-    AND IFNULL(score, 0) > @min_points
-    AND (@min_comments <= 0 OR IFNULL(descendants, 0) >= @min_comments)
-    AND NOT IFNULL(deleted, FALSE)
-    AND NOT IFNULL(dead, FALSE)
-    {exclude_clause}
-  ORDER BY score DESC, timestamp DESC
-  LIMIT @candidate_limit
-),
-descendant_items AS (
-  SELECT id AS story_id, id AS item_id, 0 AS depth
-  FROM candidate_stories
-  UNION ALL
-  SELECT d.story_id, child.id AS item_id, d.depth + 1 AS depth
-  FROM descendant_items AS d
-  JOIN `{table}` AS child
-    ON child.parent = d.item_id
-  WHERE d.depth < @max_comment_depth
-    AND child.type = 'comment'
-    AND NOT IFNULL(child.deleted, FALSE)
-    AND NOT IFNULL(child.dead, FALSE)
-),
-ranked_comments AS (
-  SELECT
-    d.story_id,
-    child.text,
-    IFNULL(child.score, 0) AS score,
-    child.timestamp,
-    ROW_NUMBER() OVER (
-      PARTITION BY d.story_id
-      ORDER BY IFNULL(child.score, 0) DESC, child.timestamp ASC
-    ) AS rn
-  FROM descendant_items AS d
-  JOIN `{table}` AS child
-    ON child.id = d.item_id
-  WHERE d.depth > 0
-    AND child.text IS NOT NULL
-)
-SELECT
-  cs.id,
-  cs.title,
-  cs.url,
-  cs.text,
-  cs.score,
-  cs.timestamp,
-  cs.comment_count,
-  ARRAY_AGG(
-    IF(rc.rn <= @comments_per_story, STRUCT(rc.text AS text, rc.score AS score), NULL)
-    IGNORE NULLS
-    ORDER BY rc.score DESC
-  ) AS comments
-FROM candidate_stories AS cs
-LEFT JOIN ranked_comments AS rc
-  ON rc.story_id = cs.id
-GROUP BY cs.id, cs.title, cs.url, cs.text, cs.score, cs.timestamp, cs.comment_count
-ORDER BY cs.score DESC, cs.timestamp DESC
-"""
-
-
 def open_index_parquet_paths(start_ts: int, end_ts: int) -> list[str]:
     start_dt = datetime.fromtimestamp(start_ts, UTC)
     end_dt = datetime.fromtimestamp(max(start_ts, end_ts - 1), UTC)
@@ -680,58 +528,6 @@ async def fetch_open_index_archive_stories(
     return results[:candidate_limit]
 
 
-def _query_bigquery_archive_sync(
-    *,
-    start_ts: int,
-    end_ts: int,
-    candidate_limit: int,
-    exclude_ids: list[int] | None = None,
-) -> list[Story]:
-    try:
-        from google.cloud import bigquery
-    except ImportError as exc:
-        raise RuntimeError(
-            "BigQuery archive fetching requires google-cloud-bigquery"
-        ) from exc
-
-    project = os.environ.get(HN_BIGQUERY_PROJECT_ENV) or None
-    client = bigquery.Client(project=project)
-    
-    query_parameters = [
-        bigquery.ScalarQueryParameter("start_ts", "INT64", start_ts),
-        bigquery.ScalarQueryParameter("end_ts", "INT64", end_ts),
-        bigquery.ScalarQueryParameter("candidate_limit", "INT64", candidate_limit),
-        bigquery.ScalarQueryParameter("min_points", "INT64", ALGOLIA_MIN_POINTS),
-        bigquery.ScalarQueryParameter(
-            "min_comments", "INT64", MIN_CANDIDATE_COMMENTS
-        ),
-        bigquery.ScalarQueryParameter(
-            "max_comment_depth", "INT64", HN_BIGQUERY_MAX_COMMENT_DEPTH
-        ),
-        bigquery.ScalarQueryParameter(
-            "comments_per_story", "INT64", TOP_COMMENTS_FOR_RANKING
-        ),
-    ]
-    if exclude_ids:
-        query_parameters.append(
-            bigquery.ArrayQueryParameter("exclude_ids", "INT64", exclude_ids)
-        )
-
-    job_config = bigquery.QueryJobConfig(query_parameters=query_parameters)
-    try:
-        sql = build_bigquery_sql(has_exclude_ids=bool(exclude_ids))
-        rows = client.query(sql, job_config=job_config).result()
-    except Exception:
-        logger.exception("BigQuery archive fetching failed (possibly quota exceeded)")
-        return []
-    stories: list[Story] = []
-    for row in rows:
-        story = story_from_bigquery_row(row)
-        if story is not None:
-            stories.append(story)
-    return stories
-
-
 def load_cached_archive_stories(
     *,
     start_ts: int,
@@ -788,76 +584,6 @@ def load_cached_archive_stories(
 
     cached_in_window.sort(key=lambda s: (s.score, s.time), reverse=True)
     return cached_in_window[:candidate_limit]
-
-
-async def fetch_bigquery_archive_stories(
-    *,
-    http_client: httpx.AsyncClient,
-    start_ts: int,
-    end_ts: int,
-    candidate_limit: int,
-    exclude_ids: set[int],
-    exclude_urls: set[str] | None,
-    seen_urls: set[str] | None = None,
-    cache_only: bool = False,
-    allow_stale: bool = False,
-) -> list[Story]:
-    if cache_only:
-        return []
-
-    # Combine all known IDs to exclude from the BigQuery query
-    # We prioritize recent IDs by sorting descending (HN IDs are chronological)
-    ids_to_exclude = sorted(exclude_ids, reverse=True)
-    
-    remaining_limit = candidate_limit
-    stories: list[Story] = []
-    
-    # Cap the exclude list size to avoid giant queries
-    # BigQuery can handle large arrays, but 10k is a safe middle ground for performance
-    bq_exclude = ids_to_exclude[:10000] if len(ids_to_exclude) > 10000 else ids_to_exclude
-    
-    try:
-        stories = await asyncio.to_thread(
-            _query_bigquery_archive_sync,
-            start_ts=start_ts,
-            end_ts=end_ts,
-            candidate_limit=remaining_limit,
-            exclude_ids=bq_exclude,
-        )
-    except Exception:
-        logger.exception("BigQuery archive fetching failed")
-        # stories remains empty, fallback to cached only
-
-    results: list[Story] = []
-    seen: set[int] = set()
-    
-    for story in stories:
-        if story.id in seen or story.id in exclude_ids:
-            continue
-        
-        # New story from BQ, already has full content
-        results.append(story)
-        seen.add(story.id)
-        if story.url and seen_urls is not None:
-            norm_url = normalize_url(story.url)
-            if norm_url:
-                seen_urls.add(norm_url)
-        
-        # Save to cache
-        from api.cache_utils import atomic_write_json
-        cache_file = CACHE_PATH / f"{story.id}.json"
-        atomic_write_json(
-            cache_file,
-            {
-                "ts": time.time(),
-                "version": STORY_CACHE_VERSION,
-                "story": story.to_dict(),
-            },
-        )
-
-    # Sort by score and time to ensure the best candidates are kept regardless of provenance
-    results.sort(key=lambda s: (s.score, s.time), reverse=True)
-    return results[:candidate_limit]
 
 
 async def get_best_stories(
