@@ -798,53 +798,6 @@ async def test_fetch_rss_stories_parses_digg_ai_source(monkeypatch):
     assert stories[0].url == "https://digg.com/ai/b2f851a5-0a26-459e-ac2e-35bb611ba02a"
 
 
-@pytest.mark.asyncio
-@respx.mock
-async def test_fetch_rss_stories_skips_excluded_feeds(monkeypatch):
-    opml_url = "https://example.com/feeds-with-exclusions.opml"
-    excluded_feed = "https://rachelbythebay.com/w/atom.xml"
-    allowed_feed = "https://example.com/allowed-feed.xml"
-    monkeypatch.setattr(rss, "RSS_EXTRA_FEEDS", [])
-    monkeypatch.setattr(rss, "RSS_EXCLUDED_FEEDS", {excluded_feed})
-
-    opml = f"""
-    <opml version="2.0">
-      <body>
-        <outline type="rss" text="Excluded" xmlUrl="{excluded_feed}"/>
-        <outline type="rss" text="Allowed" xmlUrl="{allowed_feed}"/>
-      </body>
-    </opml>
-    """
-    rss_xml = """
-    <rss version="2.0">
-      <channel>
-        <language>en</language>
-        <item>
-          <title>Allowed Post</title>
-          <link>https://example.com/post</link>
-          <pubDate>Mon, 02 Feb 2026 12:00:00 GMT</pubDate>
-          <description>Allowed summary</description>
-        </item>
-      </channel>
-    </rss>
-    """
-
-    respx.get(opml_url).mock(return_value=Response(200, text=opml))
-    excluded_route = respx.get(excluded_feed).mock(return_value=Response(500))
-    respx.get(allowed_feed).mock(return_value=Response(200, text=rss_xml))
-
-    stories = await fetch_rss_stories(
-        opml_url=opml_url,
-        days=3650,
-        max_feeds=5,
-        per_feed=10,
-        fetch_full_content=False,
-    )
-
-    assert [story.title for story in stories] == ["Allowed Post"]
-    assert not excluded_route.called
-
-
 
 @pytest.mark.asyncio
 @respx.mock
@@ -980,3 +933,46 @@ async def test_fetch_rss_stories_uses_higher_limit_for_reddit(monkeypatch):
     assert stories[0].source == "reddit_machinelearning"
     assert stories[0].url == "https://example.com/paper-0"
     assert stories[-1].title == f"Reddit ML Post {rss.RSS_CURATED_NEWS_PER_FEED_LIMIT - 1}"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_fetch_rss_stories_loads_local_opml(tmp_path, monkeypatch):
+    feed_url = "https://example.com/feed.xml"
+    monkeypatch.setattr(rss, "RSS_EXTRA_FEEDS", [])
+
+    opml = f"""
+    <opml version="2.0">
+      <body>
+        <outline type="rss" text="Allowed" xmlUrl="{feed_url}"/>
+      </body>
+    </opml>
+    """
+    opml_file = tmp_path / "local-blogs.opml"
+    opml_file.write_text(opml, encoding="utf-8")
+
+    rss_xml = """
+    <rss version="2.0">
+      <channel>
+        <language>en</language>
+        <item>
+          <title>Local Post</title>
+          <link>https://example.com/post</link>
+          <pubDate>Mon, 02 Feb 2026 12:00:00 GMT</pubDate>
+          <description>Local summary</description>
+        </item>
+      </channel>
+    </rss>
+    """
+    respx.get(feed_url).mock(return_value=Response(200, text=rss_xml))
+
+    stories = await fetch_rss_stories(
+        opml_url=str(opml_file),
+        days=3650,
+        max_feeds=5,
+        per_feed=10,
+        fetch_full_content=False,
+    )
+
+    assert [story.title for story in stories] == ["Local Post"]
+

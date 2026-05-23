@@ -26,7 +26,6 @@ from api.constants import (
     RSS_CACHE_DIR,
     RSS_CACHE_MAX_FILES,
     RSS_CURATED_NEWS_PER_FEED_LIMIT,
-    RSS_EXCLUDED_FEEDS,
     RSS_EXTRA_FEEDS,
     RSS_FEED_CACHE_TTL,
     RSS_FEED_CACHE_VERSION,
@@ -471,19 +470,29 @@ async def fetch_rss_stories(
         timeout=30.0, headers={"User-Agent": RSS_USER_AGENT}
     ) as client:
         if feed_urls is None:
-            try:
-                resp = await client.get(opml_url)
-                if resp.status_code == 200 and resp.text:
-                    feed_urls = _extract_opml_feed_urls(resp.text)
-                    _write_cache_json(opml_cache, feed_urls)
-                else:
+            if opml_url.startswith(("http://", "https://")):
+                try:
+                    resp = await client.get(opml_url)
+                    if resp.status_code == 200 and resp.text:
+                        feed_urls = _extract_opml_feed_urls(resp.text)
+                        _write_cache_json(opml_cache, feed_urls)
+                    else:
+                        feed_urls = []
+                except httpx.RequestError as exc:
+                    _log_rss_request_error("OPML fetch", opml_url, exc)
                     feed_urls = []
-            except httpx.RequestError as exc:
-                _log_rss_request_error("OPML fetch", opml_url, exc)
-                feed_urls = []
-            except Exception:
-                logger.exception("Failed to fetch OPML")
-                feed_urls = []
+                except Exception:
+                    logger.exception("Failed to fetch OPML")
+                    feed_urls = []
+            else:
+                try:
+                    with open(opml_url, "r", encoding="utf-8") as f:
+                        opml_text = f.read()
+                    feed_urls = _extract_opml_feed_urls(opml_text)
+                    _write_cache_json(opml_cache, feed_urls)
+                except Exception:
+                    logger.exception(f"Failed to read local OPML file: {opml_url}")
+                    feed_urls = []
 
         feed_urls = list(feed_urls or [])
         if RSS_EXTRA_FEEDS:
@@ -493,10 +502,7 @@ async def fetch_rss_stories(
 
         unique_feeds: list[str] = []
         seen = set()
-        excluded_feeds = set(RSS_EXCLUDED_FEEDS)
         for url in feed_urls:
-            if url in excluded_feeds:
-                continue
             if url not in seen:
                 unique_feeds.append(url)
                 seen.add(url)

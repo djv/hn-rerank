@@ -51,7 +51,7 @@ MAX_USER_STORIES = 2000
 ALGOLIA_MIN_POINTS = 5
 ALGOLIA_DEFAULT_DAYS = 30
 CANDIDATE_FETCH_COUNT = 2000
-RSS_OPML_URL = "https://gist.githubusercontent.com/emschwartz/e6d2bf860ccc367fe37ff953ba6de66b/raw/hn-popular-blogs-2025.opml"
+RSS_OPML_URL = "api/popular-blogs-2025.opml"
 RSS_EXTRA_FEEDS = [
     "https://jack-clark.net/feed/",
     "https://lobste.rs/top/rss",
@@ -66,12 +66,6 @@ RSS_EXTRA_FEEDS = [
     "https://www.reddit.com/r/compsci/top/.rss?t=week&limit=25",
     "https://digg.com/ai",
 ]  # Additional feeds not in OPML
-RSS_EXCLUDED_FEEDS = {
-    "http://www.aaronsw.com/2002/feeds/pgessays.rss",
-    "https://chadnauseam.com/rss.xml",
-    "https://rachelbythebay.com/w/atom.xml",
-    "https://www.tedunangst.com/flak/rss",
-}
 RSS_MAX_FEEDS = 0  # 0 = no max feed limit
 RSS_PER_FEED_LIMIT = 70
 RSS_CURATED_NEWS_PER_FEED_LIMIT = 50
