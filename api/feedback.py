@@ -169,7 +169,8 @@ class FeedbackRecord:
         required = (
             self.hybrid_score,
             self.semantic_score,
-            self.hn_score,
+            self.score,
+            self.comment_count,
             self.freshness_boost,
             self.knn_score,
             self.max_sim_score,
@@ -186,7 +187,7 @@ class FeedbackRecord:
             knn_score=float(self.knn_score),
             max_cluster_score=float(self.max_cluster_score),
             semantic_score=float(self.semantic_score),
-            hn_score=float(self.hn_score),
+            hn_score=float(self.hn_score) if self.hn_score is not None else 0.0,
             freshness_boost=float(self.freshness_boost),
             cross_encoder_score=float(self.cross_encoder_score),
         )
