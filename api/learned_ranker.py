@@ -38,13 +38,8 @@ FEATURE_NAMES: tuple[str, ...] = (
     "age_hours",
     "log_points",
     "log_comments",
-    "is_hn",
-    "is_external",
-    "is_github_trending",
-    "is_reddit",
-    "is_curated_external",
 )
-MODEL_VERSION = 4
+MODEL_VERSION = 5
 TRAINING_SOURCE = "dashboard_feedback"
 MODEL_KIND = "ordinal_threshold_v1"
 EXTERNAL_DEFAULT_SCORE = 40.0
@@ -227,15 +222,6 @@ def build_features(
     age_hours = max((now_ts - float(story.time or 0)) / 3600.0, 0.0)
     score = max(float(story.score or 0), 0.0)
     comments = max(float(story.comment_count or 0), 0.0)
-    source = story.source
-    curated_external = source in {
-        "lobsters",
-        "tildes",
-        "lesswrong",
-        "slashdot",
-        "github_trending",
-        "digg",
-    }
 
     if result is None:
         rank_features = {
@@ -272,11 +258,6 @@ def build_features(
         _safe_float(age_hours),
         math.log1p(score),
         math.log1p(comments),
-        source_feature_weight if story.is_hn else 0.0,
-        source_feature_weight if story.is_external else 0.0,
-        source_feature_weight if source == "github_trending" else 0.0,
-        source_feature_weight if source.startswith("reddit") else 0.0,
-        source_feature_weight if curated_external else 0.0,
     ]
 
 

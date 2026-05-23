@@ -15,7 +15,6 @@ from api.learned_ranker import (
     LabeledStory,
     build_labels_from_feedback,
     build_features,
-    build_training_matrix,
     compare_dashboard_feedback_configs,
     evaluate_labeled_order,
     score_ranked_results,
@@ -87,9 +86,6 @@ def test_feature_names_and_values_are_stable_and_finite() -> None:
     assert features[FEATURE_NAMES.index("hybrid_score")] == pytest.approx(0.8)
     assert features[FEATURE_NAMES.index("semantic_score")] == pytest.approx(0.7)
     assert features[FEATURE_NAMES.index("log_comments")] == pytest.approx(0.0)
-    assert features[FEATURE_NAMES.index("is_hn")] == pytest.approx(0.0)
-    assert features[FEATURE_NAMES.index("is_external")] == pytest.approx(1.0)
-    assert features[FEATURE_NAMES.index("is_github_trending")] == pytest.approx(1.0)
 
 
 def test_train_model_requires_enough_labels() -> None:
@@ -103,27 +99,6 @@ def test_train_model_requires_enough_labels() -> None:
             ],
             config,
         )
-
-
-def test_source_features_can_be_zeroed_for_training() -> None:
-    labels = [
-        LabeledStory(
-            _story(1, source="github_trending"),
-            UPVOTE_LABEL,
-            _rank_result(-1),
-        )
-    ]
-
-    matrix, _ = build_training_matrix(labels, source_feature_weight=0.0)
-
-    for name in (
-        "is_hn",
-        "is_external",
-        "is_github_trending",
-        "is_reddit",
-        "is_curated_external",
-    ):
-        assert matrix[0][FEATURE_NAMES.index(name)] == pytest.approx(0.0)
 
 
 def test_build_labels_from_feedback_carries_updated_at_and_metadata_flags() -> None:
