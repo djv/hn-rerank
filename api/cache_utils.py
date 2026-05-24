@@ -30,7 +30,18 @@ def evict_old_cache_files(
     cache_files = list(cache_dir.glob(pattern))
     if len(cache_files) <= max_files:
         return
-    cache_files.sort(key=lambda p: p.stat().st_mtime)
-    for f in cache_files[: len(cache_files) - max_files]:
+
+    valid_files: list[tuple[Path, float]] = []
+    for p in cache_files:
+        try:
+            valid_files.append((p, p.stat().st_mtime))
+        except FileNotFoundError:
+            pass
+
+    if len(valid_files) <= max_files:
+        return
+
+    valid_files.sort(key=lambda x: x[1])
+    for f, _ in valid_files[: len(valid_files) - max_files]:
         with suppress(OSError):
             f.unlink()

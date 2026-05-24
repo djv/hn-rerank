@@ -122,8 +122,6 @@ def test_generate_story_html_includes_feedback_controls_and_metadata():
         text_content="Feedback story text",
         hybrid_score=0.91,
         semantic_score=0.82,
-        hn_score=0.73,
-        freshness_boost=0.04,
         knn_score=0.65,
         max_sim_score=0.77,
         max_cluster_score=0.9,
@@ -595,13 +593,21 @@ def test_build_candidate_cluster_map_respects_threshold_for_external(monkeypatch
     assert cluster_map[1] == -1
 
 
-def _mk_rank(idx: int, score: float) -> RankResult:
+def _mk_rank(
+    idx: int,
+    score: float,
+    *,
+    learned_score: float = 0.0,
+    learned_ranker_used: bool = False,
+) -> RankResult:
     return RankResult(
         index=idx,
         hybrid_score=score,
         best_fav_index=-1,
         max_sim_score=0.0,
         knn_score=0.0,
+        learned_score=learned_score,
+        learned_ranker_used=learned_ranker_used,
     )
 
 
@@ -858,6 +864,28 @@ def test_select_ranked_results_preserves_existing_hn_heavy_top_slice():
     assert len(selected) == 6
     assert external_count == 1
     assert hn_count == 5
+
+
+def test_select_ranked_results_uses_learned_scores_when_active():
+    cands = [
+        Story(id=1, title="HN 0", url=None, score=0, time=1, text_content=""),
+        Story(id=2, title="HN 1", url=None, score=0, time=1, text_content=""),
+    ]
+    ranked = [
+        _mk_rank(0, 0.9, learned_score=0.1, learned_ranker_used=True),
+        _mk_rank(1, 0.8, learned_score=0.99, learned_ranker_used=True),
+    ]
+
+    selected = select_ranked_results(
+        ranked,
+        cands,
+        cluster_labels=None,
+        cluster_names={},
+        cand_cluster_map={},
+        count=2,
+    )
+
+    assert [result.index for result in selected] == [1, 0]
 
 
 def test_split_feedback_records_builds_signals_and_exclusions():

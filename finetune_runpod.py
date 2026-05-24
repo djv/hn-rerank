@@ -44,7 +44,7 @@ pip install -q sentence-transformers optimum onnx onnxruntime
 
 python tune_embeddings.py --epochs 3 --batch-size 32
 
-python export_tuned.py
+optimum-cli export onnx --model tuned_model --task feature-extraction onnx_model
 
 tar -czf /workspace/onnx_model.tar.gz -C /workspace/repo onnx_model/
 echo "TRAINING_COMPLETE"

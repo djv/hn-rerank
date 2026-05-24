@@ -36,8 +36,6 @@ class FeedbackRecordDict(TypedDict):
     updated_at: float
     hybrid_score: NotRequired[float | None]
     semantic_score: NotRequired[float | None]
-    hn_score: NotRequired[float | None]
-    freshness_boost: NotRequired[float | None]
     knn_score: NotRequired[float | None]
     max_sim_score: NotRequired[float | None]
     max_cluster_score: NotRequired[float | None]
@@ -62,8 +60,6 @@ class FeedbackPayload(TypedDict):
     action: Literal["up", "neutral", "down", "clear"]
     hybrid_score: NotRequired[float]
     semantic_score: NotRequired[float]
-    hn_score: NotRequired[float]
-    freshness_boost: NotRequired[float]
     knn_score: NotRequired[float]
     max_sim_score: NotRequired[float]
     max_cluster_score: NotRequired[float]
@@ -88,8 +84,6 @@ class FeedbackRecord:
     updated_at: float = 0.0
     hybrid_score: float | None = None
     semantic_score: float | None = None
-    hn_score: float | None = None
-    freshness_boost: float | None = None
     knn_score: float | None = None
     max_sim_score: float | None = None
     max_cluster_score: float | None = None
@@ -116,8 +110,6 @@ class FeedbackRecord:
             updated_at=float(data.get("updated_at", 0.0)),
             hybrid_score=_optional_float(data.get("hybrid_score")),
             semantic_score=_optional_float(data.get("semantic_score")),
-            hn_score=_optional_float(data.get("hn_score")),
-            freshness_boost=_optional_float(data.get("freshness_boost")),
             knn_score=_optional_float(data.get("knn_score")),
             max_sim_score=_optional_float(data.get("max_sim_score")),
             max_cluster_score=_optional_float(data.get("max_cluster_score")),
@@ -142,8 +134,6 @@ class FeedbackRecord:
             "updated_at": self.updated_at,
             "hybrid_score": self.hybrid_score,
             "semantic_score": self.semantic_score,
-            "hn_score": self.hn_score,
-            "freshness_boost": self.freshness_boost,
             "knn_score": self.knn_score,
             "max_sim_score": self.max_sim_score,
             "max_cluster_score": self.max_cluster_score,
@@ -171,7 +161,6 @@ class FeedbackRecord:
             self.semantic_score,
             self.score,
             self.comment_count,
-            self.freshness_boost,
             self.knn_score,
             self.max_sim_score,
             self.max_cluster_score,
@@ -187,8 +176,6 @@ class FeedbackRecord:
             knn_score=float(self.knn_score),
             max_cluster_score=float(self.max_cluster_score),
             semantic_score=float(self.semantic_score),
-            hn_score=float(self.hn_score) if self.hn_score is not None else 0.0,
-            freshness_boost=float(self.freshness_boost),
             cross_encoder_score=float(self.cross_encoder_score),
         )
 
@@ -250,8 +237,6 @@ def record_from_payload(
         updated_at=time.time(),
         hybrid_score=_optional_float(payload.get("hybrid_score")),
         semantic_score=_optional_float(payload.get("semantic_score")),
-        hn_score=_optional_float(payload.get("hn_score")),
-        freshness_boost=_optional_float(payload.get("freshness_boost")),
         knn_score=_optional_float(payload.get("knn_score")),
         max_sim_score=_optional_float(payload.get("max_sim_score")),
         max_cluster_score=_optional_float(payload.get("max_cluster_score")),

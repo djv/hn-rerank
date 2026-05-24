@@ -30,6 +30,7 @@ reproduce_error.py
 # Generated output
 index.html
 clusters.html
+public/
 
 # Local artifacts / experiments
 .ralphy/
@@ -44,6 +45,7 @@ onnx_model_*backup*/
 cluster_name_debug.json
 cluster_stats.json
 optimized_params.txt
+benchmark_runner.log
 tuned_model/
 train*.jsonl
 val*.jsonl
@@ -55,3 +57,12 @@ rodney_*.png
 *-20*.png
 FOUNDATIONAL_REDESIGN.md
 demo_refactor_rodney.md
+hn_rerank.toml.bak
+hn_rerank.toml.promoted_*
+/optuna_*.json
+/optuna_*.log
+validation_opt_run/
+runs/promotion/
+runs/retune/
+runs/full_1000_seed150/
+archive/runs/

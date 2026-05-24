@@ -68,8 +68,6 @@ class StoryDisplayDict(StoryForTldr):
     cross_encoder_score: NotRequired[float]
     hybrid_score: NotRequired[float]
     semantic_score: NotRequired[float]
-    hn_score: NotRequired[float]
-    freshness_boost: NotRequired[float]
     knn_score: NotRequired[float]
     max_sim_score: NotRequired[float]
     max_cluster_score: NotRequired[float]
@@ -141,14 +139,12 @@ class RankResult:
     """Result of ranking a single candidate story."""
 
     index: int  # Index in the candidates list
-    hybrid_score: float  # Combined semantic + HN score
+    hybrid_score: float  # Canonical ranking score
     best_fav_index: int  # Index of most similar positive signal (-1 if none)
     max_sim_score: float  # Similarity to best matching positive signal
     knn_score: float  # Mean similarity to top-k neighbors (for display)
     max_cluster_score: float = 0.0  # Similarity to best matching cluster centroid
     semantic_score: float = 0.0  # Raw semantic score (classifier or k-NN)
-    hn_score: float = 0.0  # HN score contribution (log-scaled)
-    freshness_boost: float = 0.0  # Freshness boost applied to hybrid score
     cross_encoder_score: float = 0.0
     learned_score: float = 0.0
     learned_ranker_used: bool = False
@@ -177,8 +173,6 @@ class StoryDisplay:
     cross_encoder_score: float = 0.0
     hybrid_score: float = 0.0
     semantic_score: float = 0.0
-    hn_score: float = 0.0
-    freshness_boost: float = 0.0
     knn_score: float = 0.0
     max_sim_score: float = 0.0
     max_cluster_score: float = 0.0
@@ -207,8 +201,6 @@ class StoryDisplay:
             "cross_encoder_score": self.cross_encoder_score,
             "hybrid_score": self.hybrid_score,
             "semantic_score": self.semantic_score,
-            "hn_score": self.hn_score,
-            "freshness_boost": self.freshness_boost,
             "knn_score": self.knn_score,
             "max_sim_score": self.max_sim_score,
             "max_cluster_score": self.max_cluster_score,

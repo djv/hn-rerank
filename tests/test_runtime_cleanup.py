@@ -1,10 +1,12 @@
 import hashlib
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
 import pytest
 
 import prepare_data
+from api.config import AppConfig
 from api.rerank import _get_embeddings_with_model
 from evaluate_quality import RankingEvaluator
 
@@ -85,3 +87,29 @@ def test_get_embeddings_with_model_closes_npz_cache_file(tmp_path, monkeypatch):
 
     assert result.shape == (1, 768)
     assert state["closed"] is True
+
+
+def test_app_config_load_ignores_unknown_legacy_keys(tmp_path):
+    config_path = tmp_path / "legacy.toml"
+    config_path.write_text(
+        """
+[hn_rerank]
+username = "legacy-user"
+output = "public/index.html"
+
+[hn_rerank.ranking]
+negative_weight = 0.7
+adaptive_hn = 123
+
+[hn_rerank.adaptive_hn]
+weight_min = 0.1
+
+[hn_rerank.freshness]
+weight = 0.2
+""".strip()
+    )
+
+    config = AppConfig.load(Path(config_path))
+
+    assert config.username == "legacy-user"
+    assert config.ranking.negative_weight == pytest.approx(0.7)

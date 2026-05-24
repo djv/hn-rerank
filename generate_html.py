@@ -47,7 +47,7 @@ DEFAULT_CONFIG_PATH = Path("hn_rerank.toml")
 HN_DUPE_CACHE_DIR = Path(".cache/hn_dupes")
 HN_DUPE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 HN_DUPE_TRUE_CACHE_TTL = 15 * 24 * 60 * 60
-HN_DUPE_FALSE_CACHE_TTL = 30 * 60
+HN_DUPE_FALSE_CACHE_TTL = 24 * 60 * 60
 HN_FIREBASE_ITEM_URL = "https://hacker-news.firebaseio.com/v0/item/{sid}.json"
 
 
@@ -435,8 +435,6 @@ HTML_TEMPLATE: str = """
                                     comment_count: card.dataset.storyCommentCount === '' ? null : Number(card.dataset.storyCommentCount),
                                     hybrid_score: Number(card.dataset.hybridScore),
                                     semantic_score: Number(card.dataset.semanticScore),
-                                    hn_score: Number(card.dataset.hnScore),
-                                    freshness_boost: Number(card.dataset.freshnessBoost),
                                     knn_score: Number(card.dataset.knnScore),
                                     max_sim_score: Number(card.dataset.maxSimScore),
                                     max_cluster_score: Number(card.dataset.maxClusterScore),
@@ -794,7 +792,7 @@ def apply_learned_ranker(
 
 
 STORY_CARD_TEMPLATE: str = """
-<div class="story-card group relative{% if is_external %} rss-story{% endif %}" data-rank-index="{{ rank_index }}" data-story-time="{{ story_time }}" data-story-id="{{ story_id }}" data-story-source="{{ story_source }}" data-story-title="{{ title }}" data-story-url="{{ story_url or '' }}" data-story-discussion-url="{{ hn_url or '' }}" data-story-text-content="{{ text_content }}" data-story-score="{{ story_score }}" data-story-comment-count="{{ story_comment_count if story_comment_count is not none else '' }}" data-feedback-key="{{ feedback_key }}" data-feedback-action="{{ feedback_action or '' }}" data-hybrid-score="{{ hybrid_score }}" data-semantic-score="{{ semantic_score }}" data-hn-score="{{ hn_score }}" data-freshness-boost="{{ freshness_boost }}" data-knn-score="{{ knn_score }}" data-max-sim-score="{{ max_sim_score }}" data-max-cluster-score="{{ max_cluster_score }}" data-cross-encoder-score="{{ ce_score }}">
+<div class="story-card group relative{% if is_external %} rss-story{% endif %}" data-rank-index="{{ rank_index }}" data-story-time="{{ story_time }}" data-story-id="{{ story_id }}" data-story-source="{{ story_source }}" data-story-title="{{ title }}" data-story-url="{{ story_url or '' }}" data-story-discussion-url="{{ hn_url or '' }}" data-story-text-content="{{ text_content }}" data-story-score="{{ story_score }}" data-story-comment-count="{{ story_comment_count if story_comment_count is not none else '' }}" data-feedback-key="{{ feedback_key }}" data-feedback-action="{{ feedback_action or '' }}" data-hybrid-score="{{ hybrid_score }}" data-semantic-score="{{ semantic_score }}" data-knn-score="{{ knn_score }}" data-max-sim-score="{{ max_sim_score }}" data-max-cluster-score="{{ max_cluster_score }}" data-cross-encoder-score="{{ ce_score }}">
     {% if card_url %}
     <a href="{{ card_url }}" target="_blank" class="absolute inset-0 z-10 rounded-lg" aria-label="{{ card_aria_label }}"></a>
     {% endif %}
@@ -878,8 +876,6 @@ def generate_story_html(story: StoryDisplay) -> str:
         feedback_action=story.feedback_action,
         hybrid_score=story.hybrid_score,
         semantic_score=story.semantic_score,
-        hn_score=story.hn_score,
-        freshness_boost=story.freshness_boost,
         knn_score=story.knn_score,
         max_sim_score=story.max_sim_score,
         max_cluster_score=story.max_cluster_score,
@@ -1025,7 +1021,14 @@ async def main() -> None:
     parser.add_argument(
         "--debug-scores",
         action="store_true",
+        default=None,
         help="Write score breakdown JSON for selected stories",
+    )
+    parser.add_argument(
+        "--no-debug-scores",
+        action="store_false",
+        dest="debug_scores",
+        help="Disable score breakdown JSON output",
     )
     parser.add_argument(
         "--mistral",
@@ -1352,6 +1355,7 @@ async def main() -> None:
                     debug_path = None
                     if config.debug_clusters:
                         debug_path = config.output_path.with_name("cluster_name_debug.json")
+                        debug_path.parent.mkdir(parents=True, exist_ok=True)
                     cluster_profiles = await llm_utils.generate_batch_cluster_names(
                         clusters_for_naming,
                         progress_callback=name_cb,
@@ -1569,6 +1573,7 @@ async def main() -> None:
             ),
         )
         update_prep("dupes", 1, 1, "[*] Checking duplicate HN submissions...")
+
         selected_stories = [cands[result.index] for result in selected_results]
         await refresh_hn_story_metadata(
             selected_stories,
@@ -1625,8 +1630,6 @@ async def main() -> None:
                 cross_encoder_score=result.cross_encoder_score,
                 hybrid_score=result.hybrid_score,
                 semantic_score=result.semantic_score,
-                hn_score=result.hn_score,
-                freshness_boost=result.freshness_boost,
                 knn_score=result.knn_score,
                 max_sim_score=result.max_sim_score,
                 max_cluster_score=result.max_cluster_score,
@@ -1695,6 +1698,7 @@ async def main() -> None:
 
     if config.debug_scores:
         debug_path = config.output_path.with_name("scores_debug.json")
+        debug_path.parent.mkdir(parents=True, exist_ok=True)
         debug_rows: list[dict[str, object]] = []
         for result in selected_results:
             story = cands[result.index]
@@ -1707,8 +1711,6 @@ async def main() -> None:
                     "is_external": story.is_external,
                     "hybrid_score": result.hybrid_score,
                     "semantic_score": result.semantic_score,
-                    "hn_score": result.hn_score,
-                    "freshness_boost": result.freshness_boost,
                     "knn_score": result.knn_score,
                     "max_cluster_score": result.max_cluster_score,
                     "cross_encoder_score": result.cross_encoder_score,
@@ -1778,6 +1780,7 @@ async def main() -> None:
     )
 
     try:
+        config.output_path.parent.mkdir(parents=True, exist_ok=True)
         config.output_path.write_text(final_html)
         print(f"[+] Dashboard saved to: {os.path.abspath(config.output_path)}")
 

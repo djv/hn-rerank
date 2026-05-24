@@ -167,7 +167,7 @@ def tune(epochs: int = 3, batch_size: int = 16, use_triplets: bool = True) -> No
 
     print("\nTraining complete!")
     print("Model saved to tuned_model/")
-    print("Run 'uv run export_tuned.py' to convert to ONNX.")
+    print("Export to ONNX manually if you want to deploy the tuned model.")
 
 
 if __name__ == "__main__":

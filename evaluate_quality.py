@@ -6,7 +6,7 @@ import asyncio
 import json
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from collections.abc import Callable
 from typing import TypedDict, cast
@@ -451,6 +451,97 @@ def _guard_metrics(
     return failures
 
 
+def apply_evaluator_overrides(
+    config: AppConfig,
+    *,
+    pure_semantic: bool = False,
+    disable_cross_encoder: bool = False,
+    disable_learned_ranker: bool = False,
+) -> AppConfig:
+    updated = config
+    if pure_semantic:
+        updated = replace(
+            updated,
+            classifier=replace(
+                updated.classifier,
+                use_log_points_feature=False,
+                use_log_comments_feature=False,
+                use_comment_ratio_feature=False,
+            ),
+        )
+    if disable_cross_encoder:
+        updated = replace(
+            updated,
+            cross_encoder=replace(updated.cross_encoder, enabled=False),
+        )
+    if disable_learned_ranker:
+        updated = replace(
+            updated,
+            learned_ranker=replace(
+                updated.learned_ranker,
+                shadow_enabled=False,
+                active_enabled=False,
+            ),
+        )
+    return updated
+
+
+def build_first_stage_ablation_config(config: AppConfig) -> AppConfig:
+    return apply_evaluator_overrides(
+        config,
+        disable_cross_encoder=True,
+        disable_learned_ranker=True,
+    )
+
+
+def _metric_delta(current: dict[str, float], baseline: dict[str, float], key: str) -> float | None:
+    if key not in current or key not in baseline:
+        return None
+    return current[key] - baseline[key]
+
+
+def _print_metric_deltas(
+    baseline: dict[str, float],
+    candidate: dict[str, float],
+    k_metrics: list[int],
+    *,
+    indent: str = "",
+) -> None:
+    print(f"{indent}Delta vs baseline")
+    print(
+        f"{indent}MRR: "
+        f"{_metric_delta(candidate, baseline, 'mrr'):+.3f}"
+        if _metric_delta(candidate, baseline, "mrr") is not None
+        else f"{indent}MRR: n/a"
+    )
+    print(
+        f"{indent}Mean Rank: "
+        f"{_metric_delta(candidate, baseline, 'mean_rank'):+.1f}"
+        if _metric_delta(candidate, baseline, "mean_rank") is not None
+        else f"{indent}Mean Rank: n/a"
+    )
+    print(
+        f"{indent}Median Rank: "
+        f"{_metric_delta(candidate, baseline, 'median_rank'):+.1f}"
+        if _metric_delta(candidate, baseline, "median_rank") is not None
+        else f"{indent}Median Rank: n/a"
+    )
+    print(f"\n{indent}{'k':<6} {'NDCG':<8} {'MAP':<8} {'Prec':<8} {'Recall':<8}")
+    print(indent + "-" * 42)
+    for k in k_metrics:
+        ndcg = _metric_delta(candidate, baseline, f"ndcg@{k}")
+        map_k = _metric_delta(candidate, baseline, f"map@{k}")
+        prec = _metric_delta(candidate, baseline, f"precision@{k}")
+        rec = _metric_delta(candidate, baseline, f"recall@{k}")
+        print(
+            f"{indent}{k:<6} "
+            f"{(f'{ndcg:+.3f}' if ndcg is not None else 'n/a'):<8} "
+            f"{(f'{map_k:+.3f}' if map_k is not None else 'n/a'):<8} "
+            f"{(f'{prec:+.1%}' if prec is not None else 'n/a'):<8} "
+            f"{(f'{rec:+.1%}' if rec is not None else 'n/a'):<8}"
+        )
+
+
 @dataclass
 class EvaluationDataset:
     train_stories: list[Story]
@@ -750,6 +841,7 @@ class RankingEvaluator:
         final_list_count: int | None = None,
         diagnostics_summary: dict[str, object] | None = None,
         cluster_keywords: dict[int, str] | None = None,
+        seed: int = 0,
     ) -> dict[str, float]:
         """Run k-fold cross-validation and return averaged metrics."""
         from concurrent.futures import ThreadPoolExecutor
@@ -767,7 +859,7 @@ class RankingEvaluator:
         n = len(all_stories)
 
         # Shuffle indices for random folds (deterministic before threads)
-        indices = np.random.permutation(n)
+        indices = np.random.default_rng(seed).permutation(n)
         fold_size = n // n_folds
 
         def _run_fold(
@@ -948,6 +1040,30 @@ async def main():
         default=30,
         help="Displayed story count when --final-list is enabled",
     )
+    parser.add_argument(
+        "--disable-cross-encoder",
+        action="store_true",
+        help="Evaluator-only override: disable cross-encoder reranking",
+    )
+    parser.add_argument(
+        "--disable-learned-ranker",
+        action="store_true",
+        help="Evaluator-only override: disable learned final reranker",
+    )
+    parser.add_argument(
+        "--compare-first-stage",
+        action="store_true",
+        help=(
+            "Run baseline and first-stage-only ablation on the same dataset and folds "
+            "(cross-encoder off, learned reranker off)."
+        ),
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="Deterministic seed for cross-validation fold assignment",
+    )
     args = parser.parse_args()
 
     # Create config for tuning/evaluation
@@ -955,13 +1071,9 @@ async def main():
         username=args.username,
         count=args.count,
         candidates=args.candidates,
-        use_classifier=args.classifier,
     )
     
-    # Apply CLI overrides to nested config objects
-    # This is a bit manual but preserves CLI flexibility for evaluation
-    from dataclasses import replace
-    
+    # Apply CLI overrides to nested config objects.
     ranking_overrides = {}
     if args.diversity is not None:
         ranking_overrides["diversity_lambda"] = args.diversity
@@ -974,12 +1086,12 @@ async def main():
     if args.knn is not None:
         config = replace(config, semantic=replace(config.semantic, knn_neighbors=args.knn))
 
-    if args.pure_semantic:
-        config = replace(
-            config,
-            ranking=replace(config.ranking, non_semantic_weight=0.0),
-            freshness=replace(config.freshness, enabled=False),
-        )
+    config = apply_evaluator_overrides(
+        config,
+        pure_semantic=args.pure_semantic,
+        disable_cross_encoder=args.disable_cross_encoder,
+        disable_learned_ranker=args.disable_learned_ranker,
+    )
 
     evaluator = RankingEvaluator(args.username)
     success = await evaluator.load_data(
@@ -1031,25 +1143,30 @@ async def main():
         else DEFAULT_K_METRICS
     )
 
-    if args.cv > 0:
-        print(f"\nRunning {args.cv}-fold cross-validation...")
-        metrics = evaluator.evaluate_cv(
-            n_folds=args.cv,
-            config=config,
-            k_metrics=k_metrics,
-            report_each=True,
-            final_list_count=args.count if args.final_list else None,
-            cluster_keywords=cluster_keywords,
-        )
-        _print_metrics_report(
-            metrics,
-            k_metrics,
-            include_std=True,
-            include_hit=False,
-        )
-    else:
+    def _run_eval(active_config: AppConfig, *, label: str) -> dict[str, float]:
+        print(f"\n{label}")
+        if args.cv > 0:
+            print(f"Running {args.cv}-fold cross-validation...")
+            metrics = evaluator.evaluate_cv(
+                n_folds=args.cv,
+                config=active_config,
+                k_metrics=k_metrics,
+                report_each=True,
+                parallel=False,
+                final_list_count=args.count if args.final_list else None,
+                cluster_keywords=cluster_keywords,
+                seed=args.seed,
+            )
+            _print_metrics_report(
+                metrics,
+                k_metrics,
+                include_std=True,
+                include_hit=False,
+            )
+            return metrics
+
         metrics = evaluator.evaluate(
-            config=config,
+            config=active_config,
             k_metrics=k_metrics,
             final_list_count=args.count if args.final_list else None,
             cluster_keywords=cluster_keywords,
@@ -1060,6 +1177,19 @@ async def main():
             include_std=False,
             include_hit=True,
         )
+        return metrics
+
+    baseline_metrics: dict[str, float] | None = None
+    if args.compare_first_stage:
+        baseline_metrics = _run_eval(config, label="Baseline")
+        ablation_config = build_first_stage_ablation_config(config)
+        metrics = _run_eval(
+            ablation_config,
+            label="First-stage-only ablation",
+        )
+        _print_metric_deltas(baseline_metrics, metrics, k_metrics)
+    else:
+        metrics = _run_eval(config, label="Evaluation")
 
     if args.save_baseline:
         _save_baseline(args.baseline, metrics)
@@ -1087,7 +1217,7 @@ async def main():
         dataset.candidates,
         positive_embeddings=dataset.train_embeddings,
         negative_embeddings=dataset.neg_embeddings,
-        config=config,
+        config=build_first_stage_ablation_config(config) if args.compare_first_stage else config,
         positive_stories=dataset.train_stories,
         negative_stories=dataset.neg_stories,
         cluster_names=None,

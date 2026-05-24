@@ -116,8 +116,6 @@ def test_feedback_store_round_trips_rank_diagnostics(tmp_path):
             "action": "up",
             "hybrid_score": 0.9,
             "semantic_score": 0.8,
-            "hn_score": 0.7,
-            "freshness_boost": 0.1,
             "knn_score": 0.6,
             "max_sim_score": 0.5,
             "max_cluster_score": 0.4,
