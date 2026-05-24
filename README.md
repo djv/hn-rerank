@@ -68,8 +68,8 @@ Outputs:
 
 - Default `uv sync` keeps the runtime env lean and avoids installing the PyTorch/CUDA stack.
 - `uv sync --extra archive-vector` installs DuckDB and SentenceTransformers for one-off searches against the public HN VectorSearch archive.
-- `uv sync --extra model-export` installs the ONNX export toolchain for `setup_model.py` and `export_tuned.py`.
-- `uv sync --extra train` installs the training/tuning toolchain for `tune_embeddings.py`, `optimize_hyperparameters.py`, and `finetune_runpod.py`.
+- `uv sync --extra model-export` installs the ONNX export toolchain for `setup_model.py`.
+- `uv sync --extra train` installs the training toolchain for `tune_embeddings.py` and `finetune_runpod.py`.
 - On Linux, the `archive-vector` and `train` extras are large because they pull PyTorch and CUDA wheels transitively.
 - After a one-off export or training session, run `uv sync` again to return to the lean runtime env.
 
@@ -88,11 +88,13 @@ Outputs:
    LLM provider.
 5. Fetch candidate stories from Algolia live windows, local archive cache,
    optional open-index archive data, and RSS feeds.
-6. Rank candidates with classifier mode when enough positive and negative
-   signals exist, otherwise fall back to k-NN heuristics.
-7. Reorder the top set with the local cross-encoder when enabled.
-8. Select a diversified final list with a best-effort `2:1` HN:RSS mix.
-9. Render static HTML and optional debug JSON artifacts.
+6. Rank candidates with a first-stage pairwise logistic classifier when enough
+   positive and negative signals exist, otherwise fall back to centroid-max
+   semantic scoring.
+7. Reorder the top HN slice with the local cross-encoder when enabled.
+8. Optionally apply the learned final reranker to the CE-passed pool.
+9. Select a diversified final list and then remove moderator-marked HN dupes.
+10. Render static HTML and optional debug JSON artifacts.
 
 ## HN Vector Archive Experiment
 
@@ -123,7 +125,6 @@ Top-level keys currently loaded from `[hn_rerank]`:
 - `count`
 - `candidates`
 - `signals`
-- `use_classifier`
 - `contrastive`
 - `no_rss`
 - `no_tldr`
@@ -133,8 +134,6 @@ Top-level keys currently loaded from `[hn_rerank]`:
 
 Nested config sections currently loaded:
 - `[hn_rerank.ranking]`
-- `[hn_rerank.adaptive_hn]`
-- `[hn_rerank.freshness]`
 - `[hn_rerank.semantic]`
 - `[hn_rerank.classifier]`
 - `[hn_rerank.clustering]`
@@ -142,6 +141,10 @@ Nested config sections currently loaded:
 - `[hn_rerank.cross_encoder]`
 - `[hn_rerank.archive]`
 - `[hn_rerank.learned_ranker]`
+
+Older local TOML files can still contain removed legacy sections or keys. The
+loader ignores unknown fields instead of failing, but the sections above are
+the supported runtime surface.
 
 `--clusters` and `--open-index-archive` are CLI-only overrides. The deprecated
 `--bigquery-archive` flag is an alias for `--open-index-archive`.
@@ -171,31 +174,29 @@ open_index_candidate_limit = 50
 
 [hn_rerank.ranking]
 negative_weight = 0.26932
-non_semantic_weight = 1.0
-comment_ratio = 0.9585070171
+diversity_lambda = 0.23966
 max_results = 500
 
-[hn_rerank.adaptive_hn]
-weight_min = 0.3963567514
-weight_max = 0.4454707212
-threshold_young = 69.1427531319
-threshold_old = 720.0
-score_normalization_cap = 212.4038210119
-
 [hn_rerank.semantic]
-maxsim_weight = 1.0
-meansim_weight = 0.0
 knn_neighbors = 6
+match_threshold = 0.85
 
 [hn_rerank.classifier]
 scoring_mode = "pairwise_logistic"
 feature_mode = "bottleneck"
+pairwise_negatives = 15
 k_feat = 7
-use_balanced_class_weight = false
+use_neg_knn_feature = true
+use_log_points_feature = true
+use_log_comments_feature = true
+use_closest_pos_feature = true
+use_closest_neg_feature = true
 
 [hn_rerank.clustering]
 algorithm = "agglomerative"
-distance_threshold = 1.57824
+linkage = "ward"
+metric = "euclidean"
+distance_threshold = 1.32823
 similarity_threshold = 0.75
 outlier_similarity_threshold = 0.0
 min_samples_per_cluster = 1
@@ -226,10 +227,9 @@ Optional artifacts written next to the output HTML include:
 - `cluster_name_debug.json` via `--debug-clusters`
 
 The match badge shown in the UI is derived from `max_cluster_score`, not the
-blended `hybrid_score` used for ranking. The small `CE` value is the normalized
-cross-encoder rerank score for stories included in the cross-encoder pass.
-`knn_score` remains available in debug output as a diagnostic neighborhood
-score.
+active ordering score. The small `CE` value is the normalized cross-encoder
+rerank score for stories included in the cross-encoder pass. `knn_score`
+remains available in debug output as a diagnostic neighborhood score.
 
 The learned final ranker is off by default. In shadow mode it trains only from
 explicit dashboard up/down feedback records that include captured rank
@@ -239,12 +239,6 @@ changing dashboard order. Training balances up/down labels by default and sets
 `source_feature_weight = 0.0` so source identity cannot dominate the learned
 score. Active mode can reorder by `learned_score`, but should only be enabled
 after inspecting shadow diagnostics.
-
-To compare learned scoring against the current hybrid scores on stored feedback:
-
-```bash
-uv run python -m scripts.evaluate_learned_ranker
-```
 
 ## Systemd Timer
 
@@ -323,23 +317,6 @@ uv run pytest
 uv run ruff check .
 uv run ty check .
 ```
-
-## Multi-Seed Promotion
-
-Use the promotion runner to evaluate candidate parameter sets across multiple seeds and only emit promoted params when stability gates pass.
-
-```bash
-uv run promote_stable_params.py <your-hn-username> \
-  --seeds 42,43,44 \
-  --space core \
-  --trials 120 \
-  --cv-folds 8 \
-  --top-k-per-seed 5 \
-  --candidates 500 \
-  --cache-only
-```
-
-Artifacts are written under `runs/promotion/<timestamp>_*` and include `promotion_report.json`. Promotion output files are only emitted when the candidate clears the configured stability gates.
 
 ## UI Change Verification
 

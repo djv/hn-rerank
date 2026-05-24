@@ -120,20 +120,21 @@ The current production architecture uses **Pairwise Logistic Regression** with *
     - `centroid_similarity`: Maximum cosine similarity to any user interest cluster centroid.
     - `knn_pos_median`: Median similarity to the top-k nearest positive examples.
     - `knn_neg_median`: Median similarity to the top-k nearest negative examples.
-    - `metadata_features`: Log-scaled story points and age-based freshness.
+    - `metadata_features`: Optional log-scaled story points and comment counts.
 - **Pairwise Training**: The model is trained on differences between positive and negative example feature vectors, optimized to correctly rank positives above negatives.
 - **Weighting**: Applies cluster-balanced positive sample weights to prevent large interest groups from drowning out smaller niches.
 - **Diagnostics**: Still computes k-NN display scores for the "Similar to..." UI reasons.
 
 ### Fallback mode
 - Computes median top-k similarity against positive history for diagnostics.
-- Scores semantic relevance from cluster-max similarity, optionally blended with k-NN when configured.
+- Scores semantic relevance from cluster-max similarity.
 - Uses the best positive match for display reasoning.
 
 
 Final ranking behavior:
-- hybrid score blends semantic relevance, adaptive HN weighting, and freshness
-- MMR-style diversification suppresses redundant candidates
+- the first-stage score becomes `hybrid_score`
+- MMR-style diversification suppresses redundant candidates within the ranked pool
+- the cross-encoder can blend its score back into the top HN slice
 - the learned final ranker can score the ranked list in shadow mode; active mode
   reorders by `learned_score` only when explicitly enabled
 - the UI match badge uses `max_cluster_score`, while ordering uses `hybrid_score`
@@ -193,7 +194,7 @@ The strongest automated coverage is around:
 - clustering behavior
 - classifier fallbacks and weighting
 - HTML selection and rendering helpers
-- promotion and evaluation utilities
+- evaluation and feedback utilities
 
 The weakest coverage is around:
 - true end-to-end runtime integration
