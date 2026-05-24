@@ -146,8 +146,6 @@ class RankResult:
     max_cluster_score: float = 0.0  # Similarity to best matching cluster centroid
     semantic_score: float = 0.0  # Raw semantic score (classifier or k-NN)
     cross_encoder_score: float = 0.0
-    learned_score: float = 0.0
-    learned_ranker_used: bool = False
 
 
 @dataclass
@@ -170,7 +168,6 @@ class StoryDisplay:
     tldr: str = ""
     text_content: str = ""
     rank_index: int = 0
-    cross_encoder_score: float = 0.0
     hybrid_score: float = 0.0
     semantic_score: float = 0.0
     knn_score: float = 0.0
@@ -198,7 +195,6 @@ class StoryDisplay:
             "tldr": self.tldr,
             "text_content": self.text_content,
             "rank_index": self.rank_index,
-            "cross_encoder_score": self.cross_encoder_score,
             "hybrid_score": self.hybrid_score,
             "semantic_score": self.semantic_score,
             "knn_score": self.knn_score,

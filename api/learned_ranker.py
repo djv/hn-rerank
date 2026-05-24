@@ -1,4 +1,4 @@
-"""Learned final-rank calibration for dashboard stories."""
+"""Ordinal threshold utilities for feedback-trained ranking models."""
 
 from __future__ import annotations
 
@@ -17,13 +17,11 @@ from sklearn.model_selection import StratifiedKFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from api.config import LearnedRankerConfig
+from api.config import SingleModelConfig
 from api.feedback import FeedbackAction, FeedbackRecord
 from api.models import RankResult, Story
 
 logger = logging.getLogger(__name__)
-
-LearnedRankerMode = Literal["trained", "loaded", "disabled", "insufficient_labels", "failed"]
 
 FEATURE_NAMES: tuple[str, ...] = (
     "semantic_score",
@@ -78,22 +76,6 @@ class OrdinalThresholdModel:
 
 
 @dataclass(frozen=True)
-class LearnedRankerResult:
-    """Result of training/loading and scoring the learned ranker."""
-
-    mode: LearnedRankerMode
-    scores: dict[int, float]
-    positive_labels: int
-    negative_labels: int
-    neutral_labels: int = 0
-    reason: str | None = None
-
-    @property
-    def has_scores(self) -> bool:
-        return bool(self.scores)
-
-
-@dataclass(frozen=True)
 class LearnedRankerEvaluation:
     """Offline comparison of learned scores against stored dashboard labels."""
 
@@ -140,9 +122,15 @@ def build_labels_from_feedback(
 ) -> list[LabeledStory]:
     labels: list[LabeledStory] = []
     for record in records.values():
-        rank_result = record.to_rank_result()
-        if rank_result is None:
-            continue
+        rank_result = RankResult(
+            index=-1,
+            hybrid_score=0.0,
+            best_fav_index=-1,
+            max_sim_score=0.0,
+            knn_score=0.0,
+            max_cluster_score=0.0,
+            semantic_score=0.0,
+        )
         labels.append(
             LabeledStory(
                 story=record.to_story(),
@@ -170,7 +158,6 @@ def build_features(
     result: RankResult | None = None,
     *,
     now: float | None = None,
-    source_feature_weight: float = 1.0,
 ) -> list[float]:
     """Build the stable numeric feature vector used by the learned ranker."""
     score = max(float(story.score or 0), 0.0)
@@ -257,7 +244,6 @@ def build_training_matrix(
     labels: list[LabeledStory],
     *,
     now: float | None = None,
-    source_feature_weight: float = 1.0,
 ) -> tuple[NDArray[np.float32], NDArray[np.int64]]:
     rows: list[list[float]] = []
     y: list[int] = []
@@ -267,7 +253,6 @@ def build_training_matrix(
                 item.story,
                 item.rank_result,
                 now=item.feedback_updated_at or now,
-                source_feature_weight=source_feature_weight,
             )
         )
         y.append(item.label)
@@ -313,11 +298,11 @@ def _threshold_binary_counts(y: NDArray[np.int64]) -> dict[str, tuple[int, int]]
 
 def _has_sufficient_threshold_labels(
     labels: list[LabeledStory],
-    config: LearnedRankerConfig,
+    config: SingleModelConfig,
 ) -> bool:
     if not labels:
         return False
-    _, y = build_training_matrix(labels, source_feature_weight=config.source_feature_weight)
+    _, y = build_training_matrix(labels)
     counts = _threshold_binary_counts(y)
     return all(
         positive >= config.min_positive_labels and negative >= config.min_negative_labels
@@ -327,7 +312,7 @@ def _has_sufficient_threshold_labels(
 
 def _insufficient_label_message(
     labels: list[LabeledStory],
-    config: LearnedRankerConfig,
+    config: SingleModelConfig,
 ) -> str:
     positive_count, neutral_count, negative_count = _count_labels(labels)
     return (
@@ -356,14 +341,13 @@ def _make_pipeline() -> Pipeline:
 
 def train_model(
     labels: list[LabeledStory],
-    config: LearnedRankerConfig,
+    config: SingleModelConfig,
     *,
     now: float | None = None,
 ) -> OrdinalThresholdModel:
     x_train, y_train = build_training_matrix(
         labels,
         now=now,
-        source_feature_weight=config.source_feature_weight,
     )
     return train_model_from_matrix(x_train, y_train, config, labels=labels)
 
@@ -371,7 +355,7 @@ def train_model(
 def train_model_from_matrix(
     x_train: NDArray[np.float32],
     y_train: NDArray[np.int64],
-    config: LearnedRankerConfig,
+    config: SingleModelConfig,
     *,
     labels: list[LabeledStory] | None = None,
 ) -> OrdinalThresholdModel:
@@ -475,7 +459,7 @@ def score_ranked_results(
     ranked: list[RankResult],
     stories: list[Story],
     model: OrdinalThresholdModel,
-    config: LearnedRankerConfig | None = None,
+    config: SingleModelConfig | None = None,
     *,
     now: float | None = None,
 ) -> dict[int, float]:
@@ -486,9 +470,6 @@ def score_ranked_results(
             stories[result.index],
             result,
             now=now,
-            source_feature_weight=(
-                config.source_feature_weight if config is not None else 1.0
-            ),
         )
         for result in ranked
     ]
@@ -589,7 +570,7 @@ def evaluate_labeled_score_sources(
 
 def evaluate_labeled_order(
     labels: list[LabeledStory],
-    config: LearnedRankerConfig,
+    config: SingleModelConfig,
     *,
     now: float | None = None,
     max_folds: int = 5,
@@ -617,7 +598,6 @@ def evaluate_labeled_order(
                 labels[int(i)].story,
                 labels[int(i)].rank_result,
                 now=labels[int(i)].feedback_updated_at or now,
-                source_feature_weight=config.source_feature_weight,
             )
             for i in test_indices
         ]
@@ -656,75 +636,4 @@ def evaluate_labeled_order(
         hybrid_roc_auc=hybrid_metrics.metrics.roc_auc,
         learned_top_sources=learned_metrics.metrics.top_sources,
         hybrid_top_sources=hybrid_metrics.metrics.top_sources,
-    )
-
-def train_or_load_and_score(
-    ranked: list[RankResult],
-    stories: list[Story],
-    labels: list[LabeledStory],
-    config: LearnedRankerConfig,
-    *,
-    now: float | None = None,
-) -> LearnedRankerResult:
-    positive_count, neutral_count, negative_count = _count_labels(labels)
-    if not (config.shadow_enabled or config.active_enabled):
-        return LearnedRankerResult(
-            mode="disabled",
-            scores={},
-            positive_labels=positive_count,
-            negative_labels=negative_count,
-            neutral_labels=neutral_count,
-        )
-
-    model_path = config.model_path
-    mode: LearnedRankerMode
-    try:
-        if _has_sufficient_threshold_labels(labels, config):
-            model = train_model(labels, config, now=now)
-            save_model(model, model_path)
-            mode = "trained"
-        else:
-            if not model_path.exists():
-                return LearnedRankerResult(
-                    mode="insufficient_labels",
-                    scores={},
-                    positive_labels=positive_count,
-                    negative_labels=negative_count,
-                    neutral_labels=neutral_count,
-                    reason=_insufficient_label_message(labels, config),
-                )
-            try:
-                model = load_model(model_path)
-                mode = "loaded"
-            except Exception as exc:
-                return LearnedRankerResult(
-                    mode="insufficient_labels",
-                    scores={},
-                    positive_labels=positive_count,
-                    negative_labels=negative_count,
-                    neutral_labels=neutral_count,
-                    reason=(
-                        f"{_insufficient_label_message(labels, config)}; "
-                        f"existing model is not reusable: {type(exc).__name__}: {exc}"
-                    ),
-                )
-
-        scores = score_ranked_results(ranked, stories, model, config, now=now)
-    except Exception as exc:
-        logger.exception("Learned final ranker failed")
-        return LearnedRankerResult(
-            mode="failed",
-            scores={},
-            positive_labels=positive_count,
-            negative_labels=negative_count,
-            neutral_labels=neutral_count,
-            reason=f"{type(exc).__name__}: {exc}",
-        )
-
-    return LearnedRankerResult(
-        mode=mode,
-        scores=scores,
-        positive_labels=positive_count,
-        negative_labels=negative_count,
-        neutral_labels=neutral_count,
     )

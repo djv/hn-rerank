@@ -89,14 +89,6 @@ class LLMConfig:
     max_total_seconds: float = 600.0
 
 @dataclass(frozen=True)
-class CrossEncoderConfig:
-    """Cross-encoder reranking parameters."""
-    enabled: bool = True
-    top_n: int = 50
-    model_dir: str = "onnx_ce_model"
-    weight: float = 0.8
-
-@dataclass(frozen=True)
 class ArchiveConfig:
     """Historical HN archive fetching parameters."""
     open_index_enabled: bool = False
@@ -115,20 +107,11 @@ class ArchiveConfig:
             )
 
 @dataclass(frozen=True)
-class LearnedRankerConfig:
-    """Shadow/active learned final ranking parameters."""
-    shadow_enabled: bool = False
-    active_enabled: bool = False
-    model_path: Path = Path(".cache/learned_ranker/final_ranker.joblib")
+class SingleModelConfig:
+    """Feedback-trained runtime ranking model parameters."""
     min_positive_labels: int = 10
     min_negative_labels: int = 10
-    training_sources: str = "dashboard_feedback"
-    source_feature_weight: float = 0.0
     balance_training_labels: bool = True
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.model_path, Path):
-            object.__setattr__(self, "model_path", Path(self.model_path))
 
 @dataclass(frozen=True)
 class AppConfig:
@@ -151,9 +134,8 @@ class AppConfig:
     classifier: ClassifierConfig = field(default_factory=ClassifierConfig)
     clustering: ClusteringConfig = field(default_factory=ClusteringConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
-    cross_encoder: CrossEncoderConfig = field(default_factory=CrossEncoderConfig)
     archive: ArchiveConfig = field(default_factory=ArchiveConfig)
-    learned_ranker: LearnedRankerConfig = field(default_factory=LearnedRankerConfig)
+    single_model: SingleModelConfig = field(default_factory=SingleModelConfig)
 
     @classmethod
     def load(cls, toml_path: Path | str | None = None, **overrides: Any) -> Self:
@@ -183,9 +165,8 @@ class AppConfig:
         classifier = ClassifierConfig(**_safe_section("classifier", ClassifierConfig))
         clustering = ClusteringConfig(**_safe_section("clustering", ClusteringConfig))
         llm = LLMConfig(**_safe_section("llm", LLMConfig))
-        cross_encoder = CrossEncoderConfig(**_safe_section("cross_encoder", CrossEncoderConfig))
         archive = ArchiveConfig(**_safe_section("archive", ArchiveConfig))
-        learned_ranker = LearnedRankerConfig(**_safe_section("learned_ranker", LearnedRankerConfig))
+        single_model = SingleModelConfig(**_safe_section("single_model", SingleModelConfig))
 
         def _get_root(key: str, default: Any) -> Any:
             val = overrides.get(key)
@@ -214,7 +195,6 @@ class AppConfig:
             classifier=classifier,
             clustering=clustering,
             llm=llm,
-            cross_encoder=cross_encoder,
             archive=archive,
-            learned_ranker=learned_ranker,
+            single_model=single_model,
         )

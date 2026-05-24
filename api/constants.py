@@ -150,12 +150,6 @@ LLM_CLUSTER_MAX_RETRIES = 4
 LLM_CLUSTER_MAX_ROUNDS = 2
 LLM_CLUSTER_MAX_TOTAL_SECONDS = 600.0  # Fail fast if naming stalls too long
 
-# Cross-Encoder Configuration
-CROSS_ENCODER_ENABLED = _config.cross_encoder.enabled
-CROSS_ENCODER_TOP_N = _config.cross_encoder.top_n
-CROSS_ENCODER_MODEL_DIR = _config.cross_encoder.model_dir
-CROSS_ENCODER_WEIGHT = _config.cross_encoder.weight
-
 # Rate Limiting (Token Bucket)
 RATE_LIMIT_REFILL_RATE = 0.25  # Tokens per second (1 call per 4 seconds)
 RATE_LIMIT_MAX_TOKENS = 1.0
