@@ -1,4 +1,4 @@
-"""Evaluator-only CE-free single-model experiment built from feedback labels."""
+"""Feedback-trained single ranking model built from dashboard feedback labels."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from sklearn.metrics import roc_auc_score
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.model_selection import StratifiedKFold
 
-from api.config import AppConfig, LearnedRankerConfig
+from api.config import AppConfig, SingleModelConfig
 from api.feedback import FeedbackRecord
 from api.learned_ranker import (
     ACTION_TO_ORDINAL,
@@ -207,7 +207,7 @@ def train_single_model(
     positive_embeddings: NDArray[np.float32] | None,
     negative_embeddings: NDArray[np.float32] | None,
     config: AppConfig,
-    training_config: LearnedRankerConfig,
+    training_config: SingleModelConfig,
     *,
     now: float | None = None,
 ) -> tuple[OrdinalThresholdModel, SingleModelFeatureBatch]:
@@ -218,6 +218,30 @@ def train_single_model(
         config,
         now=now,
     )
+    model = train_model_from_matrix(batch.rows, y, training_config)
+    return model, batch
+
+
+def train_single_model_from_embeddings(
+    labels: list[SingleModelLabeledStory],
+    story_embeddings: NDArray[np.float32],
+    positive_embeddings: NDArray[np.float32] | None,
+    negative_embeddings: NDArray[np.float32] | None,
+    config: AppConfig,
+    training_config: SingleModelConfig,
+    *,
+    now: float | None = None,
+) -> tuple[OrdinalThresholdModel, SingleModelFeatureBatch]:
+    stories = [item.story for item in labels]
+    batch = build_single_model_feature_batch(
+        stories,
+        story_embeddings,
+        positive_embeddings,
+        negative_embeddings,
+        config,
+        now=now,
+    )
+    y = np.asarray([item.label for item in labels], dtype=np.int64)
     model = train_model_from_matrix(batch.rows, y, training_config)
     return model, batch
 
@@ -235,7 +259,7 @@ def score_feedback_labels_oof(
     positive_embeddings: NDArray[np.float32] | None,
     negative_embeddings: NDArray[np.float32] | None,
     config: AppConfig,
-    training_config: LearnedRankerConfig,
+    training_config: SingleModelConfig,
     *,
     max_folds: int = 5,
 ) -> tuple[list[float], SingleModelFeatureBatch]:
@@ -401,7 +425,6 @@ def rank_stories_with_single_model(
             knn_score=float(derived["pos_knn_feature"][candidate_index]),
             max_cluster_score=float(derived["centroid_feature"][candidate_index]),
             semantic_score=float(utility[candidate_index]),
-            cross_encoder_score=0.0,
         )
         for candidate_index in ranked_indices
     ]

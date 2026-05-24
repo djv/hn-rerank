@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from generate_html import main
 from api.models import Story, RankResult
 import sys
@@ -34,6 +34,7 @@ async def test_generate_html_integration(tmp_path):
         patch("generate_html.rerank.get_embeddings") as mock_emb,
         patch("generate_html.rerank.get_cluster_embeddings") as mock_cluster_emb,
         patch("generate_html.rerank.cluster_interests_with_labels") as mock_cluster,
+        patch("generate_html.train_single_model_from_embeddings") as mock_train_single_model,
         patch("generate_html.rerank.rank_stories") as mock_rank,
         patch("generate_html.filter_top_ranked_hn_dupes", new_callable=AsyncMock) as mock_dupes,
         patch("generate_html.refresh_hn_story_metadata", new_callable=AsyncMock),
@@ -73,6 +74,7 @@ async def test_generate_html_integration(tmp_path):
         mock_emb.return_value = np.zeros((1, 768))
         mock_cluster_emb.return_value = np.zeros((1, 768))
         mock_cluster.return_value = (np.zeros((1, 768)), np.array([0], dtype=np.int32))
+        mock_train_single_model.return_value = (MagicMock(), MagicMock())
         mock_rank.return_value = [
             RankResult(
                 index=0,

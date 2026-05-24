@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from api.config import AppConfig, ClassifierConfig, LearnedRankerConfig
+from api.config import AppConfig, ClassifierConfig, SingleModelConfig
 from api.feedback import FeedbackRecord
 from api.feedback_single_model import (
     build_single_model_feature_batch,
@@ -143,7 +143,7 @@ def test_single_model_scores_are_stable_and_bounded(monkeypatch: pytest.MonkeyPa
             use_comment_ratio_feature=False,
         )
     )
-    training_config = LearnedRankerConfig(
+    training_config = SingleModelConfig(
         min_positive_labels=2,
         min_negative_labels=2,
     )

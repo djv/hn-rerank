@@ -125,7 +125,6 @@ def test_generate_story_html_includes_feedback_controls_and_metadata():
         knn_score=0.65,
         max_sim_score=0.77,
         max_cluster_score=0.9,
-        cross_encoder_score=0.5,
         feedback_action="up",
     )
 
@@ -139,9 +138,6 @@ def test_generate_story_html_includes_feedback_controls_and_metadata():
     assert 'data-story-score="42"' in html
     assert 'data-story-comment-count=""' in html
     assert 'data-feedback-action="up"' in html
-    assert 'data-hybrid-score="0.91"' in html
-    assert 'data-semantic-score="0.82"' in html
-    assert 'data-max-cluster-score="0.9"' in html
 
 
 def test_generate_story_html_hides_unknown_comment_count():
@@ -596,9 +592,6 @@ def test_build_candidate_cluster_map_respects_threshold_for_external(monkeypatch
 def _mk_rank(
     idx: int,
     score: float,
-    *,
-    learned_score: float = 0.0,
-    learned_ranker_used: bool = False,
 ) -> RankResult:
     return RankResult(
         index=idx,
@@ -606,8 +599,6 @@ def _mk_rank(
         best_fav_index=-1,
         max_sim_score=0.0,
         knn_score=0.0,
-        learned_score=learned_score,
-        learned_ranker_used=learned_ranker_used,
     )
 
 
@@ -866,14 +857,14 @@ def test_select_ranked_results_preserves_existing_hn_heavy_top_slice():
     assert hn_count == 5
 
 
-def test_select_ranked_results_uses_learned_scores_when_active():
+def test_select_ranked_results_uses_hybrid_scores():
     cands = [
         Story(id=1, title="HN 0", url=None, score=0, time=1, text_content=""),
         Story(id=2, title="HN 1", url=None, score=0, time=1, text_content=""),
     ]
     ranked = [
-        _mk_rank(0, 0.9, learned_score=0.1, learned_ranker_used=True),
-        _mk_rank(1, 0.8, learned_score=0.99, learned_ranker_used=True),
+        _mk_rank(0, 0.9),
+        _mk_rank(1, 0.8),
     ]
 
     selected = select_ranked_results(
@@ -885,7 +876,7 @@ def test_select_ranked_results_uses_learned_scores_when_active():
         count=2,
     )
 
-    assert [result.index for result in selected] == [1, 0]
+    assert [result.index for result in selected] == [0, 1]
 
 
 def test_split_feedback_records_builds_signals_and_exclusions():

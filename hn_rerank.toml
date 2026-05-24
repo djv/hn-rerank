@@ -50,18 +50,12 @@ max_cluster_fraction = 0.25
 max_cluster_size = 40
 refine_iters = 2
 
-[hn_rerank.cross_encoder]
-enabled = true
-top_n = 200
-weight = 0.06953
-
 [hn_rerank.archive]
 open_index_enabled = true
 use_cached_stories = true
 open_index_candidate_limit = 50
 
-[hn_rerank.learned_ranker]
-shadow_enabled = true
-active_enabled = true
-source_feature_weight = 0.0
+[hn_rerank.single_model]
+min_positive_labels = 10
+min_negative_labels = 10
 balance_training_labels = true

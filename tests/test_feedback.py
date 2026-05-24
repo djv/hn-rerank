@@ -100,7 +100,7 @@ def test_feedback_store_round_trips_records(tmp_path):
     assert loaded[record.key].action == "down"
 
 
-def test_feedback_store_round_trips_rank_diagnostics(tmp_path):
+def test_feedback_store_ignores_runtime_rank_diagnostics_on_write(tmp_path):
     path = tmp_path / "feedback.json"
     _, record = apply_feedback_payload(
         {
@@ -125,16 +125,15 @@ def test_feedback_store_round_trips_rank_diagnostics(tmp_path):
     )
     assert record is not None
 
+    raw = json.loads(path.read_text())
     loaded = load_feedback(path)[record.key]
     story = loaded.to_story()
-    rank_result = loaded.to_rank_result()
 
     assert story.score == 321
     assert story.comment_count == 45
-    assert rank_result is not None
-    assert rank_result.hybrid_score == pytest.approx(0.9)
-    assert rank_result.semantic_score == pytest.approx(0.8)
-    assert rank_result.cross_encoder_score == pytest.approx(0.3)
+    assert "hybrid_score" not in raw["records"][record.key]
+    assert "semantic_score" not in raw["records"][record.key]
+    assert "cross_encoder_score" not in raw["records"][record.key]
 
 
 def test_feedback_payload_requires_record_for_clear():

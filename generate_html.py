@@ -32,10 +32,9 @@ from api.feedback import (
     feedback_key,
     load_feedback,
 )
-from api.learned_ranker import (
-    LabeledStory,
-    build_labels_from_feedback,
-    train_or_load_and_score,
+from api.feedback_single_model import (
+    build_single_model_feedback_labels,
+    train_single_model_from_embeddings,
 )
 from api.models import RankResult, Story, StoryDict, StoryDisplay
 from api.url_utils import normalize_url
@@ -433,12 +432,6 @@ HTML_TEMPLATE: str = """
                                     time: Number(card.dataset.storyTime),
                                     score: Number(card.dataset.storyScore),
                                     comment_count: card.dataset.storyCommentCount === '' ? null : Number(card.dataset.storyCommentCount),
-                                    hybrid_score: Number(card.dataset.hybridScore),
-                                    semantic_score: Number(card.dataset.semanticScore),
-                                    knn_score: Number(card.dataset.knnScore),
-                                    max_sim_score: Number(card.dataset.maxSimScore),
-                                    max_cluster_score: Number(card.dataset.maxClusterScore),
-                                    cross_encoder_score: Number(card.dataset.crossEncoderScore),
                                     action: nextAction,
                                 }),
                             });
@@ -746,53 +739,12 @@ def select_ranked_results(
 
     # Combine and sort by the active final score.
     selected_results = selected_external + selected_hn
-    selected_results.sort(
-        key=lambda x: x.learned_score if x.learned_ranker_used else x.hybrid_score,
-        reverse=True,
-    )
+    selected_results.sort(key=lambda x: x.hybrid_score, reverse=True)
     return selected_results
 
 
-def apply_learned_ranker(
-    ranked: list[RankResult],
-    cands: list[Story],
-    feedback_labels: list[LabeledStory],
-    config: AppConfig,
-) -> tuple[list[RankResult], str]:
-    """Score ranked candidates with the learned ranker, optionally making it active."""
-    result = train_or_load_and_score(
-        ranked,
-        cands,
-        feedback_labels,
-        config.learned_ranker,
-    )
-    if result.mode == "disabled":
-        return ranked, "disabled"
-
-    if result.reason:
-        print(f"[!] Learned ranker {result.mode}: {result.reason}")
-    else:
-        print(
-            "[+] Learned ranker "
-            f"{result.mode}: {result.positive_labels} upvote, "
-            f"{result.neutral_labels} neutral, "
-            f"{result.negative_labels} downvote labels"
-        )
-
-    if not result.has_scores:
-        return ranked, result.mode
-
-    for rank_result in ranked:
-        rank_result.learned_score = result.scores.get(rank_result.index, 0.0)
-        rank_result.learned_ranker_used = config.learned_ranker.active_enabled
-
-    if config.learned_ranker.active_enabled:
-        ranked = sorted(ranked, key=lambda item: item.learned_score, reverse=True)
-    return ranked, result.mode
-
-
 STORY_CARD_TEMPLATE: str = """
-<div class="story-card group relative{% if is_external %} rss-story{% endif %}" data-rank-index="{{ rank_index }}" data-story-time="{{ story_time }}" data-story-id="{{ story_id }}" data-story-source="{{ story_source }}" data-story-title="{{ title }}" data-story-url="{{ story_url or '' }}" data-story-discussion-url="{{ hn_url or '' }}" data-story-text-content="{{ text_content }}" data-story-score="{{ story_score }}" data-story-comment-count="{{ story_comment_count if story_comment_count is not none else '' }}" data-feedback-key="{{ feedback_key }}" data-feedback-action="{{ feedback_action or '' }}" data-hybrid-score="{{ hybrid_score }}" data-semantic-score="{{ semantic_score }}" data-knn-score="{{ knn_score }}" data-max-sim-score="{{ max_sim_score }}" data-max-cluster-score="{{ max_cluster_score }}" data-cross-encoder-score="{{ ce_score }}">
+<div class="story-card group relative{% if is_external %} rss-story{% endif %}" data-rank-index="{{ rank_index }}" data-story-time="{{ story_time }}" data-story-id="{{ story_id }}" data-story-source="{{ story_source }}" data-story-title="{{ title }}" data-story-url="{{ story_url or '' }}" data-story-discussion-url="{{ hn_url or '' }}" data-story-text-content="{{ text_content }}" data-story-score="{{ story_score }}" data-story-comment-count="{{ story_comment_count if story_comment_count is not none else '' }}" data-feedback-key="{{ feedback_key }}" data-feedback-action="{{ feedback_action or '' }}">
     {% if card_url %}
     <a href="{{ card_url }}" target="_blank" class="absolute inset-0 z-10 rounded-lg" aria-label="{{ card_aria_label }}"></a>
     {% endif %}
@@ -800,11 +752,6 @@ STORY_CARD_TEMPLATE: str = """
         <span class="px-1.5 py-0.5 rounded bg-hn/10 text-hn text-[10px] font-bold" title="Hybrid Match Score">
             {{ score }}%
         </span>
-        {% if ce_score %}
-        <span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 text-[10px] font-bold" title="Cross-Encoder Semantic Score (Higher is better)">
-            CE: {{ "%.2f"|format(ce_score) }}
-        </span>
-        {% endif %}
         {% if source_badge %}
         <span class="rss-badge">{{ source_badge }}</span>
         {% endif %}
@@ -858,7 +805,6 @@ def generate_story_html(story: StoryDisplay) -> str:
         )
     return _STORY_TEMPLATE.render(
         score=story.match_percent,
-        ce_score=story.cross_encoder_score,
         is_external=story.is_external,
         source_badge=story.badge_label,
         cluster_name=story.cluster_name,
@@ -1444,10 +1390,9 @@ async def main() -> None:
         # 4. Reranking
         r_task: TaskID = progress.add_task("[*] Reranking stories...", total=100)
         rank_phase_weights = {
-            "embeddings": 45.0,
-            "scoring": 30.0,
-            "cross_encoder": 20.0,
-            "finalize": 5.0,
+            "embeddings": 55.0,
+            "scoring": 35.0,
+            "finalize": 10.0,
         }
         rank_phase_order = list(rank_phase_weights)
         rank_phase_completed = dict.fromkeys(rank_phase_weights, 0.0)
@@ -1481,8 +1426,22 @@ async def main() -> None:
                 )
                 last_r_completed = completed
 
+        feedback_labels = build_single_model_feedback_labels(feedback_records).labels
+        feedback_story_embeddings = rerank.get_embeddings(
+            [story.story.text_content for story in feedback_labels]
+        )
+        single_model, _ = train_single_model_from_embeddings(
+            feedback_labels,
+            feedback_story_embeddings,
+            p_emb,
+            n_emb,
+            config,
+            config.single_model,
+        )
+
         ranked: list[RankResult] = rerank.rank_stories(
             cands,
+            single_model,
             p_emb,
             n_emb,
             config=config,
@@ -1494,14 +1453,6 @@ async def main() -> None:
         )
         progress.update(
             r_task, completed=100, description="[green][+] Reranking complete."
-        )
-
-        learned_ranker_labels = build_labels_from_feedback(feedback_records)
-        ranked, learned_ranker_mode = apply_learned_ranker(
-            ranked,
-            cands,
-            learned_ranker_labels,
-            config,
         )
 
         # 5. Final result preparation
@@ -1627,7 +1578,6 @@ async def main() -> None:
                 comments=list(s.comments),
                 source=s.source,
                 text_content=s.text_content,
-                cross_encoder_score=result.cross_encoder_score,
                 hybrid_score=result.hybrid_score,
                 semantic_score=result.semantic_score,
                 knn_score=result.knn_score,
@@ -1713,10 +1663,7 @@ async def main() -> None:
                     "semantic_score": result.semantic_score,
                     "knn_score": result.knn_score,
                     "max_cluster_score": result.max_cluster_score,
-                    "cross_encoder_score": result.cross_encoder_score,
-                    "learned_score": result.learned_score,
-                    "learned_ranker_used": result.learned_ranker_used,
-                    "learned_ranker_mode": learned_ranker_mode,
+                    "max_sim_score": result.max_sim_score,
                 }
             )
         debug_path.write_text(json.dumps(debug_rows, indent=2))
