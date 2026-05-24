@@ -31,7 +31,13 @@ def _ensure_joblib_settings() -> None:
 _ensure_joblib_settings()
 
 from api.client import HNClient  # noqa: E402
+from api.feedback_single_model import (  # noqa: E402
+    SingleModelLabeledStory,
+    train_single_model,
+    train_single_model_from_embeddings,
+)
 from api.fetching import fetch_story, get_best_stories  # noqa: E402
+from api.learned_ranker import DOWNVOTE_LABEL, UPVOTE_LABEL  # noqa: E402
 from api.models import RankResult, Story, StoryDict  # noqa: E402
 from api.rerank import get_embeddings, rank_stories  # noqa: E402
 from api.url_utils import normalize_url  # noqa: E402
@@ -300,6 +306,41 @@ def _merge_rank_diagnostic_summaries(
     }
 
 
+def _training_labels_from_histories(
+    positive_stories: list[Story],
+    negative_stories: list[Story],
+) -> list[SingleModelLabeledStory]:
+    labels: list[SingleModelLabeledStory] = []
+    for story in positive_stories:
+        labels.append(
+            SingleModelLabeledStory(
+                key=f"pos:{story.source}:{story.id}",
+                story=story,
+                label=UPVOTE_LABEL,
+            )
+        )
+    for story in negative_stories:
+        labels.append(
+            SingleModelLabeledStory(
+                key=f"neg:{story.source}:{story.id}",
+                story=story,
+                label=DOWNVOTE_LABEL,
+            )
+        )
+    return labels
+
+
+def _evaluator_training_config(config: AppConfig) -> AppConfig:
+    return replace(
+        config,
+        single_model=replace(
+            config.single_model,
+            min_positive_labels=1,
+            min_negative_labels=1,
+        ),
+    )
+
+
 def _finalize_ranked_results(
     results: list[RankResult],
     candidates: list[Story],
@@ -455,8 +496,6 @@ def apply_evaluator_overrides(
     config: AppConfig,
     *,
     pure_semantic: bool = False,
-    disable_cross_encoder: bool = False,
-    disable_learned_ranker: bool = False,
 ) -> AppConfig:
     updated = config
     if pure_semantic:
@@ -469,29 +508,11 @@ def apply_evaluator_overrides(
                 use_comment_ratio_feature=False,
             ),
         )
-    if disable_cross_encoder:
-        updated = replace(
-            updated,
-            cross_encoder=replace(updated.cross_encoder, enabled=False),
-        )
-    if disable_learned_ranker:
-        updated = replace(
-            updated,
-            learned_ranker=replace(
-                updated.learned_ranker,
-                shadow_enabled=False,
-                active_enabled=False,
-            ),
-        )
     return updated
 
 
 def build_first_stage_ablation_config(config: AppConfig) -> AppConfig:
-    return apply_evaluator_overrides(
-        config,
-        disable_cross_encoder=True,
-        disable_learned_ranker=True,
-    )
+    return apply_evaluator_overrides(config, pure_semantic=True)
 
 
 def _metric_delta(current: dict[str, float], baseline: dict[str, float], key: str) -> float | None:
@@ -800,18 +821,45 @@ class RankingEvaluator:
         rank_diagnostics: dict[str, object] | None = (
             {} if diagnostics_summary is not None else None
         )
-        
-        results = rank_stories(
-            dataset.candidates,
-            positive_embeddings=dataset.train_embeddings,
-            negative_embeddings=dataset.neg_embeddings,
-            config=config,
-            diagnostics=rank_diagnostics,
-            positive_stories=dataset.train_stories,
-            negative_stories=dataset.neg_stories,
-            cluster_names=None,
-            cluster_keywords=cluster_keywords,
-        )
+        training_config = _evaluator_training_config(config)
+        if dataset.neg_embeddings is not None and dataset.neg_embeddings.shape[0] > 0:
+            model, _ = train_single_model_from_embeddings(
+                _training_labels_from_histories(dataset.train_stories, dataset.neg_stories),
+                np.vstack(
+                    [
+                        dataset.train_embeddings,
+                        dataset.neg_embeddings,
+                    ]
+                ),
+                dataset.train_embeddings,
+                dataset.neg_embeddings,
+                training_config,
+                training_config.single_model,
+            )
+            results = rank_stories(
+                dataset.candidates,
+                model,
+                positive_embeddings=dataset.train_embeddings,
+                negative_embeddings=dataset.neg_embeddings,
+                config=training_config,
+                diagnostics=rank_diagnostics,
+                positive_stories=dataset.train_stories,
+                negative_stories=dataset.neg_stories,
+                cluster_names=None,
+                cluster_keywords=cluster_keywords,
+            )
+        else:
+            results = rank_stories(
+                dataset.candidates,
+                positive_embeddings=dataset.train_embeddings,
+                negative_embeddings=dataset.neg_embeddings,
+                config=training_config,
+                diagnostics=rank_diagnostics,
+                positive_stories=dataset.train_stories,
+                negative_stories=dataset.neg_stories,
+                cluster_names=None,
+                cluster_keywords=cluster_keywords,
+            )
 
         summary = (
             _summarize_rank_diagnostics([rank_diagnostics])
@@ -882,17 +930,48 @@ class RankingEvaluator:
             rank_diagnostics: dict[str, object] | None = (
                 {} if diagnostics_summary is not None else None
             )
-            results = rank_stories(
-                fold_candidates,
-                positive_embeddings=train_emb,
-                negative_embeddings=dataset.neg_embeddings,
-                config=config,
-                diagnostics=rank_diagnostics,
-                positive_stories=[all_stories[i] for i in train_idx],
-                negative_stories=dataset.neg_stories,
-                cluster_names=None,
-                cluster_keywords=cluster_keywords,
-            )
+            training_config = _evaluator_training_config(config)
+            if dataset.neg_embeddings is not None and dataset.neg_embeddings.shape[0] > 0:
+                model, _ = train_single_model_from_embeddings(
+                    _training_labels_from_histories(
+                        [all_stories[i] for i in train_idx],
+                        dataset.neg_stories,
+                    ),
+                    np.vstack(
+                        [
+                            train_emb,
+                            dataset.neg_embeddings,
+                        ]
+                    ),
+                    train_emb,
+                    dataset.neg_embeddings,
+                    training_config,
+                    training_config.single_model,
+                )
+                results = rank_stories(
+                    fold_candidates,
+                    model,
+                    positive_embeddings=train_emb,
+                    negative_embeddings=dataset.neg_embeddings,
+                    config=training_config,
+                    diagnostics=rank_diagnostics,
+                    positive_stories=[all_stories[i] for i in train_idx],
+                    negative_stories=dataset.neg_stories,
+                    cluster_names=None,
+                    cluster_keywords=cluster_keywords,
+                )
+            else:
+                results = rank_stories(
+                    fold_candidates,
+                    positive_embeddings=train_emb,
+                    negative_embeddings=dataset.neg_embeddings,
+                    config=training_config,
+                    diagnostics=rank_diagnostics,
+                    positive_stories=[all_stories[i] for i in train_idx],
+                    negative_stories=dataset.neg_stories,
+                    cluster_names=None,
+                    cluster_keywords=cluster_keywords,
+                )
 
             ranked_ids = [fold_candidates[r.index].id for r in results]
 
@@ -1041,21 +1120,10 @@ async def main():
         help="Displayed story count when --final-list is enabled",
     )
     parser.add_argument(
-        "--disable-cross-encoder",
-        action="store_true",
-        help="Evaluator-only override: disable cross-encoder reranking",
-    )
-    parser.add_argument(
-        "--disable-learned-ranker",
-        action="store_true",
-        help="Evaluator-only override: disable learned final reranker",
-    )
-    parser.add_argument(
         "--compare-first-stage",
         action="store_true",
         help=(
-            "Run baseline and first-stage-only ablation on the same dataset and folds "
-            "(cross-encoder off, learned reranker off)."
+            "Run baseline and a pure-semantic ablation on the same dataset and folds."
         ),
     )
     parser.add_argument(
@@ -1089,8 +1157,6 @@ async def main():
     config = apply_evaluator_overrides(
         config,
         pure_semantic=args.pure_semantic,
-        disable_cross_encoder=args.disable_cross_encoder,
-        disable_learned_ranker=args.disable_learned_ranker,
     )
 
     evaluator = RankingEvaluator(args.username)
@@ -1213,16 +1279,44 @@ async def main():
 
     # Just re-run ranking to get the results object for the verbose output
     # (The evaluate method only returns metrics)
-    results = rank_stories(
-        dataset.candidates,
-        positive_embeddings=dataset.train_embeddings,
-        negative_embeddings=dataset.neg_embeddings,
-        config=build_first_stage_ablation_config(config) if args.compare_first_stage else config,
-        positive_stories=dataset.train_stories,
-        negative_stories=dataset.neg_stories,
-        cluster_names=None,
-        cluster_keywords=None,
-    )
+    result_config = build_first_stage_ablation_config(config) if args.compare_first_stage else config
+    training_config = _evaluator_training_config(result_config)
+    if dataset.neg_embeddings is not None and dataset.neg_embeddings.shape[0] > 0:
+        result_model, _ = train_single_model_from_embeddings(
+            _training_labels_from_histories(dataset.train_stories, dataset.neg_stories),
+            np.vstack(
+                [
+                    dataset.train_embeddings,
+                    dataset.neg_embeddings,
+                ]
+            ),
+            dataset.train_embeddings,
+            dataset.neg_embeddings,
+            training_config,
+            training_config.single_model,
+        )
+        results = rank_stories(
+            dataset.candidates,
+            result_model,
+            positive_embeddings=dataset.train_embeddings,
+            negative_embeddings=dataset.neg_embeddings,
+            config=training_config,
+            positive_stories=dataset.train_stories,
+            negative_stories=dataset.neg_stories,
+            cluster_names=None,
+            cluster_keywords=None,
+        )
+    else:
+        results = rank_stories(
+            dataset.candidates,
+            positive_embeddings=dataset.train_embeddings,
+            negative_embeddings=dataset.neg_embeddings,
+            config=training_config,
+            positive_stories=dataset.train_stories,
+            negative_stories=dataset.neg_stories,
+            cluster_names=None,
+            cluster_keywords=None,
+        )
     if args.final_list:
         final_results = _finalize_ranked_results(
             results, dataset.candidates, args.count
