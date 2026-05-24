@@ -6,35 +6,18 @@ clusters = 30
 count = 40
 no_rss = false
 no_tldr = false
-debug_scores = false
+debug_scores = true
 
 [hn_rerank.llm]
 provider = "mistral"
 
-# Balanced Hybrid Ranking (Linear 85/5/10 split)
+# Current runtime ranking config
 
 [hn_rerank.ranking]
 negative_weight = 0.6
 max_results = 500
 
-[hn_rerank.adaptive_hn]
-weight_min = 0.3980629107
-weight_max = 0.6782178714
-threshold_young = 28.2732914198
-threshold_old = 70.2732914198
-score_normalization_cap = 304.9893877427
-
-[hn_rerank.freshness]
-enabled = true
-half_life_hours = 51.9894220266
-max_boost = 0.0843468960
-
-[hn_rerank.recency]
-enabled = false
-
 [hn_rerank.semantic]
-maxsim_weight = 1.0
-meansim_weight = 0.0
 knn_neighbors = 5
 
 [hn_rerank.classifier]
@@ -49,9 +32,11 @@ use_local_hidden_penalty = false
 local_hidden_penalty_weight = 0.0
 local_hidden_penalty_k = 3
 use_neg_knn_feature = true
-use_log_points_feature = false
-use_log_comments_feature = false
+use_log_points_feature = true
+use_log_comments_feature = true
 use_comment_ratio_feature = false
+use_closest_pos_feature = true
+use_closest_neg_feature = true
 
 [hn_rerank.clustering]
 algorithm = "agglomerative"
@@ -67,7 +52,7 @@ refine_iters = 2
 
 [hn_rerank.cross_encoder]
 enabled = true
-top_n = 150
+top_n = 200
 weight = 0.06953
 
 [hn_rerank.archive]
@@ -77,6 +62,6 @@ open_index_candidate_limit = 50
 
 [hn_rerank.learned_ranker]
 shadow_enabled = true
-active_enabled = false
+active_enabled = true
 source_feature_weight = 0.0
 balance_training_labels = true

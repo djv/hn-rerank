@@ -15,32 +15,10 @@ class RankingConfig:
     diversity_lambda: float = 0.2396634418
     diversity_lambda_classifier: float = 0.30
     max_results: int = 500
-    non_semantic_weight: float = 0.05  # Total share for non-semantic signals
-    comment_ratio: float = 0.0  # Share of non-semantic score assigned to comments
-
-@dataclass(frozen=True)
-class AdaptiveHNConfig:
-    """Age-based HN weighting parameters."""
-    weight_min: float = 0.3963567514
-    weight_max: float = 0.4454707212
-    threshold_young: float = 69.1427531319
-    threshold_old: float = 720.0
-    score_normalization_cap: float = 212.4038210119
-
-@dataclass(frozen=True)
-class FreshnessConfig:
-    """Freshness decay parameters."""
-    enabled: bool = True
-    half_life_hours: float = 168.0
-    max_boost: float = 0.1
 
 @dataclass(frozen=True)
 class SemanticConfig:
     """Semantic scoring and k-NN parameters."""
-    maxsim_weight: float = 1.0
-    meansim_weight: float = 0.0
-    sigmoid_k: float = 31.2249293861
-    sigmoid_threshold: float = 0.4749411784
     knn_neighbors: int = 6
     match_threshold: float = 0.85
 
@@ -63,6 +41,22 @@ class ClassifierConfig:
     use_log_points_feature: bool = False
     use_log_comments_feature: bool = False
     use_comment_ratio_feature: bool = False
+
+    # Rich similarity features
+    use_closest_pos_feature: bool = False
+    use_closest_neg_feature: bool = False
+    use_closest_centroid_feature: bool = False
+    use_knn_pos_n1_feature: bool = False
+    use_knn_pos_n3_feature: bool = False
+    use_knn_pos_n5_feature: bool = False
+    use_knn_pos_n10_feature: bool = False
+    use_knn_neg_n1_feature: bool = False
+    use_knn_neg_n3_feature: bool = False
+    use_knn_neg_n5_feature: bool = False
+    use_knn_neg_n10_feature: bool = False
+    # Minimum labeled examples on each side required to activate the model path.
+    min_positive_examples: int = 5
+    min_negative_examples: int = 5
 
 @dataclass(frozen=True)
 class ClusteringConfig:
@@ -145,17 +139,14 @@ class AppConfig:
     count: int = 40
     candidates: int = 2000
     signals: int = 2000
-    use_classifier: bool = True
     contrastive: bool = False
     no_rss: bool = False
     no_tldr: bool = False
     no_naming: bool = False
-    debug_scores: bool = False
+    debug_scores: bool = True
     debug_clusters: bool = False
-    
+
     ranking: RankingConfig = field(default_factory=RankingConfig)
-    adaptive_hn: AdaptiveHNConfig = field(default_factory=AdaptiveHNConfig)
-    freshness: FreshnessConfig = field(default_factory=FreshnessConfig)
     semantic: SemanticConfig = field(default_factory=SemanticConfig)
     classifier: ClassifierConfig = field(default_factory=ClassifierConfig)
     clustering: ClusteringConfig = field(default_factory=ClusteringConfig)
@@ -169,7 +160,7 @@ class AppConfig:
         """Load from TOML and apply overrides."""
         data: dict[str, Any] = {}
         config_path = Path(toml_path) if toml_path else Path("hn_rerank.toml")
-        
+
         if config_path.exists():
             with open(config_path, "rb") as f:
                 raw = tomllib.load(f)
@@ -179,17 +170,22 @@ class AppConfig:
         def _get_section(name: str) -> dict[str, Any]:
             return data.get(name, {})
 
+        # Strip unknown keys from each section so old TOML files with removed
+        # fields (e.g. adaptive_hn, freshness) don't cause TypeError on load.
+        def _safe_section(name: str, cls_: type) -> dict[str, Any]:
+            import dataclasses
+            known = {f.name for f in dataclasses.fields(cls_)}
+            return {k: v for k, v in _get_section(name).items() if k in known}
+
         # Initialize sub-configs
-        ranking = RankingConfig(**_get_section("ranking"))
-        adaptive_hn = AdaptiveHNConfig(**_get_section("adaptive_hn"))
-        freshness = FreshnessConfig(**_get_section("freshness"))
-        semantic = SemanticConfig(**_get_section("semantic"))
-        classifier = ClassifierConfig(**_get_section("classifier"))
-        clustering = ClusteringConfig(**_get_section("clustering"))
-        llm = LLMConfig(**_get_section("llm"))
-        cross_encoder = CrossEncoderConfig(**_get_section("cross_encoder"))
-        archive = ArchiveConfig(**_get_section("archive"))
-        learned_ranker = LearnedRankerConfig(**_get_section("learned_ranker"))
+        ranking = RankingConfig(**_safe_section("ranking", RankingConfig))
+        semantic = SemanticConfig(**_safe_section("semantic", SemanticConfig))
+        classifier = ClassifierConfig(**_safe_section("classifier", ClassifierConfig))
+        clustering = ClusteringConfig(**_safe_section("clustering", ClusteringConfig))
+        llm = LLMConfig(**_safe_section("llm", LLMConfig))
+        cross_encoder = CrossEncoderConfig(**_safe_section("cross_encoder", CrossEncoderConfig))
+        archive = ArchiveConfig(**_safe_section("archive", ArchiveConfig))
+        learned_ranker = LearnedRankerConfig(**_safe_section("learned_ranker", LearnedRankerConfig))
 
         def _get_root(key: str, default: Any) -> Any:
             val = overrides.get(key)
@@ -199,7 +195,7 @@ class AppConfig:
 
         # Root level fields (mapping TOML names to dataclass names if they differ)
         output_val = str(_get_root("output", "public/index.html"))
-        
+
         return cls(
             username=str(_get_root("username", "user")),
             output_path=Path(output_val),
@@ -207,16 +203,13 @@ class AppConfig:
             count=int(_get_root("count", 40)),
             candidates=int(_get_root("candidates", 2000)),
             signals=int(_get_root("signals", 2000)),
-            use_classifier=bool(_get_root("use_classifier", True)),
             contrastive=bool(_get_root("contrastive", False)),
             no_rss=bool(_get_root("no_rss", False)),
             no_tldr=bool(_get_root("no_tldr", False)),
             no_naming=bool(_get_root("no_naming", False)),
-            debug_scores=bool(_get_root("debug_scores", False)),
+            debug_scores=bool(_get_root("debug_scores", True)),
             debug_clusters=bool(_get_root("debug_clusters", False)),
             ranking=ranking,
-            adaptive_hn=adaptive_hn,
-            freshness=freshness,
             semantic=semantic,
             classifier=classifier,
             clustering=clustering,

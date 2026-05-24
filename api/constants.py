@@ -96,29 +96,9 @@ CLUSTER_SIMILARITY_THRESHOLD = _config.clustering.similarity_threshold
 CLUSTER_OUTLIER_SIMILARITY_THRESHOLD = _config.clustering.outlier_similarity_threshold
 
 # Ranking Weights
-RANKING_NON_SEMANTIC_WEIGHT = _config.ranking.non_semantic_weight
-RANKING_COMMENT_RATIO = _config.ranking.comment_ratio
 RANKING_NEGATIVE_WEIGHT = _config.ranking.negative_weight
 RANKING_DIVERSITY_LAMBDA = _config.ranking.diversity_lambda
 RANKING_MAX_RESULTS = _config.ranking.max_results
-
-# Adaptive HN Weight (age-based)
-ADAPTIVE_HN_WEIGHT_MIN = _config.adaptive_hn.weight_min
-ADAPTIVE_HN_WEIGHT_MAX = _config.adaptive_hn.weight_max
-ADAPTIVE_HN_THRESHOLD_YOUNG = _config.adaptive_hn.threshold_young
-ADAPTIVE_HN_THRESHOLD_OLD = _config.adaptive_hn.threshold_old
-
-# Freshness Decay
-FRESHNESS_ENABLED = _config.freshness.enabled
-FRESHNESS_HALF_LIFE_HOURS = _config.freshness.half_life_hours
-FRESHNESS_MAX_BOOST = _config.freshness.max_boost
-
-# Semantic Scoring
-SEMANTIC_MAXSIM_WEIGHT = _config.semantic.maxsim_weight
-SEMANTIC_MEANSIM_WEIGHT = _config.semantic.meansim_weight
-SEMANTIC_SIGMOID_K = _config.semantic.sigmoid_k
-SEMANTIC_SIGMOID_THRESHOLD = _config.semantic.sigmoid_threshold
-HN_SCORE_NORMALIZATION_CAP = _config.adaptive_hn.score_normalization_cap
 
 # Classifier Tuning
 CLASSIFIER_SCORING_MODE = _config.classifier.scoring_mode

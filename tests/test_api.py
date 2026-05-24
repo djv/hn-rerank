@@ -159,115 +159,17 @@ def test_rank_stories_empty_positive_embeddings():
         assert result.best_fav_index == -1
 
 
-def test_rank_stories_disables_freshness_boost_when_configured():
+def test_rank_stories_returns_full_ranked_pool_even_when_max_results_is_lower():
     stories = [
-        Story(id=1, title="New", url=None, score=100, time=2000, text_content="New"),
-        Story(id=2, title="Old", url=None, score=100, time=1000, text_content="Old"),
+        Story(id=1, title="A", url=None, score=0, time=1000, text_content="A"),
+        Story(id=2, title="B", url=None, score=0, time=1000, text_content="B"),
+        Story(id=3, title="C", url=None, score=0, time=1000, text_content="C"),
     ]
     pos_emb = np.array([[1.0] * 768])
-    cand_emb = np.array([[1.0] * 768, [1.0] * 768])
-    from api.config import FreshnessConfig
-    config = AppConfig(freshness=FreshnessConfig(enabled=False, max_boost=0.5))
+    cand_emb = np.array([[1.0] * 768, [0.9] * 768, [0.8] * 768])
 
+    config = AppConfig(ranking=RankingConfig(max_results=1))
     with patch("api.rerank.get_embeddings", return_value=cand_emb):
         results = rank_stories(stories, pos_emb, config=config)
 
-    assert len(results) == 2
-    assert all(result.freshness_boost == 0.0 for result in results)
-
-
-def test_rank_stories_applies_freshness_boost_to_external_stories():
-    import time
-
-    now = int(time.time())
-    stories = [
-        Story(
-            id=1,
-            title="New external",
-            url="https://example.com/new",
-            score=0,
-            time=now - 3600,
-            text_content="Same",
-            source="lobsters",
-        ),
-        Story(
-            id=2,
-            title="Old external",
-            url="https://example.com/old",
-            score=0,
-            time=now - 48 * 3600,
-            text_content="Same",
-            source="rss",
-        ),
-    ]
-    pos_emb = np.array([[1.0] * 768])
-    cand_emb = np.array([[1.0] * 768, [1.0] * 768])
-
-    from api.config import FreshnessConfig
-    config = AppConfig(freshness=FreshnessConfig(enabled=True, max_boost=0.5))
-
-    with patch("api.rerank.get_embeddings", return_value=cand_emb):
-        results = rank_stories(stories, pos_emb, config=config)
-
-    assert len(results) == 2
-    assert results[0].index == 0
-    assert results[0].freshness_boost > results[1].freshness_boost
-    assert results[0].hybrid_score > results[1].hybrid_score
-
-
-def test_rank_stories_penalizes_external_stories():
-    """
-    Ensure external stories (source != 'hn') do not receive an unfair
-    mathematical advantage by bypassing the HN weight dilution.
-    """
-    import time
-
-    now = int(time.time())
-    # Two stories with identical content, age, and 0 points.
-    # One is HN, one is external (e.g., Lobsters).
-    stories = [
-        Story(
-            id=1,
-            title="HN Story",
-            url="https://news.ycombinator.com/item?id=1",
-            score=0,
-            time=now - 3600,
-            text_content="Same semantic content",
-            source="hn",
-        ),
-        Story(
-            id=2,
-            title="External Story",
-            url="https://lobste.rs/s/abc",
-            score=0,
-            time=now - 3600,
-            text_content="Same semantic content",
-            source="lobsters",
-        ),
-    ]
-
-    # Equal semantic embeddings
-    pos_emb = np.array([[1.0] * 768])
-    cand_emb = np.array([[0.8] * 768, [0.8] * 768])
-
-    with patch("api.rerank.get_embeddings", return_value=cand_emb):
-        # We need to ensure ranking.non_semantic_weight > 0 for the test to be meaningful
-        config = AppConfig(ranking=RankingConfig(non_semantic_weight=0.05))
-        results = rank_stories(stories, pos_emb, config=config)
-
-    assert len(results) == 2
-    hn_res = next(r for r in results if r.index == 0)
-    ext_res = next(r for r in results if r.index == 1)
-
-    # External stories now get a small fallback metadata prior, but it should stay modest.
-    assert ext_res.hybrid_score > hn_res.hybrid_score
-    assert ext_res.hybrid_score - hn_res.hybrid_score < 0.02
-
-    # Now test that an HN story with points beats the external story
-    stories[0].score = 100
-    with patch("api.rerank.get_embeddings", return_value=cand_emb):
-        results = rank_stories(stories, pos_emb, config=config)
-
-    hn_res = next(r for r in results if r.index == 0)
-    ext_res = next(r for r in results if r.index == 1)
-    assert hn_res.hybrid_score > ext_res.hybrid_score
+    assert len(results) == 3
