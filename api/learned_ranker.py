@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import math
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -18,7 +17,7 @@ from sklearn.model_selection import StratifiedKFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from api.config import AppConfig, LearnedRankerConfig
+from api.config import LearnedRankerConfig
 from api.feedback import FeedbackAction, FeedbackRecord
 from api.models import RankResult, Story
 
@@ -29,21 +28,16 @@ LearnedRankerMode = Literal["trained", "loaded", "disabled", "insufficient_label
 FEATURE_NAMES: tuple[str, ...] = (
     "semantic_score",
     "hybrid_score",
-    "hn_score",
-    "freshness_boost",
     "max_cluster_score",
     "knn_score",
     "max_sim_score",
     "cross_encoder_score",
-    "age_hours",
     "log_points",
     "log_comments",
 )
 MODEL_VERSION = 5
 TRAINING_SOURCE = "dashboard_feedback"
 MODEL_KIND = "ordinal_threshold_v1"
-EXTERNAL_DEFAULT_SCORE = 40.0
-EXTERNAL_DEFAULT_COMMENT_COUNT = 20.0
 DOWNVOTE_LABEL = 0
 NEUTRAL_LABEL = 1
 UPVOTE_LABEL = 2
@@ -57,21 +51,6 @@ ORDINAL_TO_ACTION: dict[int, FeedbackAction] = {
     NEUTRAL_LABEL: "neutral",
     UPVOTE_LABEL: "up",
 }
-DASHBOARD_FEEDBACK_OBJECTIVE_WEIGHTS: dict[str, float] = {
-    "pairwise_accuracy": 0.50,
-    "precision_at_10": 0.30,
-    "precision_at_5": 0.20,
-}
-DASHBOARD_FEEDBACK_PRIMARY_METRICS: tuple[str, ...] = (
-    "pairwise_accuracy",
-    "precision_at_10",
-)
-DASHBOARD_FEEDBACK_GUARD_METRICS: tuple[str, ...] = (
-    "precision_at_5",
-    "roc_auc",
-)
-
-
 @dataclass(frozen=True)
 class LabeledStory:
     """Explicit dashboard feedback label with captured rank diagnostics."""
@@ -140,7 +119,7 @@ class LearnedRankerEvaluation:
 
 
 @dataclass(frozen=True)
-class DashboardFeedbackMetricSet:
+class ScoreMetrics:
     pairwise_accuracy: float
     precision_at_5: float
     precision_at_10: float
@@ -151,33 +130,9 @@ class DashboardFeedbackMetricSet:
 
 
 @dataclass(frozen=True)
-class DashboardFeedbackSummary:
-    label_count: int
-    usable_label_count: int
-    skipped_missing_story_metadata: int
-    train_label_count: int
-    train_positive_labels: int
-    train_neutral_labels: int
-    train_negative_labels: int
-    holdout_label_count: int
-    holdout_positive_labels: int
-    holdout_neutral_labels: int
-    holdout_negative_labels: int
-    holdout_fraction: float
-    holdout_start_timestamp: float
-
-
-@dataclass(frozen=True)
-class DashboardFeedbackComparison:
-    summary: DashboardFeedbackSummary
-    incumbent: DashboardFeedbackMetricSet
-    candidate: DashboardFeedbackMetricSet
-    incumbent_score: float
-    candidate_score: float
-    score_delta: float
-    primary_failures: list[str]
-    guard_failures: list[str]
-    passed: bool
+class ScoreComparison:
+    label: str
+    metrics: ScoreMetrics
 
 
 def build_labels_from_feedback(
@@ -218,8 +173,6 @@ def build_features(
     source_feature_weight: float = 1.0,
 ) -> list[float]:
     """Build the stable numeric feature vector used by the learned ranker."""
-    now_ts = time.time() if now is None else now
-    age_hours = max((now_ts - float(story.time or 0)) / 3600.0, 0.0)
     score = max(float(story.score or 0), 0.0)
     comments = max(float(story.comment_count or 0), 0.0)
 
@@ -227,8 +180,6 @@ def build_features(
         rank_features = {
             "semantic_score": 0.0,
             "hybrid_score": 0.0,
-            "hn_score": 0.0,
-            "freshness_boost": 0.0,
             "max_cluster_score": 0.0,
             "knn_score": 0.0,
             "max_sim_score": 0.0,
@@ -238,8 +189,6 @@ def build_features(
         rank_features = {
             "semantic_score": result.semantic_score,
             "hybrid_score": result.hybrid_score,
-            "hn_score": result.hn_score,
-            "freshness_boost": result.freshness_boost,
             "max_cluster_score": result.max_cluster_score,
             "knn_score": result.knn_score,
             "max_sim_score": result.max_sim_score,
@@ -249,13 +198,10 @@ def build_features(
     return [
         _safe_float(rank_features["semantic_score"]),
         _safe_float(rank_features["hybrid_score"]),
-        _safe_float(rank_features["hn_score"]),
-        _safe_float(rank_features["freshness_boost"]),
         _safe_float(rank_features["max_cluster_score"]),
         _safe_float(rank_features["knn_score"]),
         _safe_float(rank_features["max_sim_score"]),
         _safe_float(rank_features["cross_encoder_score"]),
-        _safe_float(age_hours),
         math.log1p(score),
         math.log1p(comments),
     ]
@@ -265,12 +211,6 @@ def _label_timestamp(label: LabeledStory) -> float:
     if label.feedback_updated_at > 0:
         return float(label.feedback_updated_at)
     return float(label.story.time or 0)
-
-
-def _supports_dashboard_hybrid_eval(label: LabeledStory) -> bool:
-    if not label.story.is_hn:
-        return True
-    return label.has_raw_story_score and label.has_raw_comment_count
 
 
 def _count_labels(labels: list[LabeledStory]) -> tuple[int, int, int]:
@@ -425,12 +365,33 @@ def train_model(
         now=now,
         source_feature_weight=config.source_feature_weight,
     )
+    return train_model_from_matrix(x_train, y_train, config, labels=labels)
+
+
+def train_model_from_matrix(
+    x_train: NDArray[np.float32],
+    y_train: NDArray[np.int64],
+    config: LearnedRankerConfig,
+    *,
+    labels: list[LabeledStory] | None = None,
+) -> OrdinalThresholdModel:
     counts = _threshold_binary_counts(y_train)
     if any(
         positive < config.min_positive_labels or negative < config.min_negative_labels
         for positive, negative in counts.values()
     ):
-        raise ValueError(f"insufficient labels: {_insufficient_label_message(labels, config)}")
+        if labels is None:
+            positive_count = int(np.sum(y_train == UPVOTE_LABEL))
+            neutral_count = int(np.sum(y_train == NEUTRAL_LABEL))
+            negative_count = int(np.sum(y_train == DOWNVOTE_LABEL))
+            detail = (
+                f"need at least {config.min_positive_labels} upvote and "
+                f"{config.min_negative_labels} downvote labels; got "
+                f"{positive_count} upvote, {neutral_count} neutral, {negative_count} downvote"
+            )
+        else:
+            detail = _insufficient_label_message(labels, config)
+        raise ValueError(f"insufficient labels: {detail}")
 
     neutral_target = _binary_targets_from_ordinal(y_train, NEUTRAL_LABEL)
     upvote_target = _binary_targets_from_ordinal(y_train, UPVOTE_LABEL)
@@ -591,6 +552,41 @@ def _safe_auc(labels: list[int], scores: list[float]) -> float | None:
     return float(roc_auc_score(binary, scores))
 
 
+def score_metrics_for_labels(
+    labels: list[LabeledStory],
+    scores: list[float],
+) -> ScoreMetrics:
+    y = [item.label for item in labels]
+    return ScoreMetrics(
+        pairwise_accuracy=_pairwise_accuracy(y, scores),
+        precision_at_5=_precision_at(y, scores, 5),
+        precision_at_10=_precision_at(y, scores, 10),
+        neutral_rate_at_10=_rate_at(y, scores, 10, NEUTRAL_LABEL),
+        downvote_rate_at_10=_rate_at(y, scores, 10, DOWNVOTE_LABEL),
+        roc_auc=_safe_auc(y, scores),
+        top_sources=_top_sources(labels, scores, 10),
+    )
+
+
+def evaluate_labeled_score_sources(
+    labels: list[LabeledStory],
+    score_sources: dict[str, list[float]],
+) -> list[ScoreComparison]:
+    comparisons: list[ScoreComparison] = []
+    for label, scores in score_sources.items():
+        if len(scores) != len(labels):
+            raise ValueError(
+                f"score source '{label}' length {len(scores)} does not match labels {len(labels)}"
+            )
+        comparisons.append(
+            ScoreComparison(
+                label=label,
+                metrics=score_metrics_for_labels(labels, scores),
+            )
+        )
+    return comparisons
+
+
 def evaluate_labeled_order(
     labels: list[LabeledStory],
     config: LearnedRankerConfig,
@@ -606,7 +602,6 @@ def evaluate_labeled_order(
             f"{positive_count} upvote, {neutral_count} neutral, {negative_count} downvote"
         )
 
-    y = [item.label for item in labels]
     y_binary = [item.legacy_binary_label for item in labels]
     hybrid_scores = [float(item.rank_result.hybrid_score) for item in labels]
     learned_scores = [0.0 for _ in labels]
@@ -633,229 +628,35 @@ def evaluate_labeled_order(
         for offset, label_index in enumerate(test_indices):
             learned_scores[int(label_index)] = float(utility[offset])
 
+    learned_metrics, hybrid_metrics = evaluate_labeled_score_sources(
+        labels,
+        {
+            "learned": learned_scores,
+            "hybrid": hybrid_scores,
+        },
+    )
+
     return LearnedRankerEvaluation(
         label_count=len(labels),
         positive_labels=positive_count,
         neutral_labels=neutral_count,
         negative_labels=negative_count,
         folds=fold_count,
-        learned_pairwise_accuracy=_pairwise_accuracy(y, learned_scores),
-        hybrid_pairwise_accuracy=_pairwise_accuracy(y, hybrid_scores),
-        learned_precision_at_5=_precision_at(y, learned_scores, 5),
-        hybrid_precision_at_5=_precision_at(y, hybrid_scores, 5),
-        learned_precision_at_10=_precision_at(y, learned_scores, 10),
-        hybrid_precision_at_10=_precision_at(y, hybrid_scores, 10),
-        learned_neutral_rate_at_10=_rate_at(y, learned_scores, 10, NEUTRAL_LABEL),
-        hybrid_neutral_rate_at_10=_rate_at(y, hybrid_scores, 10, NEUTRAL_LABEL),
-        learned_downvote_rate_at_10=_rate_at(y, learned_scores, 10, DOWNVOTE_LABEL),
-        hybrid_downvote_rate_at_10=_rate_at(y, hybrid_scores, 10, DOWNVOTE_LABEL),
-        learned_roc_auc=_safe_auc(y, learned_scores),
-        hybrid_roc_auc=_safe_auc(y, hybrid_scores),
-        learned_top_sources=_top_sources(labels, learned_scores, 10),
-        hybrid_top_sources=_top_sources(labels, hybrid_scores, 10),
+        learned_pairwise_accuracy=learned_metrics.metrics.pairwise_accuracy,
+        hybrid_pairwise_accuracy=hybrid_metrics.metrics.pairwise_accuracy,
+        learned_precision_at_5=learned_metrics.metrics.precision_at_5,
+        hybrid_precision_at_5=hybrid_metrics.metrics.precision_at_5,
+        learned_precision_at_10=learned_metrics.metrics.precision_at_10,
+        hybrid_precision_at_10=hybrid_metrics.metrics.precision_at_10,
+        learned_neutral_rate_at_10=learned_metrics.metrics.neutral_rate_at_10,
+        hybrid_neutral_rate_at_10=hybrid_metrics.metrics.neutral_rate_at_10,
+        learned_downvote_rate_at_10=learned_metrics.metrics.downvote_rate_at_10,
+        hybrid_downvote_rate_at_10=hybrid_metrics.metrics.downvote_rate_at_10,
+        learned_roc_auc=learned_metrics.metrics.roc_auc,
+        hybrid_roc_auc=hybrid_metrics.metrics.roc_auc,
+        learned_top_sources=learned_metrics.metrics.top_sources,
+        hybrid_top_sources=hybrid_metrics.metrics.top_sources,
     )
-
-
-def score_labels_with_hybrid_config(
-    labels: list[LabeledStory],
-    config: AppConfig,
-) -> list[float]:
-    if not labels:
-        return []
-
-    semantic_scores = np.asarray(
-        [_safe_float(item.rank_result.semantic_score) for item in labels],
-        dtype=np.float32,
-    )
-    points = np.asarray(
-        [
-            float(max(item.story.score, 0))
-            if item.story.source == "hn"
-            else float(max(item.story.score, EXTERNAL_DEFAULT_SCORE))
-            for item in labels
-        ],
-        dtype=np.float32,
-    )
-    comment_counts = np.asarray(
-        [
-            float(max(item.story.comment_count or 0, 0))
-            if item.story.source == "hn"
-            else float(max(item.story.comment_count or 0, EXTERNAL_DEFAULT_COMMENT_COUNT))
-            for item in labels
-        ],
-        dtype=np.float32,
-    )
-
-    score_cap = max(float(np.max(points)), config.adaptive_hn.score_normalization_cap)
-    hn_scores = np.log1p(points) / np.log1p(score_cap)
-
-    comment_cap = max(
-        float(np.max(comment_counts)),
-        config.adaptive_hn.score_normalization_cap,
-    )
-    comment_scores = np.log1p(comment_counts) / np.log1p(comment_cap)
-
-    event_times = np.asarray([_label_timestamp(item) for item in labels], dtype=np.float64)
-    story_times = np.asarray([float(item.story.time or 0) for item in labels], dtype=np.float64)
-    ages_hours = np.maximum((event_times - story_times) / 3600.0, 0.0)
-
-    non_semantic_weight = float(np.clip(config.ranking.non_semantic_weight, 0.0, 1.0))
-    comment_ratio = float(np.clip(config.ranking.comment_ratio, 0.0, 1.0))
-
-    if non_semantic_weight <= 0.0:
-        return semantic_scores.astype(np.float32).tolist()
-
-    young_hn_weight = min(config.adaptive_hn.weight_min, config.adaptive_hn.weight_max)
-    old_hn_weight = max(config.adaptive_hn.weight_min, config.adaptive_hn.weight_max)
-    threshold_span = config.adaptive_hn.threshold_old - config.adaptive_hn.threshold_young
-    if threshold_span <= 0:
-        adaptive_t = (ages_hours >= config.adaptive_hn.threshold_old).astype(np.float64)
-    else:
-        adaptive_t = np.clip(
-            (ages_hours - config.adaptive_hn.threshold_young) / threshold_span,
-            0.0,
-            1.0,
-        )
-    hn_weights = young_hn_weight + adaptive_t * (old_hn_weight - young_hn_weight)
-
-    non_semantic_scores = (
-        (1.0 - comment_ratio) * hn_scores + comment_ratio * comment_scores
-    )
-    effective_non_semantic_weights = hn_weights * non_semantic_weight
-    hybrid_scores = (
-        (1.0 - effective_non_semantic_weights) * semantic_scores
-        + effective_non_semantic_weights * non_semantic_scores
-    ).astype(np.float32)
-
-    if config.freshness.enabled and config.freshness.max_boost > 0:
-        freshness = np.power(2.0, -ages_hours / config.freshness.half_life_hours)
-        freshness = np.clip(freshness, 0.0, 1.0)
-        freshness_boost = (config.freshness.max_boost * freshness).astype(np.float32)
-        hybrid_scores = hybrid_scores + freshness_boost
-
-    return hybrid_scores.astype(np.float32).tolist()
-
-
-def _dashboard_metric_set(
-    labels: list[LabeledStory],
-    scores: list[float],
-) -> DashboardFeedbackMetricSet:
-    y = [item.label for item in labels]
-    return DashboardFeedbackMetricSet(
-        pairwise_accuracy=_pairwise_accuracy(y, scores),
-        precision_at_5=_precision_at(y, scores, 5),
-        precision_at_10=_precision_at(y, scores, 10),
-        neutral_rate_at_10=_rate_at(y, scores, 10, NEUTRAL_LABEL),
-        downvote_rate_at_10=_rate_at(y, scores, 10, DOWNVOTE_LABEL),
-        roc_auc=_safe_auc(y, scores),
-        top_sources=_top_sources(labels, scores, 10),
-    )
-
-
-def _dashboard_metric_value(
-    metrics: DashboardFeedbackMetricSet,
-    name: str,
-) -> float | None:
-    value = getattr(metrics, name)
-    if value is None:
-        return None
-    return float(value)
-
-
-def score_dashboard_feedback_metrics(
-    metrics: DashboardFeedbackMetricSet,
-    *,
-    weights: dict[str, float] = DASHBOARD_FEEDBACK_OBJECTIVE_WEIGHTS,
-) -> float:
-    total = 0.0
-    for metric_name, metric_weight in weights.items():
-        metric_value = _dashboard_metric_value(metrics, metric_name)
-        if metric_value is None:
-            continue
-        total += metric_weight * metric_value
-    return float(total)
-
-
-def compare_dashboard_feedback_configs(
-    labels: list[LabeledStory],
-    incumbent_config: AppConfig,
-    candidate_config: AppConfig,
-    *,
-    holdout_fraction: float = 0.25,
-    min_holdout_count: int = 20,
-    min_class_count: int = 2,
-    score_tolerance: float = 0.0,
-    primary_metrics: tuple[str, ...] = DASHBOARD_FEEDBACK_PRIMARY_METRICS,
-    guard_metrics: tuple[str, ...] = DASHBOARD_FEEDBACK_GUARD_METRICS,
-) -> DashboardFeedbackComparison:
-    usable_labels = [item for item in labels if _supports_dashboard_hybrid_eval(item)]
-    skipped = len(labels) - len(usable_labels)
-    train_labels, holdout_labels = split_temporal_holdout(
-        usable_labels,
-        holdout_fraction=holdout_fraction,
-        min_holdout_count=min_holdout_count,
-        min_class_count=min_class_count,
-    )
-
-    incumbent_scores = score_labels_with_hybrid_config(holdout_labels, incumbent_config)
-    candidate_scores = score_labels_with_hybrid_config(holdout_labels, candidate_config)
-    incumbent_metrics = _dashboard_metric_set(holdout_labels, incumbent_scores)
-    candidate_metrics = _dashboard_metric_set(holdout_labels, candidate_scores)
-    incumbent_score = score_dashboard_feedback_metrics(incumbent_metrics)
-    candidate_score = score_dashboard_feedback_metrics(candidate_metrics)
-
-    primary_failures: list[str] = []
-    for metric_name in primary_metrics:
-        incumbent_value = _dashboard_metric_value(incumbent_metrics, metric_name)
-        candidate_value = _dashboard_metric_value(candidate_metrics, metric_name)
-        if (
-            incumbent_value is not None
-            and candidate_value is not None
-            and candidate_value < incumbent_value - score_tolerance
-        ):
-            primary_failures.append(metric_name)
-
-    guard_failures: list[str] = []
-    for metric_name in guard_metrics:
-        incumbent_value = _dashboard_metric_value(incumbent_metrics, metric_name)
-        candidate_value = _dashboard_metric_value(candidate_metrics, metric_name)
-        if incumbent_value is None or candidate_value is None:
-            continue
-        if candidate_value < incumbent_value - score_tolerance:
-            guard_failures.append(metric_name)
-
-    train_positive, train_neutral, train_negative = _count_labels(train_labels)
-    holdout_positive, holdout_neutral, holdout_negative = _count_labels(holdout_labels)
-    summary = DashboardFeedbackSummary(
-        label_count=len(labels),
-        usable_label_count=len(usable_labels),
-        skipped_missing_story_metadata=skipped,
-        train_label_count=len(train_labels),
-        train_positive_labels=train_positive,
-        train_neutral_labels=train_neutral,
-        train_negative_labels=train_negative,
-        holdout_label_count=len(holdout_labels),
-        holdout_positive_labels=holdout_positive,
-        holdout_neutral_labels=holdout_neutral,
-        holdout_negative_labels=holdout_negative,
-        holdout_fraction=holdout_fraction,
-        holdout_start_timestamp=_label_timestamp(holdout_labels[0]) if holdout_labels else 0.0,
-    )
-    score_delta = float(candidate_score - incumbent_score)
-    return DashboardFeedbackComparison(
-        summary=summary,
-        incumbent=incumbent_metrics,
-        candidate=candidate_metrics,
-        incumbent_score=incumbent_score,
-        candidate_score=candidate_score,
-        score_delta=score_delta,
-        primary_failures=primary_failures,
-        guard_failures=guard_failures,
-        passed=score_delta > score_tolerance
-        and not primary_failures
-        and not guard_failures,
-    )
-
 
 def train_or_load_and_score(
     ranked: list[RankResult],

@@ -85,8 +85,6 @@ def make_rank_result() -> Callable[..., RankResult]:
         knn_score: float = 0.0,
         max_cluster_score: float = 0.0,
         semantic_score: float = 0.0,
-        hn_score: float = 0.0,
-        freshness_boost: float = 0.0,
     ) -> RankResult:
         return RankResult(
             index=index,
@@ -96,8 +94,6 @@ def make_rank_result() -> Callable[..., RankResult]:
             knn_score=knn_score,
             max_cluster_score=max_cluster_score,
             semantic_score=semantic_score,
-            hn_score=hn_score,
-            freshness_boost=freshness_boost,
         )
 
     return _make_rank_result

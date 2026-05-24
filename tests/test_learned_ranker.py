@@ -5,7 +5,7 @@ import time
 import numpy as np
 import pytest
 
-from api.config import AdaptiveHNConfig, AppConfig, FreshnessConfig, LearnedRankerConfig, RankingConfig
+from api.config import AppConfig, LearnedRankerConfig
 from api.feedback import FeedbackRecord
 from api.learned_ranker import (
     DOWNVOTE_LABEL,
@@ -15,7 +15,7 @@ from api.learned_ranker import (
     LabeledStory,
     build_labels_from_feedback,
     build_features,
-    compare_dashboard_feedback_configs,
+    evaluate_labeled_score_sources,
     evaluate_labeled_order,
     score_ranked_results,
     split_temporal_holdout,
@@ -62,8 +62,6 @@ def _rank_result(
         knn_score=semantic_score,
         max_cluster_score=semantic_score,
         semantic_score=semantic_score,
-        hn_score=0.1,
-        freshness_boost=0.01,
         cross_encoder_score=0.2,
         learned_score=learned_score,
     )
@@ -117,8 +115,6 @@ def test_build_labels_from_feedback_carries_updated_at_and_metadata_flags() -> N
         updated_at=1700003600.0,
         hybrid_score=0.8,
         semantic_score=0.7,
-        hn_score=0.6,
-        freshness_boost=0.05,
         knn_score=0.4,
         max_sim_score=0.5,
         max_cluster_score=0.55,
@@ -139,8 +135,6 @@ def test_build_labels_from_feedback_carries_updated_at_and_metadata_flags() -> N
         updated_at=1700003700.0,
         hybrid_score=0.5,
         semantic_score=0.45,
-        hn_score=0.2,
-        freshness_boost=0.01,
         knn_score=0.3,
         max_sim_score=0.25,
         max_cluster_score=0.2,
@@ -312,100 +306,34 @@ def test_evaluate_labeled_order_compares_learned_and_hybrid() -> None:
     assert report.hybrid_top_sources
 
 
-def test_compare_dashboard_feedback_configs_scores_newest_holdout() -> None:
+def test_evaluate_labeled_score_sources_includes_semantic_ablation() -> None:
     labels = [
-        LabeledStory(
-            _story(
-                i,
-                score=200 if i % 3 == 0 else 10,
-                comment_count=60 if i % 3 == 0 else (12 if i % 3 == 1 else 2),
-            ),
-            UPVOTE_LABEL if i % 3 == 0 else (NEUTRAL_LABEL if i % 3 == 1 else DOWNVOTE_LABEL),
-            _rank_result(-1, hybrid_score=0.5, semantic_score=0.5),
-            feedback_updated_at=10_000.0 + i,
-            has_raw_story_score=True,
-            has_raw_comment_count=True,
-        )
-        for i in range(12)
+        LabeledStory(_story(1, score=100), UPVOTE_LABEL, _rank_result(-1)),
+        LabeledStory(_story(2, score=80), UPVOTE_LABEL, _rank_result(-1)),
+        LabeledStory(_story(3, score=30), NEUTRAL_LABEL, _rank_result(-1)),
+        LabeledStory(_story(4, score=5), DOWNVOTE_LABEL, _rank_result(-1)),
     ]
-    current = AppConfig(
-        ranking=RankingConfig(non_semantic_weight=0.0, comment_ratio=0.0),
-        freshness=FreshnessConfig(enabled=False),
-        adaptive_hn=AdaptiveHNConfig(
-            weight_min=1.0,
-            weight_max=1.0,
-            threshold_young=0.0,
-            threshold_old=1.0,
-            score_normalization_cap=10.0,
-        ),
-    )
-    candidate = AppConfig(
-        ranking=RankingConfig(non_semantic_weight=0.8, comment_ratio=0.0),
-        freshness=FreshnessConfig(enabled=False),
-        adaptive_hn=AdaptiveHNConfig(
-            weight_min=1.0,
-            weight_max=1.0,
-            threshold_young=0.0,
-            threshold_old=1.0,
-            score_normalization_cap=10.0,
-        ),
-    )
 
-    result = compare_dashboard_feedback_configs(
+    comparisons = evaluate_labeled_score_sources(
         labels,
-        current,
-        candidate,
-        holdout_fraction=0.5,
-        min_holdout_count=6,
-        min_class_count=2,
+        {
+            "learned_score": [0.9, 0.8, 0.5, 0.1],
+            "hybrid_score": [0.8, 0.7, 0.6, 0.2],
+            "semantic_score": [0.95, 0.85, 0.4, 0.05],
+        },
     )
 
-    assert result.summary.holdout_label_count == 6
-    assert result.summary.train_label_count == 6
-    assert result.summary.holdout_neutral_labels >= 1
-    assert result.candidate.pairwise_accuracy > result.incumbent.pairwise_accuracy
-    assert result.score_delta > 0.0
-    assert result.passed is True
-
-
-def test_compare_dashboard_feedback_configs_skips_hn_labels_missing_metadata() -> None:
-    usable = [
-        LabeledStory(
-            _story(
-                i,
-                score=120 if i % 2 == 0 else 5,
-                comment_count=30 if i % 2 == 0 else 1,
-            ),
-            UPVOTE_LABEL if i % 2 == 0 else DOWNVOTE_LABEL,
-            _rank_result(-1, hybrid_score=0.5, semantic_score=0.5),
-            feedback_updated_at=20_000.0 + i,
-            has_raw_story_score=True,
-            has_raw_comment_count=True,
-        )
-        for i in range(6)
+    assert [item.label for item in comparisons] == [
+        "learned_score",
+        "hybrid_score",
+        "semantic_score",
     ]
-    missing = LabeledStory(
-        _story(100, score=0, comment_count=None),
-        NEUTRAL_LABEL,
-        _rank_result(-1, hybrid_score=0.4, semantic_score=0.4),
-        feedback_updated_at=19_999.0,
-        has_raw_story_score=False,
-        has_raw_comment_count=False,
-    )
-    current = AppConfig(freshness=FreshnessConfig(enabled=False))
+    semantic = comparisons[2].metrics
+    assert semantic.pairwise_accuracy == pytest.approx(1.0)
+    assert semantic.precision_at_5 == pytest.approx(0.5)
+    assert semantic.roc_auc == pytest.approx(1.0)
 
-    result = compare_dashboard_feedback_configs(
-        [missing, *usable],
-        current,
-        current,
-        holdout_fraction=0.5,
-        min_holdout_count=3,
-        min_class_count=1,
-    )
 
-    assert result.summary.label_count == 7
-    assert result.summary.usable_label_count == 6
-    assert result.summary.skipped_missing_story_metadata == 1
 
 
 def test_apply_learned_ranker_shadow_preserves_order(
