@@ -59,7 +59,14 @@ pythonpath = ["."]
 
 [tool.ty.src]
 exclude = [
+    "archive/**",
+    "demos/**",
+    "docs/**",
     "finetune_colab.ipynb",
     "finetune_runpod.py",
+    "public/**",
+    "scripts/**",
+    "tests/**",
     "tune_embeddings.py",
+    "*.ipynb",
 ]
