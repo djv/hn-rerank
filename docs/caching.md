@@ -10,7 +10,7 @@ The project caches several different things:
 - candidate id lists
 - user HN signals
 - embedding and cluster-embedding work
-- CE scores
+- legacy CE scores from older snapshots
 - HN dupe checks
 - dashboard feedback
 
@@ -92,7 +92,7 @@ Purpose:
 - avoid recomputing expensive embedding work
 - speed up repeated ranking passes
 
-## Cross-Encoder Score Cache
+## Legacy Cross-Encoder Score Cache
 
 Code:
 
@@ -100,7 +100,7 @@ Code:
 
 Directory:
 
-- `.cache/cross_encoder_scores`
+- legacy `.cache/cross_encoder_scores`
 
 Purpose:
 
@@ -111,7 +111,7 @@ Purpose:
 
 Important note:
 
-- this cache is about CE score reuse, not final ranking reuse
+- this cache is legacy support for older snapshots, not a live runtime input
 
 ## HN Dupe Cache
 
@@ -153,15 +153,12 @@ Purpose:
 - stores:
   - label action
   - story metadata
-  - rank diagnostics such as:
-    - `hybrid_score`
-    - `semantic_score`
-    - `knn_score`
-    - `max_sim_score`
-    - `max_cluster_score`
-    - `cross_encoder_score`
+  - legacy rank diagnostics on older records
 
-This store is the source for learned-ranker training labels.
+New writes omit the old cross-encoder and learned-ranker diagnostics, but the
+loader keeps reading older records for backward compatibility.
+
+This store is the source for single-model training labels.
 
 ## `--cache-only`
 
@@ -182,7 +179,7 @@ If a result looks wrong, ask which cache layer might be serving stale data:
 1. user-signal cache
 2. candidate cache
 3. story cache
-4. CE score cache
+4. legacy CE score cache
 5. dupe cache
 6. feedback store
 

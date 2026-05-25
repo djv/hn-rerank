@@ -1,21 +1,28 @@
 # Features
 
-This file documents the current first-stage and learned-ranker feature surfaces.
+This file documents the current runtime feature surface for the feedback-trained
+single model.
 
-## First-Stage Model Features
+## Single-Model Runtime Features
 
-The first-stage model lives in `api/rerank.py`.
+The live ranking model is trained in `api/rerank.py` and consumes derived
+features, not raw embeddings directly.
 
-Current config:
+Current config path:
 
-- `classifier.scoring_mode = "pairwise_logistic"`
-- `classifier.feature_mode = "bottleneck"`
+- `single_model.model_type = "svm"`
+- `single_model.svm_kernel = "rbf"`
+- `single_model.svm_c = 3.0`
+- `single_model.svm_gamma = "scale"`
 
-That means the model uses derived features, not raw embedding dimensions.
+The feature vector is assembled from:
 
-## Active First-Stage Features
+1. similarity features from the candidate embedding and user history
+2. metadata features from the story itself
 
-Current active first-stage features from `hn_rerank.toml`:
+## Active Similarity Features
+
+Current active similarity features from `hn_rerank.toml`:
 
 1. `centroid_feature`
 2. `pos_knn_feature`
@@ -25,7 +32,7 @@ Current active first-stage features from `hn_rerank.toml`:
 6. `closest_pos`
 7. `closest_neg`
 
-So the live first-stage vector is currently 7 dimensions.
+So the live similarity block is currently 7 dimensions.
 
 ## What Each Feature Means
 
@@ -57,9 +64,9 @@ So the live first-stage vector is currently 7 dimensions.
 
 - max similarity to any single negative example
 
-## Optional First-Stage Feature Toggles
+## Optional Similarity Feature Toggles
 
-Plumbing exists for these optional toggles:
+Plumbing exists for these additional toggles:
 
 - `use_closest_centroid_feature`
 - `use_knn_pos_n1_feature`
@@ -72,17 +79,8 @@ Plumbing exists for these optional toggles:
 - `use_knn_neg_n10_feature`
 - `use_comment_ratio_feature`
 
-## Duplicate / Near-Duplicate Features
-
-Current code has some duplicate semantics:
-
-- `closest_centroid` is the same value as `centroid_feature`
-- `knn_pos_n1` is effectively a top-1 positive similarity signal similar to
-  `closest_pos`
-- `knn_neg_n1` is similar to `closest_neg`
-
-Turning these on can improve metrics by changing model weighting, but that is
-not the same as adding new information.
+These are mostly experimental refinements of the same similarity signal
+family.
 
 ## Metadata Features
 
@@ -90,41 +88,28 @@ Current metadata features are HN-centric:
 
 - `log_points`
 - `log_comments`
-- optional `comment_ratio`
+- `comment_ratio` when enabled
+- `title_len`
+- `text_len`
+- `has_url`
+- `is_github`
+- `is_pdf`
+- `comments_count`
 
-These tend to favor HN stories over external stories because externals often
-lack comparable points/comment metadata.
+`comments_count` uses `Story.comment_count`, not the length of the fetched
+comment text list.
 
-## Learned Ranker Features
+These features are mostly lightweight source and quality heuristics. They can
+help, but they are not a substitute for better feedback coverage or exact
+vote-time feature capture.
 
-The learned final reranker lives in `api/learned_ranker.py`.
+## Current Interpretation
 
-Current feature names:
+The model is not a two-stage stack anymore. The runtime is now:
 
-1. `semantic_score`
-2. `hybrid_score`
-3. `max_cluster_score`
-4. `knn_score`
-5. `max_sim_score`
-6. `cross_encoder_score`
-7. `log_points`
-8. `log_comments`
+1. feature extraction
+2. single-model scoring
+3. slate selection
 
-These are built from:
-
-- the runtime ranking outputs
-- stored story metadata from dashboard feedback
-
-## First-Stage vs Learned-Ranker Feature Difference
-
-First-stage model:
-
-- builds similarity features directly from embeddings and negative/positive
-  history
-
-Learned final ranker:
-
-- consumes the outputs of the runtime ranker plus raw popularity metadata
-
-This difference matters because the learned ranker is not an independent model
-from raw text. It is learning on top of an already-ranked representation.
+That makes feature quality and configuration much easier to reason about than
+the old CE plus learned-ranker pipeline.

@@ -21,17 +21,16 @@ Check:
 
 1. `public/scores_debug.json` source mix
 2. `generate_html.py::select_ranked_results`
-3. `api/rerank.py` CE behavior
+3. `api/rerank.py` scoring behavior
 
 Current expected behavior:
 
 - selection should target 13 externals out of 40 when enough exist
-- CE should restrict HN only
-- externals should remain in the downstream pool
+- externals remain in the downstream pool
 
 If selected externals are missing entirely:
 
-- confirm CE did not replace the whole downstream pool with only the CE slice
+- confirm the final slate quota logic is still running
 
 ## 2. "Why are many stories old?"
 
@@ -39,29 +38,30 @@ Check:
 
 1. `hn_rerank.toml`:
    - `days`
-   - learned-ranker flags
+   - `single_model.model_type`
+   - `single_model.svm_kernel`
+   - feature flags
 2. current active score in `scores_debug.json`
-3. whether learned ranker is active
 
 Current reasons old stories can dominate:
 
 - `days = 30`
-- HN metadata features (`log_points`, `log_comments`) are enabled
-- learned ranker is active and can favor mature stories
+- HN metadata features favor more mature stories
+- the single model can still prefer stories with strong popularity signals
 
-## 3. "Why do many cards have CE score 0?"
+## 3. "Why does a story score strangely after a config change?"
 
 Check:
 
-- whether the story is external
-- whether it was inside the top `cross_encoder.top_n` HN slice
+1. `hn_rerank.toml`
+2. `api/rerank.py::_classifier_metadata_features`
+3. `api/feedback_single_model.py`
 
-Current expected behavior:
+Common causes:
 
-- externals bypass CE
-- only top-HN CE slice gets nonzero `cross_encoder_score`
-
-So many zero CE scores are expected.
+- feature flags changed between training and inference
+- the wrong SVM kernel or regularization was selected
+- the feedback replay is approximate, not exact vote-time reconstruction
 
 ## 4. "Why does `scores_debug.json` disagree with `index.html`?"
 
@@ -98,13 +98,13 @@ Verify:
 Check:
 
 - `evaluate_quality.py`
-- `api/rerank.py::_score_cross_encoder_candidate`
+- `api/feedback_single_model.py`
 
-Current bottleneck:
+Current bottlenecks:
 
-- cross-encoder ONNX scoring during ranking
-
-Large full-data evals often spend most of their time there.
+- embedding work
+- feature recomputation
+- repeated fold training during CV
 
 ## 7. "Why does eval look much better than the dashboard?"
 
@@ -125,11 +125,10 @@ Trust first:
 Check:
 
 - whether `--classifier` was used in `evaluate_quality.py`
-- whether there are at least:
-  - 5 positives
-  - 5 negatives
+- whether there are at least the configured minimum positive and negative
+  labels for the single model
 
-Without enough negatives, runtime falls back to centroid-max similarity.
+Without enough labels, runtime falls back to centroid-max similarity.
 
 ## Quick Command Pattern
 
@@ -139,8 +138,8 @@ Current standard cached quality check:
 uv run python evaluate_quality.py pure_coder --classifier --cache-only --age-matched --candidates 100
 ```
 
-Current standard regeneration:
+Current standard single-model sweep:
 
 ```bash
-uv run python generate_html.py
+uv run python evaluate_quality.py pure_coder --classifier --cache-only --age-matched --final-list --count 40 --model-type svm --svm-kernel rbf --svm-c 3.0 --svm-gamma scale --use-new-features
 ```

@@ -4,7 +4,7 @@
 
 HN Rerank builds a static dashboard from your HN signals, Algolia stories,
 open-index archive candidates, and optional RSS feeds. Embeddings, clustering,
-cross-encoder reranking, caching, and HTML generation run locally. Optional
+single-model reranking, caching, and HTML generation run locally. Optional
 cluster names and TL;DRs use the configured LLM provider.
 
 Requires Python 3.12+.
@@ -17,8 +17,8 @@ Requires Python 3.12+.
   open-index archive data.
 - Expands the pool with curated RSS/Atom feeds and full-article extraction.
 - Clusters your positive signals into interest groups.
-- Reranks candidates with local embeddings, classifier mode, diversity, and a
-  local cross-encoder pass.
+- Reranks candidates with local embeddings, a feedback-trained single model,
+  and diversity.
 - Renders `public/index.html` and `public/clusters.html` as static artifacts by
   default.
 
@@ -88,13 +88,11 @@ Outputs:
    LLM provider.
 5. Fetch candidate stories from Algolia live windows, local archive cache,
    optional open-index archive data, and RSS feeds.
-6. Rank candidates with a first-stage pairwise logistic classifier when enough
-   positive and negative signals exist, otherwise fall back to centroid-max
-   semantic scoring.
-7. Reorder the top HN slice with the local cross-encoder when enabled.
-8. Optionally apply the learned final reranker to the CE-passed pool.
-9. Select a diversified final list and then remove moderator-marked HN dupes.
-10. Render static HTML and optional debug JSON artifacts.
+6. Rank candidates with the feedback-trained single model when enough positive
+   and negative signals exist, otherwise fall back to centroid-max semantic
+   scoring.
+7. Select a diversified final list and then remove moderator-marked HN dupes.
+8. Render static HTML and optional debug JSON artifacts.
 
 ## HN Vector Archive Experiment
 
@@ -138,9 +136,8 @@ Nested config sections currently loaded:
 - `[hn_rerank.classifier]`
 - `[hn_rerank.clustering]`
 - `[hn_rerank.llm]`
-- `[hn_rerank.cross_encoder]`
 - `[hn_rerank.archive]`
-- `[hn_rerank.learned_ranker]`
+- `[hn_rerank.single_model]`
 
 Older local TOML files can still contain removed legacy sections or keys. The
 loader ignores unknown fields instead of failing, but the sections above are
@@ -191,6 +188,12 @@ use_log_points_feature = true
 use_log_comments_feature = true
 use_closest_pos_feature = true
 use_closest_neg_feature = true
+use_title_len_feature = true
+use_text_len_feature = true
+use_has_url_feature = true
+use_github_feature = true
+use_pdf_feature = true
+use_comments_count_feature = true
 
 [hn_rerank.clustering]
 algorithm = "agglomerative"
@@ -204,20 +207,14 @@ max_cluster_fraction = 0.25
 max_cluster_size = 40
 refine_iters = 2
 
-[hn_rerank.cross_encoder]
-enabled = true
-top_n = 150
-weight = 0.06953
-
-[hn_rerank.learned_ranker]
-shadow_enabled = false
-active_enabled = false
-model_path = ".cache/learned_ranker/final_ranker.joblib"
+[hn_rerank.single_model]
 min_positive_labels = 10
 min_negative_labels = 10
-training_sources = "dashboard_feedback"
-source_feature_weight = 0.0
 balance_training_labels = true
+model_type = "svm"
+svm_kernel = "rbf"
+svm_c = 3.0
+svm_gamma = "scale"
 ```
 
 ## Output and Debug Artifacts
@@ -227,18 +224,10 @@ Optional artifacts written next to the output HTML include:
 - `cluster_name_debug.json` via `--debug-clusters`
 
 The match badge shown in the UI is derived from `max_cluster_score`, not the
-active ordering score. The small `CE` value is the normalized cross-encoder
-rerank score for stories included in the cross-encoder pass. `knn_score`
-remains available in debug output as a diagnostic neighborhood score.
-
-The learned final ranker is off by default. In shadow mode it trains only from
-explicit dashboard up/down feedback records that include captured rank
-diagnostics, scores ranked candidates, and writes `learned_score`,
-`learned_ranker_used`, and `learned_ranker_mode` to `scores_debug.json` without
-changing dashboard order. Training balances up/down labels by default and sets
-`source_feature_weight = 0.0` so source identity cannot dominate the learned
-score. Active mode can reorder by `learned_score`, but should only be enabled
-after inspecting shadow diagnostics.
+active ordering score. `hybrid_score` and `semantic_score` remain the main
+score fields in debug output, alongside `knn_score`, `max_sim_score`, and
+`max_cluster_score`. The old cross-encoder and learned-ranker debug fields are
+no longer emitted by the live runtime.
 
 ## Systemd Timer
 

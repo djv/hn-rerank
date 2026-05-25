@@ -8,16 +8,13 @@ current `main` worktree.
 The dashboard build in `generate_html.py` uses a staged pipeline:
 
 1. Candidate retrieval
-2. First-stage model scoring in `api/rerank.py`
-3. Cross-encoder rerank on HN candidates
-4. Learned final rerank over the CE-passed pool
-5. Final slate selection in `generate_html.py`
-6. Post-selection HN dupe filtering
-7. HTML/debug output
+2. Single-model scoring in `api/rerank.py`
+3. Final slate selection in `generate_html.py`
+4. Post-selection HN dupe filtering
+5. HTML/debug output
 
 The main public score field is still named `hybrid_score`, but in the current
-runtime path it is mostly "current ranking score", not a legacy hand-tuned HN
-blend.
+runtime path it is the active single-model score used for ordering.
 
 ## 1. Candidate Retrieval
 
@@ -48,14 +45,15 @@ Entry point:
 
 Current runtime mode:
 
-- `classifier.scoring_mode = "pairwise_logistic"`
-- `classifier.feature_mode = "bottleneck"`
+- `single_model.model_type = "svm"`
+- `single_model.svm_kernel = "rbf"`
+- `single_model.svm_c = 3.0`
+- `single_model.svm_gamma = "scale"`
 
 Activation rule:
 
-- the trained model is used only when there are at least:
-  - `classifier.min_positive_examples = 5`
-  - `classifier.min_negative_examples = 5`
+- the trained model is used only when there are at least the configured
+  minimum positive and negative feedback labels
 - otherwise the code falls back to centroid-max cosine similarity
 
 What happens:
@@ -64,63 +62,14 @@ What happens:
 2. positive and negative history embeddings are prepared
 3. positive embeddings are clustered into interest centroids
 4. derived similarity features are built
-5. optional metadata features are appended
-6. a pairwise logistic model is trained on-the-fly
-7. candidate scores are produced as normalized first-stage scores
+5. metadata features are appended
+6. a feedback-trained single model is scored
+7. candidate scores are produced as normalized ranking scores
 
-In the current code, `hybrid_score` is initially set to this first-stage score:
+In the current code, `hybrid_score` is initially set to this single-model
+score.
 
-- `hybrid_scores = semantic_scores`
-
-## 3. Cross-Encoder Rerank
-
-Entry point:
-
-- `api/rerank.py`, inside `rank_stories`
-
-Current config:
-
-- `cross_encoder.enabled = true`
-- `cross_encoder.top_n = 200`
-- `cross_encoder.weight = 0.06953`
-
-Important current behavior:
-
-- CE is applied only to HN candidates
-- the top `N` HN candidates from the first-stage ranked order are CE-scored
-- the CE score is blended back into `hybrid_score`
-- once CE is active, the downstream HN pool is restricted to the CE-scored HN
-  slice
-- external stories are not CE-scored, but they remain in the downstream pool
-
-This was changed to avoid a failure mode where the CE slice eliminated external
-stories before quota-based final selection could see them.
-
-## 4. Learned Final Rerank
-
-Entry point:
-
-- `generate_html.py::apply_learned_ranker`
-- model code in `api/learned_ranker.py`
-
-Current config:
-
-- `learned_ranker.shadow_enabled = true`
-- `learned_ranker.active_enabled = true`
-
-That means the learned ranker is currently active, not shadow-only.
-
-What happens:
-
-1. the CE-passed pool is scored by the learned ranker
-2. each `RankResult` gets:
-   - `learned_score`
-   - `learned_ranker_used`
-3. if `active_enabled=true`, the pool is sorted by `learned_score`
-
-At this point the list order is the active final rank order for selection.
-
-## 5. Final Slate Selection
+## 3. Final Slate Selection
 
 Entry point:
 
@@ -133,8 +82,7 @@ This stage does not learn or rescore. It applies slate policy:
 - enforces per-source diversity for external stories
 - chooses the final `count`
 - sorts the selected slate by active final score:
-  - `learned_score` when learned ranker is active
-  - otherwise `hybrid_score`
+  - `hybrid_score`
 
 Current external target:
 
@@ -142,7 +90,7 @@ Current external target:
 
 With `count = 40`, the target is `13` externals when enough are available.
 
-## 6. Post-Selection HN Dupe Filtering
+## 4. Post-Selection HN Dupe Filtering
 
 Entry point:
 
@@ -161,7 +109,7 @@ Important current limitation:
 - there is no refill after a dupe is removed
 - so the rendered page can contain fewer than `count` cards
 
-## 7. Output
+## 5. Output
 
 Final outputs:
 
@@ -173,15 +121,15 @@ Final outputs:
 
 - source mix
 - active score fields
-- CE coverage
-- learned-ranker flags
+- classifier feature usage
+- single-model ordering behavior
 
 ## Current Practical Read
 
-The runtime system is currently two learned rankers in sequence:
+The runtime system is currently one learned ranker plus slate policy:
 
-1. first-stage pairwise logistic model in `api/rerank.py`
-2. learned final reranker in `api/learned_ranker.py`
+1. feedback-trained single model in `api/rerank.py`
+2. final slate selection in `generate_html.py`
 
-That is workable, but it also means ranking behavior can be hard to reason
-about unless the stage boundaries are kept explicit.
+That is simpler to reason about than the old stacked CE/learned-ranker path,
+but it still depends heavily on feature quality and feedback-label coverage.

@@ -8,9 +8,7 @@ This file documents how the final slate is chosen after ranking.
 
 Selection happens after:
 
-1. first-stage ranking
-2. CE rerank
-3. learned final rerank
+1. single-model ranking
 
 So the input list is already ordered by the current active final score.
 
@@ -59,23 +57,15 @@ HN selection is simpler:
 After combining selected external and selected HN stories, the slate is sorted
 by active final score:
 
-- `learned_score` when learned ranker is active for those results
-- otherwise `hybrid_score`
+- `hybrid_score`
 
 That means quota affects membership, but final within-slate order is still
 score-driven.
 
-## Interaction With CE
+## Interaction With the Runtime Model
 
-Current CE behavior matters here:
-
-- HN candidates are restricted to the CE-scored HN slice
-- externals remain available outside CE
-
-So selection is currently choosing from:
-
-- CE-scored HN stories
-- non-CE external stories
+The selection stage does not rescore stories. It only chooses from the
+single-model ranked pool and preserves the external quota policy.
 
 ## Interaction With Dupe Filtering
 

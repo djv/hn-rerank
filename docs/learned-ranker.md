@@ -1,6 +1,7 @@
 # Learned Ranker
 
-This file documents the current learned final reranker in `api/learned_ranker.py`.
+This is legacy reference material for the removed learned final reranker.
+The live runtime no longer uses this stacked final-ranker path.
 
 ## Purpose
 

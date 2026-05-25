@@ -1,6 +1,7 @@
 # Cross-Encoder
 
-This file documents the current CE rerank behavior.
+This is legacy reference material for the removed cross-encoder stage.
+The live runtime no longer uses CE reranking.
 
 ## Purpose
 

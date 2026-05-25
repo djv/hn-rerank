@@ -129,13 +129,11 @@ Why:
 
 ## Current Runtime Bottleneck
 
-On larger eval runs, the slow stage is the cross-encoder:
+On larger eval runs, the slow stages are embedding and feature recomputation.
+There is no cross-encoder stage in the live runtime anymore.
 
-- `api/rerank.py::_score_cross_encoder_candidate`
-- ONNX runtime inside `api/cross_encoder.py`
-
-This is why "use all available training data" style runs can stall when CE is
-enabled.
+This is why "use all available training data" style runs can still take a long
+time even after the CE path was removed.
 
 ## Common Commands
 
@@ -157,10 +155,16 @@ Cross-validation:
 uv run python evaluate_quality.py pure_coder --classifier --cache-only --age-matched --candidates 100 --cv 5
 ```
 
+Model sweeps for the live single-model path:
+
+```bash
+uv run python evaluate_quality.py pure_coder --classifier --cache-only --age-matched --final-list --count 40 --model-type svm --svm-kernel rbf --svm-c 3.0 --svm-gamma scale --use-new-features
+```
+
 ## Current Limitations
 
 - held-out positives are injected
-- CE can dominate runtime on large runs
 - final HTML behavior can still differ from eval if post-selection dupe
   filtering removes cards
 - cached evaluation is easier than live production behavior
+- the feedback replay is still approximate, not exact vote-time reconstruction

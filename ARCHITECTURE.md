@@ -134,9 +134,7 @@ The current production architecture uses **Pairwise Logistic Regression** with *
 Final ranking behavior:
 - the first-stage score becomes `hybrid_score`
 - MMR-style diversification suppresses redundant candidates within the ranked pool
-- the cross-encoder can blend its score back into the top HN slice
-- the learned final ranker can score the ranked list in shadow mode; active mode
-  reorders by `learned_score` only when explicitly enabled
+- the feedback-trained single model scores the ranked list directly
 - the UI match badge uses `max_cluster_score`, while ordering uses `hybrid_score`
 
 ## LLM Enrichment
