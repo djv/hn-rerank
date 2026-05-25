@@ -42,6 +42,14 @@ class ClassifierConfig:
     use_log_comments_feature: bool = False
     use_comment_ratio_feature: bool = False
 
+    # New metadata features
+    use_title_len_feature: bool = True
+    use_text_len_feature: bool = True
+    use_has_url_feature: bool = True
+    use_github_feature: bool = True
+    use_pdf_feature: bool = True
+    use_comments_count_feature: bool = True
+
     # Rich similarity features
     use_closest_pos_feature: bool = False
     use_closest_neg_feature: bool = False
@@ -112,6 +120,10 @@ class SingleModelConfig:
     min_positive_labels: int = 10
     min_negative_labels: int = 10
     balance_training_labels: bool = True
+    model_type: str = "svm"  # Options: logistic, random_forest, gradient_boosting, svm, mlp
+    svm_kernel: str = "rbf"  # Options: linear, poly, rbf, sigmoid
+    svm_c: float = 3.0
+    svm_gamma: str | float = "scale"  # "scale", "auto", or a numeric gamma value
 
 @dataclass(frozen=True)
 class AppConfig:

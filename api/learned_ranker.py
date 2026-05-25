@@ -322,19 +322,57 @@ def _insufficient_label_message(
     )
 
 
-def _make_pipeline() -> Pipeline:
+def _make_pipeline(config: SingleModelConfig) -> Pipeline:
+    from sklearn.ensemble import RandomForestClassifier, HistGradientBoostingClassifier
+    from sklearn.svm import SVC
+    from sklearn.neural_network import MLPClassifier
+    from sklearn.linear_model import LogisticRegression
+
+    mtype = getattr(config, "model_type", "logistic").lower().strip()
+    if mtype == "random_forest":
+        clf = RandomForestClassifier(
+            n_estimators=150,
+            max_depth=10,
+            class_weight="balanced",
+            random_state=0,
+        )
+    elif mtype == "gradient_boosting":
+        clf = HistGradientBoostingClassifier(
+            max_iter=150,
+            max_depth=5,
+            class_weight="balanced",
+            random_state=0,
+        )
+    elif mtype == "svm":
+        kernel = getattr(config, "svm_kernel", "rbf").lower().strip()
+        gamma = getattr(config, "svm_gamma", "scale")
+        clf = SVC(
+            C=float(getattr(config, "svm_c", 1.0)),
+            kernel=kernel,
+            gamma=gamma,
+            probability=True,
+            class_weight="balanced",
+            random_state=0,
+        )
+    elif mtype == "mlp":
+        clf = MLPClassifier(
+            hidden_layer_sizes=(64, 32),
+            max_iter=1000,
+            random_state=0,
+        )
+    else:
+        # Default: logistic regression
+        clf = LogisticRegression(
+            class_weight="balanced",
+            max_iter=1000,
+            random_state=0,
+            solver="liblinear",
+        )
+
     return Pipeline(
         [
             ("scale", StandardScaler()),
-            (
-                "logistic",
-                LogisticRegression(
-                    class_weight="balanced",
-                    max_iter=1000,
-                    random_state=0,
-                    solver="liblinear",
-                ),
-            ),
+            ("model", clf),
         ]
     )
 
@@ -386,10 +424,10 @@ def train_model_from_matrix(
         neutral_x, neutral_y = _balance_binary_matrix(neutral_x, neutral_y)
         upvote_x, upvote_y = _balance_binary_matrix(upvote_x, upvote_y)
 
-    neutral_model = _make_pipeline()
+    neutral_model = _make_pipeline(config)
     neutral_model.fit(neutral_x, neutral_y)
 
-    upvote_model = _make_pipeline()
+    upvote_model = _make_pipeline(config)
     upvote_model.fit(upvote_x, upvote_y)
 
     return OrdinalThresholdModel(

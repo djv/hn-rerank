@@ -81,9 +81,9 @@ class FeedbackRecord:
     def from_dict(cls, data: FeedbackRecordDict) -> FeedbackRecord:
         return cls(
             key=str(data["key"]),
-            action=cast(FeedbackAction, data["action"]),
+            action=data["action"],
             id=int(data["id"]),
-            source=cast(StorySource, data.get("source", "hn")),
+            source=data.get("source", "hn"),
             title=str(data.get("title", "")),
             url=data.get("url"),
             discussion_url=data.get("discussion_url"),
@@ -91,9 +91,7 @@ class FeedbackRecord:
             time=int(data.get("time", 0)),
             score=_optional_int(data.get("score")),
             comment_count=_optional_int(data.get("comment_count")),
-            hn_mirror_status=cast(
-                FeedbackMirrorStatus, data.get("hn_mirror_status", "none")
-            ),
+            hn_mirror_status=data.get("hn_mirror_status", "none"),
             hn_mirror_error=data.get("hn_mirror_error"),
             updated_at=float(data.get("updated_at", 0.0)),
         )

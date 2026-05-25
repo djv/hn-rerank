@@ -496,6 +496,7 @@ def apply_evaluator_overrides(
     config: AppConfig,
     *,
     pure_semantic: bool = False,
+    use_new_features: bool = False,
 ) -> AppConfig:
     updated = config
     if pure_semantic:
@@ -506,6 +507,19 @@ def apply_evaluator_overrides(
                 use_log_points_feature=False,
                 use_log_comments_feature=False,
                 use_comment_ratio_feature=False,
+            ),
+        )
+    if use_new_features:
+        updated = replace(
+            updated,
+            classifier=replace(
+                updated.classifier,
+                use_title_len_feature=True,
+                use_text_len_feature=True,
+                use_has_url_feature=True,
+                use_github_feature=True,
+                use_pdf_feature=True,
+                use_comments_count_feature=True,
             ),
         )
     return updated
@@ -1120,6 +1134,32 @@ async def main():
         help="Displayed story count when --final-list is enabled",
     )
     parser.add_argument(
+        "--model-type",
+        default="svm",
+        help="Classifier model type: logistic, random_forest, gradient_boosting, svm, mlp",
+    )
+    parser.add_argument(
+        "--svm-kernel",
+        default=None,
+        help="SVM kernel to use when --model-type=svm: linear, poly, rbf, sigmoid",
+    )
+    parser.add_argument(
+        "--svm-c",
+        type=float,
+        default=None,
+        help="SVM regularization strength when --model-type=svm",
+    )
+    parser.add_argument(
+        "--svm-gamma",
+        default=None,
+        help='SVM gamma when --model-type=svm: "scale", "auto", or a numeric value',
+    )
+    parser.add_argument(
+        "--use-new-features",
+        action="store_true",
+        help="Enable experimental metadata features for the single-model evaluator",
+    )
+    parser.add_argument(
         "--compare-first-stage",
         action="store_true",
         help=(
@@ -1154,9 +1194,33 @@ async def main():
     if args.knn is not None:
         config = replace(config, semantic=replace(config.semantic, knn_neighbors=args.knn))
 
+    if args.model_type is not None:
+        config = replace(config, single_model=replace(config.single_model, model_type=args.model_type))
+    if args.svm_kernel is not None:
+        config = replace(
+            config,
+            single_model=replace(config.single_model, svm_kernel=args.svm_kernel),
+        )
+    if args.svm_c is not None:
+        config = replace(
+            config,
+            single_model=replace(config.single_model, svm_c=args.svm_c),
+        )
+    if args.svm_gamma is not None:
+        gamma: str | float
+        try:
+            gamma = float(args.svm_gamma)
+        except ValueError:
+            gamma = args.svm_gamma
+        config = replace(
+            config,
+            single_model=replace(config.single_model, svm_gamma=gamma),
+        )
+
     config = apply_evaluator_overrides(
         config,
         pure_semantic=args.pure_semantic,
+        use_new_features=args.use_new_features,
     )
 
     evaluator = RankingEvaluator(args.username)

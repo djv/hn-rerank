@@ -1308,9 +1308,8 @@ async def main() -> None:
                         debug_path=debug_path,
                     )
                     for cid, profile in cluster_profiles.items():
-                        profile_dict = cast(dict[str, str], profile)
-                        cluster_names[cid] = profile_dict["name"]
-                        cluster_keywords[cid] = profile_dict["keywords"]
+                        cluster_names[cid] = profile["name"]
+                        cluster_keywords[cid] = profile["keywords"]
                     
                     progress.update(name_task, description="[green][+] Clusters named.")
                 except RuntimeError as exc:

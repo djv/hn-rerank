@@ -53,6 +53,12 @@ METADATA_FEATURE_FLAGS: tuple[tuple[str, str], ...] = (
     ("log_points", "use_log_points_feature"),
     ("log_comments", "use_log_comments_feature"),
     ("comment_ratio", "use_comment_ratio_feature"),
+    ("title_len", "use_title_len_feature"),
+    ("text_len", "use_text_len_feature"),
+    ("has_url", "use_has_url_feature"),
+    ("is_github", "use_github_feature"),
+    ("is_pdf", "use_pdf_feature"),
+    ("comments_count", "use_comments_count_feature"),
 )
 
 

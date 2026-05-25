@@ -309,8 +309,9 @@ async def test_cluster_names_non_empty():
         names = await generate_batch_cluster_names(clusters)
 
     assert len(names) == 2
-    assert all(isinstance(name, str) for name in names.values())
-    assert all(len(name) > 0 for name in names.values())
+    assert all(isinstance(profile, dict) for profile in names.values())
+    assert all(profile["name"] for profile in names.values())
+    assert all("keywords" in profile for profile in names.values())
 
 
 @pytest.mark.asyncio
@@ -333,7 +334,7 @@ async def test_fallback_group_name_on_empty_titles():
         names = await generate_batch_cluster_names(clusters)
 
     assert len(names) == 1
-    assert names[0] == "Misc Topic"
+    assert names[0]["name"] == "Misc Topic"
 
 
 @pytest.mark.asyncio
@@ -365,7 +366,7 @@ async def test_names_stripped_of_hn_prefixes():
     ):
         names = await generate_batch_cluster_names(clusters)
 
-    assert names[0] == "Project Tools"
+    assert names[0]["name"] == "Project Tools"
 
 
 @pytest.mark.asyncio
@@ -384,7 +385,7 @@ async def test_invalid_cluster_name_kept_as_label():
     ):
         names = await generate_batch_cluster_names(clusters)
 
-    assert names[0] == "Not Provided"
+    assert names[0]["name"] == "Not Provided"
 
 
 @pytest.mark.asyncio
@@ -404,7 +405,7 @@ async def test_llm_cluster_name_requires_title_overlap():
     ):
         names = await generate_batch_cluster_names(clusters)
 
-    assert names[0] == "LLM Coding Agents"
+    assert names[0]["name"] == "LLM Coding Agents"
 
 
 @pytest.mark.asyncio
@@ -424,7 +425,7 @@ async def test_llm_cluster_name_kept_without_keyword_overlap():
     ):
         names = await generate_batch_cluster_names(clusters)
 
-    assert names[0] == "Transportation Systems"
+    assert names[0]["name"] == "Transportation Systems"
 
 
 @pytest.mark.asyncio
@@ -444,7 +445,7 @@ async def test_llm_cluster_name_allows_six_words():
     ):
         names = await generate_batch_cluster_names(clusters)
 
-    assert names[0] == "Deep Learning for Large Language Models"
+    assert names[0]["name"] == "Deep Learning for Large Language Models"
 
 
 @pytest.mark.asyncio
@@ -466,7 +467,7 @@ async def test_llm_cluster_name_truncates_overlong_label():
     ):
         names = await generate_batch_cluster_names(clusters)
 
-    assert names[0] == "Graph Neural Networks for Drug Discovery"
+    assert names[0]["name"] == "Graph Neural Networks for Drug Discovery"
 
 
 @pytest.mark.asyncio

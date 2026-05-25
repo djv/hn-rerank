@@ -164,6 +164,18 @@ def _classifier_metadata_features(
             width += 1
         if config.classifier.use_comment_ratio_feature:
             width += 1
+        if config.classifier.use_title_len_feature:
+            width += 1
+        if config.classifier.use_text_len_feature:
+            width += 1
+        if config.classifier.use_has_url_feature:
+            width += 1
+        if config.classifier.use_github_feature:
+            width += 1
+        if config.classifier.use_pdf_feature:
+            width += 1
+        if config.classifier.use_comments_count_feature:
+            width += 1
         return np.zeros((expected_len, width), dtype=np.float32)
 
     columns: list[NDArray[np.float32]] = []
@@ -185,6 +197,33 @@ def _classifier_metadata_features(
         points = np.array([max(float(s.score), 0.0) for s in stories], dtype=np.float32)
         ratio = np.log1p(comments) / (np.log1p(points) + 1.0)
         columns.append(ratio.reshape(-1, 1))
+
+    if config.classifier.use_title_len_feature:
+        title_len = np.array([float(len(s.title or "")) for s in stories], dtype=np.float32)
+        columns.append((np.log1p(title_len) / np.log1p(120.0)).reshape(-1, 1))
+
+    if config.classifier.use_text_len_feature:
+        text_len = np.array([float(len(s.text_content or "")) for s in stories], dtype=np.float32)
+        columns.append((np.log1p(text_len) / np.log1p(5000.0)).reshape(-1, 1))
+
+    if config.classifier.use_has_url_feature:
+        has_url = np.array([1.0 if s.url else 0.0 for s in stories], dtype=np.float32)
+        columns.append(has_url.reshape(-1, 1))
+
+    if config.classifier.use_github_feature:
+        is_github = np.array([1.0 if s.url and "github.com" in s.url.lower() else 0.0 for s in stories], dtype=np.float32)
+        columns.append(is_github.reshape(-1, 1))
+
+    if config.classifier.use_pdf_feature:
+        is_pdf = np.array([1.0 if s.url and s.url.lower().endswith(".pdf") else 0.0 for s in stories], dtype=np.float32)
+        columns.append(is_pdf.reshape(-1, 1))
+
+    if config.classifier.use_comments_count_feature:
+        comments_count = np.array(
+            [max(float(s.comment_count if s.comment_count is not None else 0.0), 0.0) for s in stories],
+            dtype=np.float32,
+        )
+        columns.append((np.log1p(comments_count) / np.log1p(15.0)).reshape(-1, 1))
 
     if not columns:
         return np.zeros((expected_len, 0), dtype=np.float32)
@@ -1075,7 +1114,7 @@ def rank_stories(
     positive_embeddings: NDArray[np.float32] | None = None,
     negative_embeddings: NDArray[np.float32] | None = None,
     config: AppConfig = AppConfig(),
-    progress_callback: Callable[[int, int], None] | None = None,
+    progress_callback: RankProgressCallback | None = None,
     diagnostics: dict[str, object] | None = None,
     positive_stories: list[Story] | None = None,
     negative_stories: list[Story] | None = None,

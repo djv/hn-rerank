@@ -11,6 +11,7 @@ from api.feedback_single_model import (
     score_feature_rows,
     train_single_model,
 )
+from api.learned_ranker import _make_pipeline
 from api.models import Story
 from helpers import unit_rows
 
@@ -42,6 +43,12 @@ def test_feature_builder_includes_embeddings_and_derived_features_without_ce() -
             use_log_points_feature=True,
             use_log_comments_feature=True,
             use_comment_ratio_feature=True,
+            use_title_len_feature=False,
+            use_text_len_feature=False,
+            use_has_url_feature=False,
+            use_github_feature=False,
+            use_pdf_feature=False,
+            use_comments_count_feature=False,
         )
     )
     stories = [_story(1, score=100, comment_count=5), _story(2, score=5, comment_count=1)]
@@ -117,6 +124,12 @@ def test_feedback_rows_do_not_require_rank_diagnostics_and_default_missing_metad
             use_log_points_feature=True,
             use_log_comments_feature=True,
             use_comment_ratio_feature=True,
+            use_title_len_feature=False,
+            use_text_len_feature=False,
+            use_has_url_feature=False,
+            use_github_feature=False,
+            use_pdf_feature=False,
+            use_comments_count_feature=False,
         )
     )
     batch = build_single_model_feature_batch(
@@ -211,3 +224,9 @@ def test_single_model_scores_are_stable_and_bounded(monkeypatch: pytest.MonkeyPa
     assert np.all(scores >= 0.0)
     assert np.all(scores <= 1.0)
     assert scores[0] > scores[-1]
+
+
+def test_svm_pipeline_uses_configured_kernel() -> None:
+    pipeline = _make_pipeline(SingleModelConfig(model_type="svm", svm_kernel="linear"))
+
+    assert pipeline.named_steps["model"].kernel == "linear"

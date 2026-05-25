@@ -446,13 +446,13 @@ async def generate_batch_cluster_names(
     clusters: dict[int, list[ClusterItem]],
     progress_callback: Callable[[int, int], None] | None = None,
     debug_path: Path | None = None,
-) -> dict[int, str]:
+) -> dict[int, dict[str, str]]:
     """Generate names for clusters one at a time to improve reliability."""
     if not clusters:
         return {}
 
     cache = _load_cluster_name_cache()
-    results: dict[int, str] = {}
+    results: dict[int, dict[str, str]] = {}
     to_generate: dict[int, list[ClusterItem]] = {}
     primary_model = LLM_CLUSTER_NAME_MODEL_PRIMARY
     fallback_model = LLM_CLUSTER_NAME_MODEL_FALLBACK
@@ -472,8 +472,13 @@ async def generate_batch_cluster_names(
             try:
                 parsed = json.loads(cached_val)
                 if isinstance(parsed, dict) and "name" in parsed:
-                    results[cid] = parsed
-                    continue
+                    parsed_name = str(parsed.get("name", "")).strip()
+                    if parsed_name:
+                        results[cid] = {
+                            "name": parsed_name,
+                            "keywords": str(parsed.get("keywords", "")).strip(),
+                        }
+                        continue
             except json.JSONDecodeError:
                 # Handle old string-only cache entries by re-generating
                 pass
@@ -608,8 +613,12 @@ async def generate_batch_cluster_names(
                 info_block = "\n\n".join(info_entries) if info_entries else "(no stories)"
                 batch_prompts.append(info_block)
 
-            used_names = sorted(set(n["name"] for n in results.values() if isinstance(n, dict) and n.get("name")))
-            already_used_str = f"Already Used Names (DO NOT REUSE): {', '.join(used_names)}" if used_names else ""
+            used_names = sorted(
+                set(n["name"] for n in results.values() if isinstance(n, dict) and n.get("name"))
+            )
+            already_used_str = (
+                f"Already Used Names (DO NOT REUSE): {', '.join(used_names)}" if used_names else ""
+            )
 
             full_prompt = f"""
             Analyze this cluster of stories and provide:
@@ -914,7 +923,8 @@ async def generate_batch_cluster_names(
                     cid = batch_missing[0]
                     final_name = _finalize_cluster_name(text)
                     if final_name:
-                        results[cid] = final_name
+                        profile = {"name": final_name, "keywords": ""}
+                        results[cid] = profile
                         items = to_generate[cid]
                         story_ids = sorted(
                             [
@@ -925,7 +935,7 @@ async def generate_batch_cluster_names(
                         cache_key = _cluster_name_cache_key(
                             story_ids, rescue_model
                         )
-                        cache[cache_key] = final_name
+                        cache[cache_key] = json.dumps(profile)
                         returned += 1
 
                 if debug_path is not None:
