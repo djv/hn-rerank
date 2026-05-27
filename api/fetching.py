@@ -314,7 +314,11 @@ async def fetch_story(
             article_text = ""
             if url:
                 async with ARTICLE_SEM:
-                    article_text = await fetch_full_text(client, url)
+                    try:
+                        article_text = await fetch_full_text(client, url)
+                    except Exception:
+                        logger.debug("Failed to fetch article text for story %d", sid)
+                        article_text = ""
 
             text_content = compose_story_text(
                 title=title,
@@ -376,7 +380,9 @@ def open_index_parquet_paths(start_ts: int, end_ts: int) -> list[str]:
 
 
 def build_open_index_sql(has_exclude_ids: bool = False) -> str:
-    exclude_clause = "AND id NOT IN (SELECT * FROM UNNEST(?))" if has_exclude_ids else ""
+    exclude_clause = (
+        "AND id NOT IN (SELECT * FROM UNNEST(?))" if has_exclude_ids else ""
+    )
     return f"""
 SELECT
   id,
@@ -464,7 +470,9 @@ def _query_open_index_archive_ids_sync(
                 )
                 seen_ids.add(sid)
         candidates.sort(key=lambda item: (item[1], item[2]), reverse=True)
-        return [sid for sid, _score, _story_time, _norm_url in candidates[:candidate_limit]]
+        return [
+            sid for sid, _score, _story_time, _norm_url in candidates[:candidate_limit]
+        ]
     finally:
         conn.close()
 
@@ -542,9 +550,7 @@ def load_cached_archive_stories(
 
     try:
         cache_files = sorted(
-            CACHE_PATH.glob("*.json"), 
-            key=lambda p: p.stat().st_mtime, 
-            reverse=True
+            CACHE_PATH.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True
         )
         for p in cache_files:
             try:
@@ -562,9 +568,12 @@ def load_cached_archive_stories(
                     # Standard filters
                     if story.score <= ALGOLIA_MIN_POINTS:
                         continue
-                    if MIN_CANDIDATE_COMMENTS > 0 and (story.comment_count or 0) < MIN_CANDIDATE_COMMENTS:
+                    if (
+                        MIN_CANDIDATE_COMMENTS > 0
+                        and (story.comment_count or 0) < MIN_CANDIDATE_COMMENTS
+                    ):
                         continue
-                    
+
                     if exclude_urls and story.url:
                         norm_url = normalize_url(story.url)
                         if norm_url and norm_url in exclude_urls:
@@ -573,7 +582,7 @@ def load_cached_archive_stories(
                         norm_url = normalize_url(story.url)
                         if norm_url and norm_url in seen_urls:
                             continue
-                            
+
                     cached_in_window.append(story)
                     if len(cached_in_window) >= candidate_limit:
                         break
@@ -707,32 +716,38 @@ async def get_best_stories(
                     f"Fetching Algolia live window {ts_start}-{ts_end} "
                     f"(target={win_target})."
                 )
-                fetch_count = ALGOLIA_MAX_PER_QUERY
-
                 filters = build_candidate_filters(ts_start, ts_end)
+                page_ids = list(cached_ids) if cached_ids else []
+                page = 0
 
-                params: dict[str, str | int] = {
-                    "tags": "story",
-                    "numericFilters": ",".join(filters),
-                    "hitsPerPage": fetch_count,
-                }
-                resp: httpx.Response = await client.get(
-                    f"{ALGOLIA_BASE}/search", params=params
-                )
-                if resp.status_code != 200 or not resp.content:
-                    # Fallback to whatever we had in cache if API fails
-                    if cached_ids:
-                        page_ids = cached_ids
-                    continue
-                try:
-                    data = cast(AlgoliaSearchResponse, resp.json())
-                    page_hits = data.get("hits", [])
-                    page_ids = [int(h["objectID"]) for h in page_hits]
-                    save_cached_candidates(cache_key, page_ids)
-                except Exception:
-                    if cached_ids:
-                        page_ids = cached_ids
-                    continue
+                while len(page_ids) < win_target:
+                    params: dict[str, str | int] = {
+                        "tags": "story",
+                        "numericFilters": ",".join(filters),
+                        "hitsPerPage": ALGOLIA_MAX_PER_QUERY,
+                        "page": page,
+                    }
+                    resp: httpx.Response = await client.get(
+                        f"{ALGOLIA_BASE}/search", params=params
+                    )
+                    if resp.status_code != 200 or not resp.content:
+                        break
+                    try:
+                        data = cast(AlgoliaSearchResponse, resp.json())
+                        page_hits = data.get("hits", [])
+                        if not page_hits:
+                            break
+                        for h in page_hits:
+                            oid = int(h["objectID"])
+                            if oid not in page_ids:
+                                page_ids.append(oid)
+                        page += 1
+                        if len(page_hits) < ALGOLIA_MAX_PER_QUERY:
+                            break
+                    except Exception:
+                        break
+
+                save_cached_candidates(cache_key, page_ids)
 
             # Take only the required slice from this window
             window_hits = 0

@@ -8,33 +8,27 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Self
 
+
 @dataclass(frozen=True)
 class RankingConfig:
     """Weights and limits for the ranking engine."""
-    negative_weight: float = 0.5529047831
-    diversity_lambda: float = 0.2396634418
-    diversity_lambda_classifier: float = 0.30
+
     max_results: int = 500
+
 
 @dataclass(frozen=True)
 class SemanticConfig:
     """Semantic scoring and k-NN parameters."""
+
     knn_neighbors: int = 6
     match_threshold: float = 0.85
+
 
 @dataclass(frozen=True)
 class ClassifierConfig:
     """Classifier training and feature parameters."""
-    scoring_mode: str = "pairwise_logistic"
-    feature_mode: str = "bottleneck"
-    pairwise_negatives: int = 15
-    pairwise_c: float = 1.4700450168
+
     k_feat: int = 7
-    use_balanced_class_weight: bool = False
-    cv_scoring: str = "f1"
-    use_local_hidden_penalty: bool = False
-    local_hidden_penalty_weight: float = 0.0
-    local_hidden_penalty_k: int = 3
     use_centroid_feature: bool = True
     use_pos_knn_feature: bool = True
     use_neg_knn_feature: bool = True
@@ -62,31 +56,32 @@ class ClassifierConfig:
     use_knn_neg_n3_feature: bool = False
     use_knn_neg_n5_feature: bool = False
     use_knn_neg_n10_feature: bool = False
+    # When True, raw embedding vectors are included as features for the SVM.
+    # When False, only derived similarity features and metadata are used.
+    use_raw_embedding_features: bool = True
     # Minimum labeled examples on each side required to activate the model path.
     min_positive_examples: int = 5
     min_negative_examples: int = 5
 
+
 @dataclass(frozen=True)
 class ClusteringConfig:
     """Multi-interest clustering parameters."""
-    algorithm: str = "agglomerative"
-    linkage: str = "ward"
-    metric: str = "euclidean"
-    distance_threshold: float = 1.3282321556
-    similarity_threshold: float = 0.93
+
+    similarity_threshold: float = 0.55
     outlier_similarity_threshold: float = 0.0
     min_samples_per_cluster: int = 1
     max_cluster_fraction: float = 0.25
     max_cluster_size: int = 40
     refine_iters: int = 2
-    default_count: int = 30
     min_clusters: int = 2
     max_clusters: int = 40
-    spectral_neighbors: int = 15
+
 
 @dataclass(frozen=True)
 class LLMConfig:
     """LLM provider and model settings."""
+
     provider: str = "mistral"
     cluster_name_model_primary: str = "llama-3.3-70b-versatile"
     cluster_name_model_fallback: str = "llama-3.1-8b-instant"
@@ -96,45 +91,42 @@ class LLMConfig:
     tldr_batch_size: int = 3
     max_total_seconds: float = 600.0
 
+
 @dataclass(frozen=True)
 class ArchiveConfig:
     """Historical HN archive fetching parameters."""
+
     open_index_enabled: bool = False
     use_cached_stories: bool = True
     open_index_candidate_limit: int = 50
-    bigquery_enabled: bool | None = None
-    bigquery_candidate_limit: int | None = None
 
-    def __post_init__(self) -> None:
-        # Backward-compatible aliases for existing TOML/CLI usage.
-        if self.bigquery_enabled is not None and self.bigquery_enabled:
-            object.__setattr__(self, "open_index_enabled", True)
-        if self.bigquery_candidate_limit is not None:
-            object.__setattr__(
-                self, "open_index_candidate_limit", self.bigquery_candidate_limit
-            )
 
 @dataclass(frozen=True)
 class SingleModelConfig:
     """Feedback-trained runtime ranking model parameters."""
+
     min_positive_labels: int = 10
     min_negative_labels: int = 10
     balance_training_labels: bool = True
-    model_type: str = "svm"  # Options: logistic, random_forest, gradient_boosting, svm, mlp
+    model_type: str = (
+        "svm"  # Options: logistic, random_forest, gradient_boosting, svm, mlp
+    )
     svm_kernel: str = "rbf"  # Options: linear, poly, rbf, sigmoid
     svm_c: float = 3.0
     svm_gamma: str | float = "scale"  # "scale", "auto", or a numeric gamma value
 
+
 @dataclass(frozen=True)
 class AppConfig:
     """Root configuration object."""
-    username: str = field(default_factory=lambda: os.getlogin() if os.name != "nt" else "user")
+
+    username: str = field(
+        default_factory=lambda: os.getlogin() if os.name != "nt" else "user"
+    )
     output_path: Path = Path("public/index.html")
     days: int = 30
     count: int = 40
     candidates: int = 2000
-    signals: int = 2000
-    contrastive: bool = False
     no_rss: bool = False
     no_tldr: bool = False
     no_naming: bool = False
@@ -168,6 +160,7 @@ class AppConfig:
         # fields (e.g. adaptive_hn, freshness) don't cause TypeError on load.
         def _safe_section(name: str, cls_: type) -> dict[str, Any]:
             import dataclasses
+
             known = {f.name for f in dataclasses.fields(cls_)}
             return {k: v for k, v in _get_section(name).items() if k in known}
 
@@ -178,7 +171,9 @@ class AppConfig:
         clustering = ClusteringConfig(**_safe_section("clustering", ClusteringConfig))
         llm = LLMConfig(**_safe_section("llm", LLMConfig))
         archive = ArchiveConfig(**_safe_section("archive", ArchiveConfig))
-        single_model = SingleModelConfig(**_safe_section("single_model", SingleModelConfig))
+        single_model = SingleModelConfig(
+            **_safe_section("single_model", SingleModelConfig)
+        )
 
         def _get_root(key: str, default: Any) -> Any:
             val = overrides.get(key)
@@ -195,8 +190,6 @@ class AppConfig:
             days=int(_get_root("days", 30)),
             count=int(_get_root("count", 40)),
             candidates=int(_get_root("candidates", 2000)),
-            signals=int(_get_root("signals", 2000)),
-            contrastive=bool(_get_root("contrastive", False)),
             no_rss=bool(_get_root("no_rss", False)),
             no_tldr=bool(_get_root("no_tldr", False)),
             no_naming=bool(_get_root("no_naming", False)),

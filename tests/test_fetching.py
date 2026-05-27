@@ -94,11 +94,9 @@ class TestExtractComments:
 async def test_get_best_stories_accepts_min_comment_length():
     """Ensure stories with comments exactly MIN_COMMENT_LENGTH are kept."""
     search_url = f"{ALGOLIA_BASE}/search"
-    respx.get(search_url).mock(
-        return_value=Response(
-            200,
-            json={"hits": [{"objectID": "42"}], "nbPages": 1},
-        )
+    respx.get(search_url).respond(
+        200,
+        json={"hits": [{"objectID": "42"}], "nbPages": 1},
     )
 
     min_length_text = "a" * MIN_COMMENT_LENGTH
@@ -633,7 +631,9 @@ async def test_get_best_stories_merges_algolia_live_and_open_index_archive(
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_get_best_stories_gracefully_handles_open_index_archive_failure(monkeypatch):
+async def test_get_best_stories_gracefully_handles_open_index_archive_failure(
+    monkeypatch,
+):
     respx.get(f"{ALGOLIA_BASE}/search").mock(
         return_value=Response(200, json={"hits": [{"objectID": "123"}]})
     )
@@ -683,7 +683,9 @@ async def test_get_best_stories_gracefully_handles_open_index_archive_failure(mo
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_get_best_stories_uses_cached_archive_without_archive_fetch(monkeypatch, tmp_path):
+async def test_get_best_stories_uses_cached_archive_without_archive_fetch(
+    monkeypatch, tmp_path
+):
     now_ts = 1800000000
     cached_story = Story(
         id=999,
@@ -714,7 +716,9 @@ async def test_get_best_stories_uses_cached_archive_without_archive_fetch(monkey
     monkeypatch.setattr("api.fetching.CACHE_PATH", tmp_path)
     monkeypatch.setattr(
         "api.fetching.fetch_open_index_archive_stories",
-        AsyncMock(side_effect=AssertionError("Archive fetch should not run by default")),
+        AsyncMock(
+            side_effect=AssertionError("Archive fetch should not run by default")
+        ),
     )
 
     config = AppConfig(days=10, no_rss=True)
@@ -761,8 +765,12 @@ async def test_get_best_stories_progress_completes_after_rss_content(monkeypatch
             )
         ]
 
-    monkeypatch.setattr("api.fetching.get_cached_candidates", lambda *args, **kwargs: None)
-    monkeypatch.setattr("api.fetching.save_cached_candidates", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "api.fetching.get_cached_candidates", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        "api.fetching.save_cached_candidates", lambda *args, **kwargs: None
+    )
     monkeypatch.setattr("api.fetching.fetch_rss_stories", fake_fetch_rss_stories)
 
     stories = await get_best_stories(

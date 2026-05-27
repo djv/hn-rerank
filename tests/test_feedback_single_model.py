@@ -11,7 +11,7 @@ from api.feedback_single_model import (
     score_feature_rows,
     train_single_model,
 )
-from api.learned_ranker import _make_pipeline
+from api.ordinal_model import _make_pipeline
 from api.models import Story
 from helpers import unit_rows
 
@@ -51,7 +51,10 @@ def test_feature_builder_includes_embeddings_and_derived_features_without_ce() -
             use_comments_count_feature=False,
         )
     )
-    stories = [_story(1, score=100, comment_count=5), _story(2, score=5, comment_count=1)]
+    stories = [
+        _story(1, score=100, comment_count=5),
+        _story(2, score=5, comment_count=1),
+    ]
     story_embeddings = unit_rows([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
     positive_embeddings = unit_rows([[1.0, 0.0, 0.0], [0.8, 0.2, 0.0]])
     negative_embeddings = unit_rows([[0.0, 1.0, 0.0]])
@@ -79,7 +82,9 @@ def test_feature_builder_includes_embeddings_and_derived_features_without_ce() -
     assert np.all(np.isfinite(batch.rows))
 
 
-def test_feedback_rows_do_not_require_rank_diagnostics_and_default_missing_metadata() -> None:
+def test_feedback_rows_do_not_require_rank_diagnostics_and_default_missing_metadata() -> (
+    None
+):
     records = {
         "a": FeedbackRecord(
             key="a",
@@ -145,7 +150,9 @@ def test_feedback_rows_do_not_require_rank_diagnostics_and_default_missing_metad
     assert np.all(np.isfinite(batch.rows))
 
 
-def test_single_model_scores_are_stable_and_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_single_model_scores_are_stable_and_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     config = AppConfig(
         classifier=ClassifierConfig(
             use_centroid_feature=True,
@@ -207,8 +214,12 @@ def test_single_model_scores_are_stable_and_bounded(monkeypatch: pytest.MonkeyPa
 
     positive_stories = [_story(100, text="pos-a"), _story(101, text="pos-b")]
     negative_stories = [_story(200, text="neg-a"), _story(201, text="neg-b")]
-    positive_embeddings = fake_get_embeddings([story.text_content for story in positive_stories])
-    negative_embeddings = fake_get_embeddings([story.text_content for story in negative_stories])
+    positive_embeddings = fake_get_embeddings(
+        [story.text_content for story in positive_stories]
+    )
+    negative_embeddings = fake_get_embeddings(
+        [story.text_content for story in negative_stories]
+    )
 
     model, batch = train_single_model(
         labels_result.labels,
@@ -230,3 +241,86 @@ def test_svm_pipeline_uses_configured_kernel() -> None:
     pipeline = _make_pipeline(SingleModelConfig(model_type="svm", svm_kernel="linear"))
 
     assert pipeline.named_steps["model"].kernel == "linear"
+
+
+def test_feature_builder_without_raw_embeddings() -> None:
+    config = AppConfig(
+        classifier=ClassifierConfig(
+            use_raw_embedding_features=False,
+            use_centroid_feature=True,
+            use_pos_knn_feature=True,
+            use_neg_knn_feature=True,
+            use_title_len_feature=True,
+            use_text_len_feature=False,
+            use_has_url_feature=False,
+            use_github_feature=False,
+            use_pdf_feature=False,
+            use_comments_count_feature=True,
+        )
+    )
+    stories = [
+        _story(1),
+        _story(2),
+    ]
+    story_embeddings = unit_rows([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    positive_embeddings = unit_rows([[1.0, 0.0, 0.0]])
+    negative_embeddings = unit_rows([[0.0, 1.0, 0.0]])
+
+    batch = build_single_model_feature_batch(
+        stories,
+        story_embeddings,
+        positive_embeddings,
+        negative_embeddings,
+        config,
+        now=0.0,
+    )
+
+    assert batch.rows.shape == (2, 5)
+    assert not any(n.startswith("embedding_") for n in batch.feature_names)
+    assert "centroid_feature" in batch.feature_names
+    assert "pos_knn_feature" in batch.feature_names
+    assert "neg_knn_feature" in batch.feature_names
+    assert "title_len" in batch.feature_names
+    assert "comments_count" in batch.feature_names
+    assert batch.derived_feature_dim == 3
+    assert batch.metadata_feature_dim == 2
+    assert np.all(np.isfinite(batch.rows))
+
+
+def test_feature_builder_similarity_only() -> None:
+    config = AppConfig(
+        classifier=ClassifierConfig(
+            use_raw_embedding_features=False,
+            use_centroid_feature=True,
+            use_pos_knn_feature=True,
+            use_neg_knn_feature=True,
+            use_title_len_feature=False,
+            use_text_len_feature=False,
+            use_has_url_feature=False,
+            use_github_feature=False,
+            use_pdf_feature=False,
+            use_comments_count_feature=False,
+        )
+    )
+    stories = [
+        _story(1),
+        _story(2),
+    ]
+    story_embeddings = unit_rows([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    positive_embeddings = unit_rows([[1.0, 0.0, 0.0]])
+    negative_embeddings = unit_rows([[0.0, 1.0, 0.0]])
+
+    batch = build_single_model_feature_batch(
+        stories,
+        story_embeddings,
+        positive_embeddings,
+        negative_embeddings,
+        config,
+        now=0.0,
+    )
+
+    assert batch.rows.shape == (2, 3)
+    assert not any(n.startswith("embedding_") for n in batch.feature_names)
+    assert batch.derived_feature_dim == 3
+    assert batch.metadata_feature_dim == 0
+    assert np.all(np.isfinite(batch.rows))

@@ -33,11 +33,10 @@ _ensure_joblib_settings()
 from api.client import HNClient  # noqa: E402
 from api.feedback_single_model import (  # noqa: E402
     SingleModelLabeledStory,
-    train_single_model,
     train_single_model_from_embeddings,
 )
 from api.fetching import fetch_story, get_best_stories  # noqa: E402
-from api.learned_ranker import DOWNVOTE_LABEL, UPVOTE_LABEL  # noqa: E402
+from api.ordinal_model import DOWNVOTE_LABEL, UPVOTE_LABEL  # noqa: E402
 from api.models import RankResult, Story, StoryDict  # noqa: E402
 from api.rerank import get_embeddings, rank_stories  # noqa: E402
 from api.url_utils import normalize_url  # noqa: E402
@@ -226,80 +225,6 @@ def _summarize_rank_diagnostics(records: list[dict[str, object]]) -> dict[str, o
             max(
                 _as_float(record.get("local_hidden_penalty_max", 0.0))
                 for record in records
-            )
-        ),
-        "classifier_failure_reasons": failure_reasons,
-    }
-
-
-def _merge_rank_diagnostic_summaries(
-    summaries: list[dict[str, object]],
-) -> dict[str, object]:
-    if not summaries:
-        return {}
-
-    total_rank_calls = sum(
-        _as_int(summary.get("rank_calls", 0)) for summary in summaries
-    )
-    classifier_requested_count = sum(
-        _as_int(summary.get("classifier_requested_count", 0)) for summary in summaries
-    )
-    classifier_used_count = sum(
-        _as_int(summary.get("classifier_used_count", 0)) for summary in summaries
-    )
-    local_hidden_penalty_applied_count = sum(
-        _as_int(summary.get("local_hidden_penalty_applied_count", 0))
-        for summary in summaries
-    )
-    classifier_metadata_features_used_count = sum(
-        _as_int(summary.get("classifier_metadata_features_used_count", 0))
-        for summary in summaries
-    )
-
-    def _weighted_avg(key: str) -> float:
-        if total_rank_calls == 0:
-            return 0.0
-        weighted_total = sum(
-            _as_float(summary.get(key, 0.0)) * _as_int(summary.get("rank_calls", 0))
-            for summary in summaries
-        )
-        return float(weighted_total / total_rank_calls)
-
-    failure_reasons: dict[str, int] = {}
-    for summary in summaries:
-        reasons = summary.get("classifier_failure_reasons", {})
-        if not isinstance(reasons, dict):
-            continue
-        for reason, count in reasons.items():
-            failure_reasons[str(reason)] = failure_reasons.get(
-                str(reason), 0
-            ) + _as_int(count)
-
-    return {
-        "rank_calls": total_rank_calls,
-        "classifier_requested_count": classifier_requested_count,
-        "classifier_used_count": classifier_used_count,
-        "classifier_fallback_count": classifier_requested_count - classifier_used_count,
-        "classifier_used_rate": (
-            float(classifier_used_count / classifier_requested_count)
-            if classifier_requested_count
-            else 0.0
-        ),
-        "local_hidden_penalty_applied_count": local_hidden_penalty_applied_count,
-        "classifier_metadata_features_used_count": classifier_metadata_features_used_count,
-        "avg_positive_count": _weighted_avg("avg_positive_count"),
-        "avg_negative_count": _weighted_avg("avg_negative_count"),
-        "avg_base_feature_dim": _weighted_avg("avg_base_feature_dim"),
-        "avg_derived_feature_dim": _weighted_avg("avg_derived_feature_dim"),
-        "avg_classifier_metadata_feature_dim": _weighted_avg(
-            "avg_classifier_metadata_feature_dim"
-        ),
-        "avg_local_hidden_penalty_mean": _weighted_avg("avg_local_hidden_penalty_mean"),
-        "avg_local_hidden_penalty_max": _weighted_avg("avg_local_hidden_penalty_max"),
-        "max_local_hidden_penalty_max": float(
-            max(
-                _as_float(summary.get("max_local_hidden_penalty_max", 0.0))
-                for summary in summaries
             )
         ),
         "classifier_failure_reasons": failure_reasons,
@@ -529,7 +454,9 @@ def build_first_stage_ablation_config(config: AppConfig) -> AppConfig:
     return apply_evaluator_overrides(config, pure_semantic=True)
 
 
-def _metric_delta(current: dict[str, float], baseline: dict[str, float], key: str) -> float | None:
+def _metric_delta(
+    current: dict[str, float], baseline: dict[str, float], key: str
+) -> float | None:
     if key not in current or key not in baseline:
         return None
     return current[key] - baseline[key]
@@ -544,20 +471,17 @@ def _print_metric_deltas(
 ) -> None:
     print(f"{indent}Delta vs baseline")
     print(
-        f"{indent}MRR: "
-        f"{_metric_delta(candidate, baseline, 'mrr'):+.3f}"
+        f"{indent}MRR: {_metric_delta(candidate, baseline, 'mrr'):+.3f}"
         if _metric_delta(candidate, baseline, "mrr") is not None
         else f"{indent}MRR: n/a"
     )
     print(
-        f"{indent}Mean Rank: "
-        f"{_metric_delta(candidate, baseline, 'mean_rank'):+.1f}"
+        f"{indent}Mean Rank: {_metric_delta(candidate, baseline, 'mean_rank'):+.1f}"
         if _metric_delta(candidate, baseline, "mean_rank") is not None
         else f"{indent}Mean Rank: n/a"
     )
     print(
-        f"{indent}Median Rank: "
-        f"{_metric_delta(candidate, baseline, 'median_rank'):+.1f}"
+        f"{indent}Median Rank: {_metric_delta(candidate, baseline, 'median_rank'):+.1f}"
         if _metric_delta(candidate, baseline, "median_rank") is not None
         else f"{indent}Median Rank: n/a"
     )
@@ -693,11 +617,13 @@ class RankingEvaluator:
 
             # Fetch candidates (exclude both train and hidden story IDs)
             exclude_ids = {s.id for s in train_stories} | {s.id for s in neg_stories}
-            
+
             now_ts: int | None = None
             if age_matched and test_stories:
                 now_ts = max(s.time for s in test_stories)
-                print(f"Age-matched mode: fetching candidates relative to test story time ({now_ts})")
+                print(
+                    f"Age-matched mode: fetching candidates relative to test story time ({now_ts})"
+                )
 
             print(f"Fetching {candidate_count} candidates...")
             candidates = await get_best_stories(
@@ -708,7 +634,6 @@ class RankingEvaluator:
                 allow_stale=allow_stale,
                 now_ts=now_ts,
             )
-
 
             if not candidates:
                 print("No candidates fetched")
@@ -838,7 +763,9 @@ class RankingEvaluator:
         training_config = _evaluator_training_config(config)
         if dataset.neg_embeddings is not None and dataset.neg_embeddings.shape[0] > 0:
             model, _ = train_single_model_from_embeddings(
-                _training_labels_from_histories(dataset.train_stories, dataset.neg_stories),
+                _training_labels_from_histories(
+                    dataset.train_stories, dataset.neg_stories
+                ),
                 np.vstack(
                     [
                         dataset.train_embeddings,
@@ -945,7 +872,10 @@ class RankingEvaluator:
                 {} if diagnostics_summary is not None else None
             )
             training_config = _evaluator_training_config(config)
-            if dataset.neg_embeddings is not None and dataset.neg_embeddings.shape[0] > 0:
+            if (
+                dataset.neg_embeddings is not None
+                and dataset.neg_embeddings.shape[0] > 0
+            ):
                 model, _ = train_single_model_from_embeddings(
                     _training_labels_from_histories(
                         [all_stories[i] for i in train_idx],
@@ -1180,22 +1110,27 @@ async def main():
         count=args.count,
         candidates=args.candidates,
     )
-    
+
     # Apply CLI overrides to nested config objects.
     ranking_overrides = {}
     if args.diversity is not None:
         ranking_overrides["diversity_lambda"] = args.diversity
     if args.neg_weight is not None:
         ranking_overrides["negative_weight"] = args.neg_weight
-        
+
     if ranking_overrides:
         config = replace(config, ranking=replace(config.ranking, **ranking_overrides))
-        
+
     if args.knn is not None:
-        config = replace(config, semantic=replace(config.semantic, knn_neighbors=args.knn))
+        config = replace(
+            config, semantic=replace(config.semantic, knn_neighbors=args.knn)
+        )
 
     if args.model_type is not None:
-        config = replace(config, single_model=replace(config.single_model, model_type=args.model_type))
+        config = replace(
+            config,
+            single_model=replace(config.single_model, model_type=args.model_type),
+        )
     if args.svm_kernel is not None:
         config = replace(
             config,
@@ -1247,13 +1182,14 @@ async def main():
         print("\nGenerating cluster keywords via LLM...")
         from api import llm_utils
         from api.rerank import get_embeddings
-        
+
         # We need to cluster the training stories to get keywords
         train_emb = get_embeddings([s.text_content for s in dataset.train_stories])
         # Use same logic as production clustering
         from api.rerank import cluster_interests_with_labels
+
         _, labels = cluster_interests_with_labels(train_emb, config.clustering)
-        
+
         # Map back to story objects for naming
         clusters_dict = {}
         for i, cid_raw in enumerate(labels):
@@ -1262,7 +1198,7 @@ async def main():
                 clusters_dict[cid] = []
             story = dataset.train_stories[i]
             clusters_dict[cid].append((story.to_dict(), 1.0))
-            
+
         cluster_profiles = await llm_utils.generate_batch_cluster_names(clusters_dict)
         cluster_keywords = {cid: p["keywords"] for cid, p in cluster_profiles.items()}
         print(f"Generated keywords for {len(cluster_keywords)} clusters.")
@@ -1343,7 +1279,11 @@ async def main():
 
     # Just re-run ranking to get the results object for the verbose output
     # (The evaluate method only returns metrics)
-    result_config = build_first_stage_ablation_config(config) if args.compare_first_stage else config
+    result_config = (
+        build_first_stage_ablation_config(config)
+        if args.compare_first_stage
+        else config
+    )
     training_config = _evaluator_training_config(result_config)
     if dataset.neg_embeddings is not None and dataset.neg_embeddings.shape[0] > 0:
         result_model, _ = train_single_model_from_embeddings(
@@ -1394,7 +1334,7 @@ async def main():
     for i, result in enumerate(ranked_results):
         sid = dataset.candidates[result.index].id
         if sid in dataset.test_ids:
-            print(f"  #{i + 1}: story {sid} (score: {result.hybrid_score:.3f})")
+            print(f"  #{i + 1}: story {sid} (score: {result.model_score:.3f})")
 
 
 if __name__ == "__main__":

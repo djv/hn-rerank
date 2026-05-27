@@ -69,7 +69,9 @@ def test_snapshot_round_trip_recomputes_embeddings(tmp_path):
 
 def test_load_snapshot_rejects_missing_story_sets(tmp_path):
     snapshot_path = tmp_path / "broken.json"
-    snapshot_path.write_text('{"format_version": 1, "username": "u", "train_stories": [], "test_stories": [], "neg_stories": [], "candidates": []}')
+    snapshot_path.write_text(
+        '{"format_version": 1, "username": "u", "train_stories": [], "test_stories": [], "neg_stories": [], "candidates": []}'
+    )
 
     evaluator = RankingEvaluator("u")
     assert evaluator.load_snapshot(snapshot_path) is False
@@ -103,9 +105,27 @@ def test_finalize_ranked_results_applies_render_dedup_without_refill():
         ),
     ]
     results = [
-        RankResult(index=0, hybrid_score=0.9, best_fav_index=-1, max_sim_score=0.0, knn_score=0.0),
-        RankResult(index=1, hybrid_score=0.8, best_fav_index=-1, max_sim_score=0.0, knn_score=0.0),
-        RankResult(index=2, hybrid_score=0.7, best_fav_index=-1, max_sim_score=0.0, knn_score=0.0),
+        RankResult(
+            index=0,
+            model_score=0.9,
+            best_fav_index=-1,
+            max_sim_score=0.0,
+            knn_score=0.0,
+        ),
+        RankResult(
+            index=1,
+            model_score=0.8,
+            best_fav_index=-1,
+            max_sim_score=0.0,
+            knn_score=0.0,
+        ),
+        RankResult(
+            index=2,
+            model_score=0.7,
+            best_fav_index=-1,
+            max_sim_score=0.0,
+            knn_score=0.0,
+        ),
     ]
 
     finalized = _finalize_ranked_results(results, candidates, count=3)
@@ -141,9 +161,27 @@ def test_finalize_ranked_results_keeps_distinct_query_identified_urls():
         ),
     ]
     results = [
-        RankResult(index=0, hybrid_score=0.9, best_fav_index=-1, max_sim_score=0.0, knn_score=0.0),
-        RankResult(index=1, hybrid_score=0.8, best_fav_index=-1, max_sim_score=0.0, knn_score=0.0),
-        RankResult(index=2, hybrid_score=0.7, best_fav_index=-1, max_sim_score=0.0, knn_score=0.0),
+        RankResult(
+            index=0,
+            model_score=0.9,
+            best_fav_index=-1,
+            max_sim_score=0.0,
+            knn_score=0.0,
+        ),
+        RankResult(
+            index=1,
+            model_score=0.8,
+            best_fav_index=-1,
+            max_sim_score=0.0,
+            knn_score=0.0,
+        ),
+        RankResult(
+            index=2,
+            model_score=0.7,
+            best_fav_index=-1,
+            max_sim_score=0.0,
+            knn_score=0.0,
+        ),
     ]
 
     finalized = _finalize_ranked_results(results, candidates, count=3)
@@ -168,14 +206,35 @@ def test_evaluate_can_score_final_displayed_list():
     )
 
     ranked = [
-        RankResult(index=0, hybrid_score=0.9, best_fav_index=-1, max_sim_score=0.0, knn_score=0.0),
-        RankResult(index=1, hybrid_score=0.8, best_fav_index=-1, max_sim_score=0.0, knn_score=0.0),
-        RankResult(index=2, hybrid_score=0.7, best_fav_index=-1, max_sim_score=0.0, knn_score=0.0),
+        RankResult(
+            index=0,
+            model_score=0.9,
+            best_fav_index=-1,
+            max_sim_score=0.0,
+            knn_score=0.0,
+        ),
+        RankResult(
+            index=1,
+            model_score=0.8,
+            best_fav_index=-1,
+            max_sim_score=0.0,
+            knn_score=0.0,
+        ),
+        RankResult(
+            index=2,
+            model_score=0.7,
+            best_fav_index=-1,
+            max_sim_score=0.0,
+            knn_score=0.0,
+        ),
     ]
 
     with (
         patch("evaluate_quality.rank_stories", return_value=ranked),
-        patch("evaluate_quality._finalize_ranked_results", return_value=[ranked[2], ranked[0]]),
+        patch(
+            "evaluate_quality._finalize_ranked_results",
+            return_value=[ranked[2], ranked[0]],
+        ),
     ):
         metrics = evaluator.evaluate(k_metrics=[1, 2], final_list_count=2)
 
@@ -217,14 +276,41 @@ def test_evaluate_cv_populates_diagnostics_summary():
                 }
             )
         return [
-            RankResult(index=0, hybrid_score=0.9, best_fav_index=-1, max_sim_score=0.0, knn_score=0.0),
-            RankResult(index=1, hybrid_score=0.8, best_fav_index=-1, max_sim_score=0.0, knn_score=0.0),
-            RankResult(index=2, hybrid_score=0.7, best_fav_index=-1, max_sim_score=0.0, knn_score=0.0),
-            RankResult(index=3, hybrid_score=0.6, best_fav_index=-1, max_sim_score=0.0, knn_score=0.0),
+            RankResult(
+                index=0,
+                model_score=0.9,
+                best_fav_index=-1,
+                max_sim_score=0.0,
+                knn_score=0.0,
+            ),
+            RankResult(
+                index=1,
+                model_score=0.8,
+                best_fav_index=-1,
+                max_sim_score=0.0,
+                knn_score=0.0,
+            ),
+            RankResult(
+                index=2,
+                model_score=0.7,
+                best_fav_index=-1,
+                max_sim_score=0.0,
+                knn_score=0.0,
+            ),
+            RankResult(
+                index=3,
+                model_score=0.6,
+                best_fav_index=-1,
+                max_sim_score=0.0,
+                knn_score=0.0,
+            ),
         ]
 
     diagnostics_summary: dict[str, object] = {}
-    with patch("evaluate_quality.get_embeddings", return_value=np.ones((6, 3), dtype=np.float32)):
+    with patch(
+        "evaluate_quality.get_embeddings",
+        return_value=np.ones((6, 3), dtype=np.float32),
+    ):
         with patch("evaluate_quality.rank_stories", side_effect=_fake_rank_stories):
             evaluator.evaluate_cv(
                 n_folds=2,

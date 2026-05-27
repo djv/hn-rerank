@@ -65,26 +65,15 @@ Common causes:
 
 ## 4. "Why does `scores_debug.json` disagree with `index.html`?"
 
-First suspect:
-
-- `generate_html.py::filter_top_ranked_hn_dupes`
-
-Current behavior:
-
-- selection happens first
-- dupe filter happens afterward
-- there is no refill
-
-Result:
-
-- `scores_debug.json` can show 40 selected stories
-- `index.html` can render fewer cards
+The debug file reflects the ranked pool before source-diversity selection.
+`index.html` applies the final selection policy (2:1 HN:RSS target, external
+caps). If counts mismatch, check `select_ranked_results`.
 
 ## 5. "Why only 39 cards instead of 40?"
 
 Current most likely cause:
 
-- post-selection dupe filtering removed at least one HN submission
+- the selection policy could not find enough sources to fill the count
 
 Verify:
 

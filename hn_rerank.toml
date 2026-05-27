@@ -2,7 +2,6 @@
 username = "pure_coder"
 output = "public/index.html"
 days = 30
-clusters = 30
 count = 40
 no_rss = false
 no_tldr = false
@@ -13,24 +12,11 @@ provider = "mistral"
 
 # Current runtime ranking config
 
-[hn_rerank.ranking]
-negative_weight = 0.6
-max_results = 500
-
 [hn_rerank.semantic]
 knn_neighbors = 5
 
 [hn_rerank.classifier]
-scoring_mode = "pairwise_logistic"
-feature_mode = "bottleneck"
-pairwise_negatives = 15
-pairwise_c = 1.4700450168
 k_feat = 12
-use_balanced_class_weight = false
-cv_scoring = "f1"
-use_local_hidden_penalty = false
-local_hidden_penalty_weight = 0.0
-local_hidden_penalty_k = 3
 use_neg_knn_feature = true
 use_log_points_feature = true
 use_log_comments_feature = true
@@ -45,11 +31,7 @@ use_closest_pos_feature = true
 use_closest_neg_feature = true
 
 [hn_rerank.clustering]
-algorithm = "agglomerative"
-linkage = "ward"
-metric = "euclidean"
-distance_threshold = 1.3282321556
-similarity_threshold = 0.75
+similarity_threshold = 0.55
 outlier_similarity_threshold = 0.0
 min_samples_per_cluster = 1
 max_cluster_fraction = 0.25
@@ -59,7 +41,7 @@ refine_iters = 2
 [hn_rerank.archive]
 open_index_enabled = true
 use_cached_stories = true
-open_index_candidate_limit = 50
+open_index_candidate_limit = 500
 
 [hn_rerank.single_model]
 min_positive_labels = 10

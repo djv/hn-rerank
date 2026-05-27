@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -11,6 +11,7 @@ from api.rerank import rank_stories
 from api.config import AppConfig, SemanticConfig
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent))
 from helpers import unit_rows
 
@@ -40,8 +41,12 @@ def test_semantic_blend_uses_cluster_max_and_knn_components(
     )
     with (
         patch("api.rerank.get_embeddings", return_value=cand_emb),
-        patch("api.rerank.cluster_interests", return_value=centroids),
+        patch("api.rerank.cluster_interests_with_labels") as mock_cluster,
     ):
+        mock_cluster.return_value = (
+            centroids,
+            np.array([0, 0, 1, 1], dtype=np.int32),
+        )
         results = rank_stories(
             stories,
             positive_embeddings=pos_emb,
@@ -51,9 +56,9 @@ def test_semantic_blend_uses_cluster_max_and_knn_components(
     by_index = {result.index: result for result in results}
     assert by_index[0].max_cluster_score == pytest.approx(1.0)
     assert by_index[0].knn_score == pytest.approx(1.0)
-    assert by_index[0].semantic_score == pytest.approx(1.0)
+    assert by_index[0].model_score == pytest.approx(1.0)
 
-    assert by_index[1].semantic_score == pytest.approx(1.0)
+    assert by_index[1].model_score == pytest.approx(1.0)
 
 
 def test_pure_cluster_max_weight_ignores_diagnostic_knn_score(
@@ -76,8 +81,12 @@ def test_pure_cluster_max_weight_ignores_diagnostic_knn_score(
     )
     with (
         patch("api.rerank.get_embeddings", return_value=cand_emb),
-        patch("api.rerank.cluster_interests", return_value=centroids),
+        patch("api.rerank.cluster_interests_with_labels") as mock_cluster,
     ):
+        mock_cluster.return_value = (
+            centroids,
+            np.array([0, 0, 1, 1], dtype=np.int32),
+        )
         results = rank_stories(
             stories,
             positive_embeddings=pos_emb,
@@ -85,8 +94,8 @@ def test_pure_cluster_max_weight_ignores_diagnostic_knn_score(
         )
 
     by_index = {result.index: result for result in results}
-    assert by_index[0].semantic_score == pytest.approx(1.0)
-    assert by_index[1].semantic_score == pytest.approx(1.0)
+    assert by_index[0].model_score == pytest.approx(1.0)
+    assert by_index[1].model_score == pytest.approx(1.0)
     assert by_index[1].knn_score == pytest.approx(0.0)
 
 
@@ -123,23 +132,16 @@ def test_max_cluster_score_populated_in_classifier_path(
 
     with (
         patch("api.rerank.get_embeddings", return_value=cand_emb),
-        patch("api.rerank.LogisticRegressionCV") as mock_lr_class,
         patch("api.rerank.cluster_interests_with_labels") as mock_cluster,
     ):
         mock_cluster.return_value = (
             centroids,
             np.array([0, 0, 0, 1, 1], dtype=np.int32),
         )
-        mock_clf = MagicMock()
-        mock_lr_class.return_value = mock_clf
-        mock_clf.predict_proba.return_value = np.array(
-            [[0.3, 0.7], [0.3, 0.7], [0.3, 0.7]], dtype=np.float32
-        )
 
         from api.config import ClassifierConfig
-        config = AppConfig(
-            classifier=ClassifierConfig(scoring_mode="logistic_cv", feature_mode="full")
-        )
+
+        config = AppConfig(classifier=ClassifierConfig(use_raw_embedding_features=True))
         results = rank_stories(stories, pos_emb, neg_emb, config=config)
 
     by_index = {result.index: result for result in results}
@@ -159,8 +161,12 @@ def test_max_cluster_score_populated_in_heuristic_path(
     config = AppConfig()
     with (
         patch("api.rerank.get_embeddings", return_value=cand_emb),
-        patch("api.rerank.cluster_interests", return_value=centroids),
+        patch("api.rerank.cluster_interests_with_labels") as mock_cluster,
     ):
+        mock_cluster.return_value = (
+            centroids,
+            np.array([0, 1], dtype=np.int32),
+        )
         results = rank_stories(
             stories,
             pos_emb,

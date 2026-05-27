@@ -256,7 +256,9 @@ def _is_allowed_feed_language(language: str | None) -> bool:
     return language in RSS_ALLOWED_SOURCE_LANGUAGES
 
 
-def _feed_language_sample(parsed: feedparser.FeedParserDict, max_entries: int = 5) -> str:
+def _feed_language_sample(
+    parsed: feedparser.FeedParserDict, max_entries: int = 5
+) -> str:
     parts: list[str] = []
     feed_meta = getattr(parsed, "feed", {})
     for key in ("title", "subtitle", "description", "info"):
@@ -290,7 +292,9 @@ def _detect_parsed_feed_language(parsed: feedparser.FeedParserDict) -> str | Non
         return None
 
 
-def _extract_score(entry: feedparser.FeedParserDict, source: StorySource, summary_text: str) -> int:
+def _extract_score(
+    entry: feedparser.FeedParserDict, source: StorySource, summary_text: str
+) -> int:
     """Extract story score/points from various RSS metadata sources."""
     # 1. Direct attribute check (some feed types or custom parser results)
     # Reddit RSS often has reddit_score via feedparser if using the right namespace
@@ -323,7 +327,9 @@ def _extract_score(entry: feedparser.FeedParserDict, source: StorySource, summar
     return 0
 
 
-def _extract_comment_count(entry: feedparser.FeedParserDict, source: StorySource) -> int | None:
+def _extract_comment_count(
+    entry: feedparser.FeedParserDict, source: StorySource
+) -> int | None:
     if source != "slashdot":
         return None
 
@@ -346,7 +352,9 @@ def _parse_feed(
 ) -> tuple[str | None, list[Story]]:
     parsed = feedparser.parse(feed_xml)
     if parsed.bozo and not parsed.entries:
-        logger.warning(f"Failed to parse feed XML for {feed_url}: {parsed.bozo_exception}")
+        logger.warning(
+            f"Failed to parse feed XML for {feed_url}: {parsed.bozo_exception}"
+        )
         return None, []
 
     feed_language = _detect_parsed_feed_language(parsed)
@@ -523,9 +531,9 @@ async def fetch_rss_stories(
                     feed_language, cached_stories = cached
                     if not _is_allowed_feed_language(feed_language):
                         continue
-                    candidates = [
-                        s for s in cached_stories if s.time >= min_ts
-                    ][:item_limit]
+                    candidates = [s for s in cached_stories if s.time >= min_ts][
+                        :item_limit
+                    ]
                 else:
                     try:
                         resp = await client.get(feed_url)
@@ -580,6 +588,7 @@ async def fetch_rss_stories(
             story for story in stories if not _preserves_feed_text_content(story.source)
         ]
         if fetch_full_content and stories_for_full_content:
+
             def content_progress(curr: int, total: int) -> None:
                 if progress_callback:
                     progress_callback(

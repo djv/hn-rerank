@@ -3,7 +3,6 @@ Constants and configuration values for HN reranking.
 Loads overrides from hn_rerank.toml if present.
 """
 
-
 from dotenv import load_dotenv
 
 # Load .env file if present
@@ -16,7 +15,7 @@ _config = AppConfig.load()
 
 
 # Content Limits
-ARTICLE_SNIPPET_LENGTH = 1000
+ARTICLE_SNIPPET_LENGTH = 1500
 TEXT_CONTENT_MAX_TOKENS = 512
 
 # Cache Paths
@@ -75,52 +74,14 @@ RSS_ALLOWED_SOURCE_LANGUAGES = ("en", "fr", "es")
 DEFAULT_EMBEDDING_BATCH_SIZE = 8
 EMBEDDING_MIN_CLIP = 1e-9
 # BGE-small CLS/query was selected by the local model bakeoff.
-EMBEDDING_MODEL_VERSION = "bge-small-cls-query-all-2026-04-30"
-CLUSTER_EMBEDDING_MODEL_VERSION = "bge-small-cls-query-all-2026-04-30"
+EMBEDDING_MODEL_VERSION = "all-MiniLM-L6-v2-2026-05-26"
+CLUSTER_EMBEDDING_MODEL_VERSION = "all-MiniLM-L6-v2-2026-05-26"
 CLUSTER_EMBEDDING_MODEL_DIR = "onnx_model"
 
 # Similarity Bounds
 SIMILARITY_MIN = -1.0
-SEMANTIC_MATCH_THRESHOLD = 0.85
-KNN_NEIGHBORS = _config.semantic.knn_neighbors
 
 # Multi-Interest Clustering
-DEFAULT_CLUSTER_COUNT = 30
-MIN_CLUSTERS = 2
-MAX_CLUSTERS = 40
-MIN_SAMPLES_PER_CLUSTER = _config.clustering.min_samples_per_cluster
-MAX_CLUSTER_FRACTION = _config.clustering.max_cluster_fraction
-MAX_CLUSTER_SIZE = _config.clustering.max_cluster_size
-CLUSTER_REFINE_ITERS = _config.clustering.refine_iters
-CLUSTER_SIMILARITY_THRESHOLD = _config.clustering.similarity_threshold
-CLUSTER_OUTLIER_SIMILARITY_THRESHOLD = _config.clustering.outlier_similarity_threshold
-
-# Ranking Weights
-RANKING_NEGATIVE_WEIGHT = _config.ranking.negative_weight
-RANKING_DIVERSITY_LAMBDA = _config.ranking.diversity_lambda
-RANKING_MAX_RESULTS = _config.ranking.max_results
-
-# Classifier Tuning
-CLASSIFIER_SCORING_MODE = _config.classifier.scoring_mode
-CLASSIFIER_FEATURE_MODE = _config.classifier.feature_mode
-CLASSIFIER_PAIRWISE_NEGATIVES = _config.classifier.pairwise_negatives
-CLASSIFIER_PAIRWISE_C = _config.classifier.pairwise_c
-CLASSIFIER_K_FEAT = _config.classifier.k_feat
-CLASSIFIER_USE_BALANCED_CLASS_WEIGHT = _config.classifier.use_balanced_class_weight
-CLASSIFIER_CV_SCORING = _config.classifier.cv_scoring
-CLASSIFIER_USE_CENTROID_FEATURE = _config.classifier.use_centroid_feature
-CLASSIFIER_USE_POS_KNN_FEATURE = _config.classifier.use_pos_knn_feature
-CLASSIFIER_USE_NEG_KNN_FEATURE = _config.classifier.use_neg_knn_feature
-CLASSIFIER_USE_LOG_POINTS_FEATURE = _config.classifier.use_log_points_feature
-CLASSIFIER_USE_LOG_COMMENTS_FEATURE = _config.classifier.use_log_comments_feature
-CLASSIFIER_USE_COMMENT_RATIO_FEATURE = _config.classifier.use_comment_ratio_feature
-
-# Clustering
-CLUSTER_ALGORITHM = _config.clustering.algorithm
-CLUSTER_AGGLOMERATIVE_LINKAGE = _config.clustering.linkage
-CLUSTER_AGGLOMERATIVE_METRIC = _config.clustering.metric
-CLUSTER_AGGLOMERATIVE_THRESHOLD = _config.clustering.distance_threshold
-CLUSTER_SPECTRAL_NEIGHBORS = _config.clustering.spectral_neighbors
 
 # Comment Pool
 MIN_STORY_COMMENTS = 20  # Historical threshold kept for tests/tuning context

@@ -5,13 +5,6 @@ from api.constants import CANDIDATE_CACHE_TTL_LONG, CANDIDATE_CACHE_TTL_SHORT
 from api.config import AppConfig, ArchiveConfig
 
 
-def test_archive_config_maps_bigquery_aliases_to_open_index():
-    config = ArchiveConfig(bigquery_enabled=True, bigquery_candidate_limit=17)
-
-    assert config.open_index_enabled is True
-    assert config.open_index_candidate_limit == 17
-
-
 @pytest.mark.asyncio
 async def test_live_window_candidate_cache_uses_short_and_long_ttls():
     with (

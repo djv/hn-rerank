@@ -7,23 +7,18 @@ from dataclasses import dataclass
 
 import numpy as np
 from numpy.typing import NDArray
-from sklearn.metrics import roc_auc_score
-from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.model_selection import StratifiedKFold
 
 from api.config import AppConfig, SingleModelConfig
 from api.feedback import FeedbackRecord
-from api.learned_ranker import (
+from api.ordinal_model import (
     ACTION_TO_ORDINAL,
     DOWNVOTE_LABEL,
-    NEUTRAL_LABEL,
     UPVOTE_LABEL,
     OrdinalThresholdModel,
-    ScoreMetrics,
     _predict_ordinal_outputs,
     train_model_from_matrix,
 )
-from api.models import RankResult, Story
+from api.models import Story
 from api.rerank import (
     _classifier_metadata_features,
     cluster_interests_with_labels,
@@ -110,7 +105,9 @@ def build_single_model_feedback_labels(
 
 
 def _feature_names(config: AppConfig, embedding_dim: int) -> tuple[str, ...]:
-    names = [f"embedding_{index}" for index in range(embedding_dim)]
+    names: list[str] = []
+    if config.classifier.use_raw_embedding_features:
+        names.extend(f"embedding_{index}" for index in range(embedding_dim))
     for feature_name, attr_name in DERIVED_FEATURE_FLAGS:
         if bool(getattr(config.classifier, attr_name, False)):
             names.append(feature_name)
@@ -166,7 +163,9 @@ def build_single_model_feature_batch(
         len(stories),
     )
 
-    columns = [story_embeddings.astype(np.float32)]
+    columns: list[NDArray[np.float32]] = []
+    if config.classifier.use_raw_embedding_features:
+        columns.append(story_embeddings.astype(np.float32))
     if derived_rows.shape[1] > 0:
         columns.append(derived_rows.astype(np.float32))
     if metadata_rows.shape[1] > 0:
@@ -258,179 +257,3 @@ def score_feature_rows(
 ) -> NDArray[np.float32]:
     utility, _, _, _ = _predict_ordinal_outputs(model, rows)
     return utility
-
-
-def score_feedback_labels_oof(
-    labels: list[SingleModelLabeledStory],
-    positive_embeddings: NDArray[np.float32] | None,
-    negative_embeddings: NDArray[np.float32] | None,
-    config: AppConfig,
-    training_config: SingleModelConfig,
-    *,
-    max_folds: int = 5,
-) -> tuple[list[float], SingleModelFeatureBatch]:
-    batch, y = build_single_model_training_matrix(
-        labels,
-        positive_embeddings,
-        negative_embeddings,
-        config,
-    )
-    positive_count = int(np.sum(y == UPVOTE_LABEL))
-    negative_count = int(np.sum(y == DOWNVOTE_LABEL))
-    fold_count = min(max_folds, positive_count, negative_count)
-    if fold_count < 2:
-        raise ValueError("need at least 2 upvote and 2 downvote labels for OOF scoring")
-
-    y_binary = np.asarray([item.legacy_binary_label for item in labels], dtype=np.int64)
-    scores = np.zeros(len(labels), dtype=np.float32)
-    splitter = StratifiedKFold(n_splits=fold_count, shuffle=True, random_state=0)
-    for train_indices, test_indices in splitter.split(np.zeros(len(labels)), y_binary):
-        model = train_model_from_matrix(
-            batch.rows[train_indices],
-            y[train_indices],
-            training_config,
-        )
-        fold_scores = score_feature_rows(model, batch.rows[test_indices])
-        scores[test_indices] = fold_scores
-    return scores.astype(float).tolist(), batch
-
-
-def _pairwise_accuracy(labels: list[int], scores: list[float]) -> float:
-    wins = 0.0
-    total_weight = 0.0
-    for left in range(len(labels)):
-        for right in range(left + 1, len(labels)):
-            if labels[left] == labels[right]:
-                continue
-            weight = float(abs(labels[left] - labels[right]))
-            total_weight += weight
-            if labels[left] > labels[right]:
-                higher, lower = left, right
-            else:
-                higher, lower = right, left
-            if scores[higher] > scores[lower]:
-                wins += weight
-            elif scores[higher] == scores[lower]:
-                wins += 0.5 * weight
-    return wins / total_weight if total_weight else 0.0
-
-
-def _precision_at(labels: list[int], scores: list[float], k: int) -> float:
-    if not labels:
-        return 0.0
-    limit = min(k, len(labels))
-    ordered = sorted(range(len(labels)), key=lambda i: scores[i], reverse=True)
-    return sum(1 for i in ordered[:limit] if labels[i] == UPVOTE_LABEL) / limit
-
-
-def _rate_at(labels: list[int], scores: list[float], k: int, target_label: int) -> float:
-    if not labels:
-        return 0.0
-    limit = min(k, len(labels))
-    ordered = sorted(range(len(labels)), key=lambda i: scores[i], reverse=True)
-    return sum(1 for i in ordered[:limit] if labels[i] == target_label) / limit
-
-
-def _top_sources(
-    labels: list[SingleModelLabeledStory],
-    scores: list[float],
-    k: int,
-) -> dict[str, int]:
-    ordered = sorted(range(len(labels)), key=lambda i: scores[i], reverse=True)
-    counts: dict[str, int] = {}
-    for index in ordered[: min(k, len(labels))]:
-        source = labels[index].story.source
-        counts[source] = counts.get(source, 0) + 1
-    return counts
-
-
-def _safe_auc(labels: list[int], scores: list[float]) -> float | None:
-    binary = [1 if label == UPVOTE_LABEL else 0 for label in labels]
-    if len(set(binary)) < 2:
-        return None
-    return float(roc_auc_score(binary, scores))
-
-
-def score_metrics_for_labels(
-    labels: list[SingleModelLabeledStory],
-    scores: list[float],
-) -> ScoreMetrics:
-    y = [item.label for item in labels]
-    return ScoreMetrics(
-        pairwise_accuracy=_pairwise_accuracy(y, scores),
-        precision_at_5=_precision_at(y, scores, 5),
-        precision_at_10=_precision_at(y, scores, 10),
-        neutral_rate_at_10=_rate_at(y, scores, 10, NEUTRAL_LABEL),
-        downvote_rate_at_10=_rate_at(y, scores, 10, DOWNVOTE_LABEL),
-        roc_auc=_safe_auc(y, scores),
-        top_sources=_top_sources(labels, scores, 10),
-    )
-
-
-def rank_stories_with_single_model(
-    stories: list[Story],
-    positive_stories: list[Story],
-    negative_stories: list[Story],
-    config: AppConfig,
-    model: OrdinalThresholdModel,
-) -> list[RankResult]:
-    if not stories:
-        return []
-
-    candidate_embeddings = get_embeddings([story.text_content for story in stories])
-    embedding_dim = int(candidate_embeddings.shape[1])
-    positive_embeddings = (
-        get_embeddings([story.text_content for story in positive_stories])
-        if positive_stories
-        else np.zeros((0, embedding_dim), dtype=np.float32)
-    )
-    negative_embeddings = (
-        get_embeddings([story.text_content for story in negative_stories])
-        if negative_stories
-        else np.zeros((0, embedding_dim), dtype=np.float32)
-    )
-    batch = build_single_model_feature_batch(
-        stories,
-        candidate_embeddings,
-        positive_embeddings,
-        negative_embeddings,
-        config,
-    )
-    utility = score_feature_rows(model, batch.rows)
-
-    if len(positive_embeddings) > 0:
-        pos_sim = cosine_similarity(candidate_embeddings, positive_embeddings)
-        best_fav_indices = np.argmax(pos_sim, axis=1).astype(np.int64)
-        max_sim_scores = np.max(pos_sim, axis=1).astype(np.float32)
-    else:
-        best_fav_indices = np.full(len(stories), -1, dtype=np.int64)
-        max_sim_scores = np.zeros(len(stories), dtype=np.float32)
-
-    if len(positive_embeddings) > 0:
-        centroids, _ = cluster_interests_with_labels(
-            positive_embeddings,
-            config=config.clustering,
-        )
-    else:
-        centroids = np.zeros((0, embedding_dim), dtype=np.float32)
-    derived = compute_classifier_similarity_features(
-        candidate_embeddings,
-        positive_embeddings,
-        negative_embeddings,
-        centroids,
-        config.classifier,
-    )
-
-    ranked_indices = np.argsort(-utility, kind="stable")
-    return [
-        RankResult(
-            index=int(candidate_index),
-            hybrid_score=float(utility[candidate_index]),
-            best_fav_index=int(best_fav_indices[candidate_index]),
-            max_sim_score=float(max_sim_scores[candidate_index]),
-            knn_score=float(derived["pos_knn_feature"][candidate_index]),
-            max_cluster_score=float(derived["centroid_feature"][candidate_index]),
-            semantic_score=float(utility[candidate_index]),
-        )
-        for candidate_index in ranked_indices
-    ]

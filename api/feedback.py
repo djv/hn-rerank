@@ -34,12 +34,9 @@ class FeedbackRecordDict(TypedDict):
     hn_mirror_status: FeedbackMirrorStatus
     hn_mirror_error: str | None
     updated_at: float
-    hybrid_score: NotRequired[float | None]
-    semantic_score: NotRequired[float | None]
     knn_score: NotRequired[float | None]
     max_sim_score: NotRequired[float | None]
     max_cluster_score: NotRequired[float | None]
-    cross_encoder_score: NotRequired[float | None]
 
 
 class FeedbackStoreFile(TypedDict):
@@ -128,11 +125,6 @@ class FeedbackRecord:
             source=self.source,
             comment_count=self.comment_count,
         )
-
-def _optional_float(value: object) -> float | None:
-    if isinstance(value, int | float):
-        return float(value)
-    return None
 
 
 def _optional_int(value: object) -> int | None:

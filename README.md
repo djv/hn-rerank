@@ -91,7 +91,7 @@ Outputs:
 6. Rank candidates with the feedback-trained single model when enough positive
    and negative signals exist, otherwise fall back to centroid-max semantic
    scoring.
-7. Select a diversified final list and then remove moderator-marked HN dupes.
+7. Select a diversified final list and then apply HN source deduplication.
 8. Render static HTML and optional debug JSON artifacts.
 
 ## HN Vector Archive Experiment
@@ -180,7 +180,6 @@ match_threshold = 0.85
 
 [hn_rerank.classifier]
 scoring_mode = "pairwise_logistic"
-feature_mode = "bottleneck"
 pairwise_negatives = 15
 k_feat = 7
 use_neg_knn_feature = true
@@ -196,16 +195,9 @@ use_pdf_feature = true
 use_comments_count_feature = true
 
 [hn_rerank.clustering]
-algorithm = "agglomerative"
-linkage = "ward"
-metric = "euclidean"
-distance_threshold = 1.32823
-similarity_threshold = 0.75
-outlier_similarity_threshold = 0.0
-min_samples_per_cluster = 1
-max_cluster_fraction = 0.25
-max_cluster_size = 40
-refine_iters = 2
+similarity_threshold = 0.55
+min_clusters = 2
+max_clusters = 40
 
 [hn_rerank.single_model]
 min_positive_labels = 10
@@ -224,8 +216,8 @@ Optional artifacts written next to the output HTML include:
 - `cluster_name_debug.json` via `--debug-clusters`
 
 The match badge shown in the UI is derived from `max_cluster_score`, not the
-active ordering score. `hybrid_score` and `semantic_score` remain the main
-score fields in debug output, alongside `knn_score`, `max_sim_score`, and
+active ordering score. `model_score` is the main
+score field in debug output, alongside `knn_score`, `max_sim_score`, and
 `max_cluster_score`. The old cross-encoder and learned-ranker debug fields are
 no longer emitted by the live runtime.
 

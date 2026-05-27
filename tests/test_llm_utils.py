@@ -52,11 +52,14 @@ def test_build_payload_max_tokens():
     ("raw", "expected"),
     [
         ("Software Engineering", "Software Engineering"),
-        ("Graph Neural Networks for Drug Discovery Pipelines", "Graph Neural Networks for Drug Discovery"),
+        (
+            "Graph Neural Networks for Drug Discovery Pipelines",
+            "Graph Neural Networks for Drug Discovery",
+        ),
         ("Research and", "Research"),
         ("", None),
         ("Bad\nName", None),
-        ("{\"name\": \"Bad\"}", None),
+        ('{"name": "Bad"}', None),
     ],
 )
 def test_finalize_cluster_name(raw: str, expected: str | None):
@@ -117,8 +120,9 @@ def test_build_tldr_prompt_requires_flat_json_strings():
         ]
     )
 
-    assert "Return a flat JSON object mapping each requested story ID string to a plain string summary." in prompt
-    assert "Do NOT return nested objects, arrays, or metadata fields." in prompt
-    assert '"12345": {' in prompt
-    assert '"summary": "Nested objects are not allowed."' in prompt
+    assert "Return ONLY valid flat JSON" in prompt
+    assert "every ID present exactly once" in prompt
     assert '"12345": "Tool X implements lock-free concurrency' in prompt
+    assert "Core claim or finding" in prompt
+    assert "Key mechanism or method" in prompt
+    assert "Tension, trade-off, or takeaway" in prompt

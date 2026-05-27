@@ -28,12 +28,11 @@ _ensure_joblib_settings()
 import numpy as np  # noqa: E402
 import onnxruntime as ort  # noqa: E402
 from numpy.typing import NDArray  # noqa: E402
-from sklearn.linear_model import LogisticRegression, LogisticRegressionCV  # noqa: E402
 from sklearn.metrics.pairwise import cosine_similarity  # noqa: E402
 
 if TYPE_CHECKING:
     from transformers import BatchEncoding, PreTrainedTokenizerBase
-    from api.learned_ranker import OrdinalThresholdModel
+    from api.ordinal_model import OrdinalThresholdModel
 
 from api.constants import (  # noqa: E402
     DEFAULT_EMBEDDING_BATCH_SIZE,
@@ -47,7 +46,6 @@ from api.constants import (  # noqa: E402
     SIMILARITY_MIN,
     TEXT_CONTENT_MAX_TOKENS,
 )
-from api.cache_utils import atomic_write_json, evict_old_cache_files  # noqa: E402
 from api.models import RankResult, Story, StoryDict  # noqa: E402
 from api.model_metadata import CURRENT_PRODUCTION_SPEC, load_model_spec  # noqa: E402
 from api.config import (  # noqa: E402
@@ -105,10 +103,10 @@ def _combine_classifier_features(
     knn_neg_n10: NDArray[np.float32] | None = None,
 ) -> NDArray[np.float32]:
     columns: list[NDArray[np.float32]] = []
-    
-    # In "full" mode, we include the original embeddings. 
-    # In "bottleneck" or "similarity_only" mode, we only use derived features.
-    if config.feature_mode == "full" and base_embeddings is not None:
+
+    # When use_raw_embedding_features is True, include the original embeddings.
+    # Otherwise, only use derived similarity features.
+    if config.use_raw_embedding_features and base_embeddings is not None:
         columns.append(base_embeddings)
 
     if config.use_centroid_feature:
@@ -119,29 +117,27 @@ def _combine_classifier_features(
         columns.append(neg_knn_feature.reshape(-1, 1))
 
     # Add new rich features if configured
-    if getattr(config, "use_closest_pos_feature", False) and closest_pos_feature is not None:
+    if config.use_closest_pos_feature and closest_pos_feature is not None:
         columns.append(closest_pos_feature.reshape(-1, 1))
-    if getattr(config, "use_closest_neg_feature", False) and closest_neg_feature is not None:
+    if config.use_closest_neg_feature and closest_neg_feature is not None:
         columns.append(closest_neg_feature.reshape(-1, 1))
-    if getattr(config, "use_closest_centroid_feature", False) and closest_centroid_feature is not None:
+    if config.use_closest_centroid_feature and closest_centroid_feature is not None:
         columns.append(closest_centroid_feature.reshape(-1, 1))
-
-    if getattr(config, "use_knn_pos_n1_feature", False) and knn_pos_n1 is not None:
+    if config.use_knn_pos_n1_feature and knn_pos_n1 is not None:
         columns.append(knn_pos_n1.reshape(-1, 1))
-    if getattr(config, "use_knn_pos_n3_feature", False) and knn_pos_n3 is not None:
+    if config.use_knn_pos_n3_feature and knn_pos_n3 is not None:
         columns.append(knn_pos_n3.reshape(-1, 1))
-    if getattr(config, "use_knn_pos_n5_feature", False) and knn_pos_n5 is not None:
+    if config.use_knn_pos_n5_feature and knn_pos_n5 is not None:
         columns.append(knn_pos_n5.reshape(-1, 1))
-    if getattr(config, "use_knn_pos_n10_feature", False) and knn_pos_n10 is not None:
+    if config.use_knn_pos_n10_feature and knn_pos_n10 is not None:
         columns.append(knn_pos_n10.reshape(-1, 1))
-
-    if getattr(config, "use_knn_neg_n1_feature", False) and knn_neg_n1 is not None:
+    if config.use_knn_neg_n1_feature and knn_neg_n1 is not None:
         columns.append(knn_neg_n1.reshape(-1, 1))
-    if getattr(config, "use_knn_neg_n3_feature", False) and knn_neg_n3 is not None:
+    if config.use_knn_neg_n3_feature and knn_neg_n3 is not None:
         columns.append(knn_neg_n3.reshape(-1, 1))
-    if getattr(config, "use_knn_neg_n5_feature", False) and knn_neg_n5 is not None:
+    if config.use_knn_neg_n5_feature and knn_neg_n5 is not None:
         columns.append(knn_neg_n5.reshape(-1, 1))
-    if getattr(config, "use_knn_neg_n10_feature", False) and knn_neg_n10 is not None:
+    if config.use_knn_neg_n10_feature and knn_neg_n10 is not None:
         columns.append(knn_neg_n10.reshape(-1, 1))
 
     if not columns:
@@ -150,7 +146,7 @@ def _combine_classifier_features(
 
 
 def _classifier_metadata_features(
-    stories: list[Story], 
+    stories: list[Story],
     config: AppConfig,
     now: float,
     expected_len: int,
@@ -179,7 +175,7 @@ def _classifier_metadata_features(
         return np.zeros((expected_len, width), dtype=np.float32)
 
     columns: list[NDArray[np.float32]] = []
-    
+
     if config.classifier.use_log_points_feature:
         score_normalization_cap = 1000.0
         normalizer = np.log1p(score_normalization_cap)
@@ -189,21 +185,37 @@ def _classifier_metadata_features(
     if config.classifier.use_log_comments_feature:
         comment_normalization_cap = 500.0
         normalizer = np.log1p(comment_normalization_cap)
-        comments = np.array([max(float(s.comment_count if s.comment_count is not None else 0.0), 0.0) for s in stories], dtype=np.float32)
+        comments = np.array(
+            [
+                max(float(s.comment_count if s.comment_count is not None else 0.0), 0.0)
+                for s in stories
+            ],
+            dtype=np.float32,
+        )
         columns.append((np.log1p(comments) / normalizer).reshape(-1, 1))
 
     if config.classifier.use_comment_ratio_feature:
-        comments = np.array([max(float(s.comment_count if s.comment_count is not None else 0.0), 0.0) for s in stories], dtype=np.float32)
+        comments = np.array(
+            [
+                max(float(s.comment_count if s.comment_count is not None else 0.0), 0.0)
+                for s in stories
+            ],
+            dtype=np.float32,
+        )
         points = np.array([max(float(s.score), 0.0) for s in stories], dtype=np.float32)
         ratio = np.log1p(comments) / (np.log1p(points) + 1.0)
         columns.append(ratio.reshape(-1, 1))
 
     if config.classifier.use_title_len_feature:
-        title_len = np.array([float(len(s.title or "")) for s in stories], dtype=np.float32)
+        title_len = np.array(
+            [float(len(s.title or "")) for s in stories], dtype=np.float32
+        )
         columns.append((np.log1p(title_len) / np.log1p(120.0)).reshape(-1, 1))
 
     if config.classifier.use_text_len_feature:
-        text_len = np.array([float(len(s.text_content or "")) for s in stories], dtype=np.float32)
+        text_len = np.array(
+            [float(len(s.text_content or "")) for s in stories], dtype=np.float32
+        )
         columns.append((np.log1p(text_len) / np.log1p(5000.0)).reshape(-1, 1))
 
     if config.classifier.use_has_url_feature:
@@ -211,23 +223,32 @@ def _classifier_metadata_features(
         columns.append(has_url.reshape(-1, 1))
 
     if config.classifier.use_github_feature:
-        is_github = np.array([1.0 if s.url and "github.com" in s.url.lower() else 0.0 for s in stories], dtype=np.float32)
+        is_github = np.array(
+            [1.0 if s.url and "github.com" in s.url.lower() else 0.0 for s in stories],
+            dtype=np.float32,
+        )
         columns.append(is_github.reshape(-1, 1))
 
     if config.classifier.use_pdf_feature:
-        is_pdf = np.array([1.0 if s.url and s.url.lower().endswith(".pdf") else 0.0 for s in stories], dtype=np.float32)
+        is_pdf = np.array(
+            [1.0 if s.url and s.url.lower().endswith(".pdf") else 0.0 for s in stories],
+            dtype=np.float32,
+        )
         columns.append(is_pdf.reshape(-1, 1))
 
     if config.classifier.use_comments_count_feature:
         comments_count = np.array(
-            [max(float(s.comment_count if s.comment_count is not None else 0.0), 0.0) for s in stories],
+            [
+                max(float(s.comment_count if s.comment_count is not None else 0.0), 0.0)
+                for s in stories
+            ],
             dtype=np.float32,
         )
         columns.append((np.log1p(comments_count) / np.log1p(15.0)).reshape(-1, 1))
 
     if not columns:
         return np.zeros((expected_len, 0), dtype=np.float32)
-        
+
     return np.hstack(columns).astype(np.float32)
 
 
@@ -248,7 +269,9 @@ def compute_classifier_similarity_features(
         else np.zeros((len(embs), 0), dtype=np.float32)
     )
     f_centroid_max = (
-        np.max(sim_c, axis=1) if sim_c.shape[1] > 0 else np.zeros(len(embs), dtype=np.float32)
+        np.max(sim_c, axis=1)
+        if sim_c.shape[1] > 0
+        else np.zeros(len(embs), dtype=np.float32)
     )
 
     sim_p = (
@@ -259,7 +282,9 @@ def compute_classifier_similarity_features(
     if exclude_self_pos and sim_p.shape[1] > 0:
         np.fill_diagonal(sim_p, -1.0)
     f_closest_pos = (
-        np.max(sim_p, axis=1) if sim_p.shape[1] > 0 else np.zeros(len(embs), dtype=np.float32)
+        np.max(sim_p, axis=1)
+        if sim_p.shape[1] > 0
+        else np.zeros(len(embs), dtype=np.float32)
     )
 
     sim_n = (
@@ -270,7 +295,9 @@ def compute_classifier_similarity_features(
     if exclude_self_neg and sim_n.shape[1] > 0:
         np.fill_diagonal(sim_n, -1.0)
     f_closest_neg = (
-        np.max(sim_n, axis=1) if sim_n.shape[1] > 0 else np.zeros(len(embs), dtype=np.float32)
+        np.max(sim_n, axis=1)
+        if sim_n.shape[1] > 0
+        else np.zeros(len(embs), dtype=np.float32)
     )
 
     def compute_knn_mean(sims: NDArray[np.float32], n: int) -> NDArray[np.float32]:
@@ -513,9 +540,7 @@ class ONNXEmbeddingModel:
                 batch_embeddings = sum_embeddings / sum_mask
 
             should_normalize = (
-                spec.normalize
-                if normalize_embeddings is None
-                else normalize_embeddings
+                spec.normalize if normalize_embeddings is None else normalize_embeddings
             )
             if should_normalize:
                 norm: NDArray[np.float64] = np.linalg.norm(
@@ -579,9 +604,11 @@ def _get_embeddings_with_model(
     truncated_count = 0
     processed_texts: list[str] = []
     model_spec = getattr(model, "spec", None)
+    char_lengths: list[int] = []
 
     for t in texts:
         text = model_spec.prepare_text(t, is_query=is_query) if model_spec else t
+        char_lengths.append(len(text))
         truncated_text, was_truncated = model.truncate_to_token_budget(
             text,
             min(
@@ -592,9 +619,16 @@ def _get_embeddings_with_model(
         if was_truncated:
             truncated_count += 1
         processed_texts.append(truncated_text)
-    if truncated_count:
+    if char_lengths:
+        import statistics
+
+        mean_chars = int(statistics.mean(char_lengths))
+        max_chars = max(char_lengths)
         logger.info(
-            "Embedding input truncated for %d/%d texts (max %d tokens).",
+            "Text stats for %d docs: mean=%d chars, max=%d chars, truncated=%d/%d (limit=%d tokens).",
+            len(texts),
+            mean_chars,
+            max_chars,
             truncated_count,
             len(texts),
             TEXT_CONTENT_MAX_TOKENS,
@@ -694,119 +728,71 @@ def get_cluster_embeddings(
     )
 
 
-def cluster_interests(
-    embeddings: NDArray[np.float32],
-    config: ClusteringConfig = ClusteringConfig(),
-) -> NDArray[np.float32]:
-    """
-    Cluster user interest embeddings into K centroids.
-    Returns centroids array of shape (n_clusters, embedding_dim).
-    """
-    centroids, _ = cluster_interests_with_labels(embeddings, config=config)
-    return centroids
-
-
 def cluster_interests_with_labels(
     embeddings: NDArray[np.float32],
     config: ClusteringConfig = ClusteringConfig(),
 ) -> tuple[NDArray[np.float32], NDArray[np.int32]]:
     """
-    Cluster user interest embeddings using a cosine-aware algorithm.
+    Cluster user interest embeddings using KMeans.
     Returns (centroids, labels) where:
       - centroids: shape (n_clusters, embedding_dim)
       - labels: shape (n_samples,) cluster assignment per sample
     """
-    from sklearn.cluster import AgglomerativeClustering, KMeans, SpectralClustering
+    from sklearn.cluster import KMeans
 
     n_samples = len(embeddings)
     if n_samples == 0:
         return embeddings, np.array([], dtype=np.int32)
 
     if n_samples < config.min_samples_per_cluster * 2:
-        # Not enough for meaningful clustering
         labels = np.zeros(n_samples, dtype=np.int32)
         centroid = np.mean(embeddings, axis=0).reshape(1, -1)
         return centroid.astype(np.float32), labels
 
-    # Normalize embeddings for cosine-like behavior (unless metric is euclidean)
-    if (
-        config.metric == "euclidean"
-        and config.algorithm == "agglomerative"
-    ):
-        normalized = embeddings
-    else:
-        normalized = _normalize_embeddings(embeddings)
+    normalized = _normalize_embeddings(embeddings)
 
-    # Use fixed number of clusters or distance threshold
+    target = round(math.sqrt(n_samples))
     effective_n_clusters = min(
-        config.default_count,
         config.max_clusters,
-        n_samples // max(1, config.min_samples_per_cluster),
+        max(config.min_clusters, target),
+        n_samples,
     )
-    effective_n_clusters = max(effective_n_clusters, config.min_clusters)
 
-    if config.algorithm == "spectral":
-        neighbors = min(config.spectral_neighbors, max(2, n_samples - 1))
-        clustering = SpectralClustering(
-            n_clusters=effective_n_clusters,
-            affinity="nearest_neighbors",
-            n_neighbors=neighbors,
-            assign_labels="kmeans",
-            random_state=0,
-        )
-        labels = clustering.fit_predict(normalized).astype(np.int32)
-    elif config.algorithm == "agglomerative":
-        # If threshold is provided, use auto-k
-        use_n = effective_n_clusters if config.distance_threshold is None else None
-        clustering = AgglomerativeClustering(
-            n_clusters=use_n,
-            distance_threshold=config.distance_threshold,
-            metric=config.metric,
-            linkage=config.linkage,
-        )
-        labels = clustering.fit_predict(normalized).astype(np.int32)
-        if config.distance_threshold is not None:
-            labels = _merge_closest_clusters_to_limit(
-                embeddings,
-                labels,
-                max_clusters=effective_n_clusters,
-            )
-    else:
-        kmeans = KMeans(
+    labels = (
+        KMeans(
             n_clusters=effective_n_clusters,
             n_init=10,
             random_state=0,
         )
-        labels = kmeans.fit_predict(normalized).astype(np.int32)
+        .fit_predict(normalized)
+        .astype(np.int32)
+    )
 
-    # Bypass heuristic post-processing if using threshold-based agglomerative
-    # (Ward linkage handles balance and coherence natively)
-    if not (config.algorithm == "agglomerative" and config.distance_threshold is not None):
-        labels = _refine_cluster_assignments(normalized, labels, config.refine_iters)
-        labels = _merge_small_clusters(embeddings, labels, config.min_samples_per_cluster)
+    labels = _refine_cluster_assignments(normalized, labels, config.refine_iters)
 
-        max_size = max(
-            config.min_samples_per_cluster,
-            min(
-                config.max_cluster_size,
-                int(math.ceil(n_samples * config.max_cluster_fraction)),
-            ),
-        )
-        max_clusters = min(config.max_clusters, n_samples // max(1, config.min_samples_per_cluster))
-        labels = _split_large_clusters(
-            embeddings,
-            labels,
-            min_size=config.min_samples_per_cluster,
-            max_size=max_size,
-            max_clusters=max_clusters,
-        )
+    max_size = max(
+        config.min_samples_per_cluster,
+        min(
+            config.max_cluster_size,
+            int(math.ceil(n_samples * config.max_cluster_fraction)),
+        ),
+    )
+    max_n_clusters = min(
+        config.max_clusters, n_samples // max(1, config.min_samples_per_cluster)
+    )
+    labels = _split_large_clusters(
+        embeddings,
+        labels,
+        min_size=config.min_samples_per_cluster,
+        max_size=max_size,
+        max_clusters=max_n_clusters,
+    )
 
-    centroids = _centroids_from_labels(embeddings, labels)
-
-    if not (config.algorithm == "agglomerative" and config.distance_threshold is not None):
-        centroids, labels, _ = split_outlier_clusters(
-            embeddings, labels, config.outlier_similarity_threshold
-        )
+    centroids = _centroids_from_labels(normalized, labels)
+    centroids, labels, _ = split_outlier_clusters(
+        embeddings, labels, config.outlier_similarity_threshold
+    )
+    centroids = _centroids_from_labels(normalized, labels)
     return centroids, labels
 
 
@@ -822,44 +808,6 @@ def _centroids_from_labels(
         centroid = embeddings[mask].mean(axis=0)
         centroids.append(centroid)
     return np.array(centroids, dtype=np.float32)
-
-
-def _relabel_consecutive(labels: NDArray[np.int32]) -> NDArray[np.int32]:
-    remap = {old: i for i, old in enumerate(sorted(set(labels)))}
-    return np.array([remap[int(lbl)] for lbl in labels], dtype=np.int32)
-
-
-def _merge_closest_clusters_to_limit(
-    embeddings: NDArray[np.float32],
-    labels: NDArray[np.int32],
-    max_clusters: int,
-) -> NDArray[np.int32]:
-    """Merge nearest centroid pairs until the cluster count is within the cap."""
-    if max_clusters <= 0 or len(labels) == 0:
-        return labels
-
-    current = _relabel_consecutive(labels)
-    while len(set(current)) > max_clusters:
-        centroids = _centroids_from_labels(embeddings, current)
-        if len(centroids) <= 1:
-            break
-
-        diff = centroids[:, None, :] - centroids[None, :, :]
-        distances = np.linalg.norm(diff, axis=2)
-        np.fill_diagonal(distances, np.inf)
-        source_idx, target_idx = np.unravel_index(
-            int(np.argmin(distances)),
-            distances.shape,
-        )
-        source_label = int(source_idx)
-        target_label = int(target_idx)
-        if source_label == target_label:
-            break
-
-        current[current == source_label] = target_label
-        current = _relabel_consecutive(current)
-
-    return current
 
 
 def _normalize_embeddings(
@@ -960,49 +908,6 @@ def _refine_cluster_assignments(
 
     remap = {old: i for i, old in enumerate(sorted(set(current)))}
     return np.array([remap[int(lbl)] for lbl in current], dtype=np.int32)
-
-
-def _merge_small_clusters(
-    embeddings: NDArray[np.float32],
-    labels: NDArray[np.int32],
-    min_size: int,
-) -> NDArray[np.int32]:
-    """Merge clusters smaller than min_size into the nearest larger cluster."""
-    if min_size <= 1:
-        return labels
-
-    unique_labels, counts = np.unique(labels, return_counts=True)
-    small = {int(lbl) for lbl, cnt in zip(unique_labels, counts) if cnt < min_size}
-    if not small:
-        return labels
-
-    large = [int(lbl) for lbl, cnt in zip(unique_labels, counts) if cnt >= min_size]
-    if not large:
-        return np.zeros(len(labels), dtype=np.int32)
-
-    centroids = _centroids_from_labels(embeddings, labels)
-    norms = np.linalg.norm(centroids, axis=1, keepdims=True)
-    norms = np.maximum(norms, 1e-9)
-    centroids_norm = centroids / norms
-
-    new_labels = labels.copy()
-    for lbl in small:
-        idxs = np.where(labels == lbl)[0]
-        if len(idxs) == 0:
-            continue
-
-        cluster_emb = embeddings[idxs]
-        c_norm = np.linalg.norm(cluster_emb, axis=1, keepdims=True)
-        c_norm = np.maximum(c_norm, 1e-9)
-        cluster_emb_norm = cluster_emb / c_norm
-
-        large_indices = [label for label in large]
-        sims = cluster_emb_norm @ centroids_norm[large_indices].T
-        target = large_indices[int(np.argmax(np.mean(sims, axis=0)))]
-        new_labels[idxs] = target
-
-    remap = {old: i for i, old in enumerate(sorted(set(new_labels)))}
-    return np.array([remap[int(lbl)] for lbl in new_labels], dtype=np.int32)
 
 
 def _reassign_small_subclusters(
@@ -1110,7 +1015,9 @@ def _split_large_clusters(
 
 def rank_stories(
     stories: list[Story],
-    model_or_positive_embeddings: OrdinalThresholdModel | NDArray[np.float32] | None = None,
+    model_or_positive_embeddings: OrdinalThresholdModel
+    | NDArray[np.float32]
+    | None = None,
     positive_embeddings: NDArray[np.float32] | None = None,
     negative_embeddings: NDArray[np.float32] | None = None,
     config: AppConfig = AppConfig(),
@@ -1126,7 +1033,7 @@ def rank_stories(
     """
     if not stories:
         return []
-    from api.learned_ranker import (
+    from api.ordinal_model import (
         DOWNVOTE_LABEL,
         UPVOTE_LABEL,
         _predict_ordinal_outputs,
@@ -1143,7 +1050,9 @@ def rank_stories(
     else:
         model = None
         if model_or_positive_embeddings is not None:
-            positive_embeddings = cast(NDArray[np.float32], model_or_positive_embeddings)
+            positive_embeddings = cast(
+                NDArray[np.float32], model_or_positive_embeddings
+            )
 
     def report_progress(
         phase: RankProgressPhase,
@@ -1198,7 +1107,7 @@ def rank_stories(
     )
 
     # Display-only scores (always populated regardless of scoring path)
-    semantic_scores: NDArray[np.float32] = np.zeros(len(stories), dtype=np.float32)
+    model_scores: NDArray[np.float32] = np.zeros(len(stories), dtype=np.float32)
     max_sim_scores: NDArray[np.float32] = np.zeros(len(stories), dtype=np.float32)
     best_fav_indices: NDArray[np.int64] = np.full(len(stories), -1, dtype=np.int64)
     raw_knn_scores: NDArray[np.float32] = np.zeros(len(stories), dtype=np.float32)
@@ -1231,8 +1140,9 @@ def rank_stories(
         config.classifier,
     )
     cand_metadata = _classifier_metadata_features(
-        stories, config, time.time(), len(cand_emb)
+        stories, config, time.time(), len(stories)
     )
+    cand_metadata = cand_metadata[: len(cand_emb)]
     cand_features = stack_classifier_similarity_features(
         cand_derived,
         config.classifier,
@@ -1302,12 +1212,14 @@ def rank_stories(
                     np.full(len(X_neg), DOWNVOTE_LABEL, dtype=np.int64),
                 ]
             )
-            model = train_model_from_matrix(train_rows, train_labels, config.single_model)
+            model = train_model_from_matrix(
+                train_rows, train_labels, config.single_model
+            )
         else:
-            semantic_scores = cluster_max_scores
+            model_scores = cluster_max_scores
 
-    if model is None and not np.any(semantic_scores):
-        semantic_scores = cluster_max_scores
+    if model is None and not np.any(model_scores):
+        model_scores = cluster_max_scores
 
     if model is not None:
         try:
@@ -1317,7 +1229,9 @@ def rank_stories(
 
         if expected_n != cand_features.shape[1]:
             # Build full single-model features (embeddings + derived + metadata)
-            columns = [cand_emb.astype(np.float32)]
+            columns: list[NDArray[np.float32]] = []
+            if config.classifier.use_raw_embedding_features:
+                columns.append(cand_emb.astype(np.float32))
             derived_rows = stack_classifier_similarity_features(
                 cand_derived,
                 config.classifier,
@@ -1328,25 +1242,23 @@ def rank_stories(
             if cand_metadata.shape[1] > 0:
                 columns.append(cand_metadata.astype(np.float32))
             full_features = np.hstack(columns).astype(np.float32)
-            semantic_scores, _, _, _ = _predict_ordinal_outputs(model, full_features)
+            model_scores, _, _, _ = _predict_ordinal_outputs(model, full_features)
         else:
-            semantic_scores, _, _, _ = _predict_ordinal_outputs(model, cand_features)
+            model_scores, _, _, _ = _predict_ordinal_outputs(model, cand_features)
 
     report_progress("scoring", 1, 1, "Scored candidates")
 
-    hybrid_scores = semantic_scores
-    ranked_indices = np.argsort(-hybrid_scores, kind="stable")
+    ranked_indices = np.argsort(-model_scores, kind="stable")
 
     report_progress("finalize", 0, 1, "Finalizing ranked stories")
     results = [
         RankResult(
             index=int(best_idx),
-            hybrid_score=float(hybrid_scores[best_idx]),
+            model_score=float(model_scores[best_idx]),
             best_fav_index=int(best_fav_indices[best_idx]),
             max_sim_score=float(max_sim_scores[best_idx]),
             knn_score=float(raw_knn_scores[best_idx]),
             max_cluster_score=float(cluster_max_scores[best_idx]),
-            semantic_score=float(semantic_scores[best_idx]),
         )
         for best_idx in ranked_indices
     ]

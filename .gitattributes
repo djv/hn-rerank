@@ -1,0 +1,10 @@
+# Treat model, vocabulary, and tokenizer files as binary to avoid massive unicode diffs
+onnx_ce_model/** binary
+onnx_model/** binary
+onnx_llm/** binary
+tuned_model/** binary
+*.onnx binary
+vocab.txt binary
+tokenizer.json binary
+*.jsonl binary
+*.lock binary

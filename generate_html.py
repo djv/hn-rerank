@@ -5,16 +5,14 @@ import getpass
 import json
 import logging
 import os
-import re
 import time
-from typing import Callable, cast
 from collections import Counter, defaultdict
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
 import httpx
 import numpy as np
-from bs4 import BeautifulSoup
 from numpy.typing import NDArray
 from jinja2 import Environment
 from markupsafe import Markup
@@ -43,85 +41,6 @@ from api.config import AppConfig
 console: Console = Console()
 
 DEFAULT_CONFIG_PATH = Path("hn_rerank.toml")
-HN_DUPE_CACHE_DIR = Path(".cache/hn_dupes")
-HN_DUPE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-HN_DUPE_TRUE_CACHE_TTL = 15 * 24 * 60 * 60
-HN_DUPE_FALSE_CACHE_TTL = 24 * 60 * 60
-HN_FIREBASE_ITEM_URL = "https://hacker-news.firebaseio.com/v0/item/{sid}.json"
-
-
-def _extract_hn_dupe_target(page_html: str, sid: int) -> tuple[bool, int | None]:
-    """Return (is_dupe, target_story_id) from an HN item page."""
-    soup = BeautifulSoup(page_html, "html.parser")
-    titleline = soup.select_one("span.titleline")
-    if titleline is None or "[dupe]" not in titleline.get_text(" ", strip=True):
-        return False, None
-
-    for link in soup.select(".comment a[href]"):
-        href_value = link.get("href")
-        href = href_value if isinstance(href_value, str) else ""
-        match = re.search(r"(?:^|[?&])id=(\d+)", href)
-        if match is None:
-            continue
-        target_id = int(match.group(1))
-        if target_id != sid:
-            return True, target_id
-    return True, None
-
-
-def _load_cached_hn_dupe_target(sid: int) -> tuple[bool, int | None] | None:
-    path = HN_DUPE_CACHE_DIR / f"{sid}.json"
-    if not path.exists():
-        return None
-    try:
-        data = json.loads(path.read_text())
-    except Exception as exc:
-        logging.debug("Failed to load HN dupe cache %s: %s", path, exc)
-        return None
-    is_dupe = data.get("is_dupe")
-    target_id = data.get("target_id")
-    if not isinstance(is_dupe, bool):
-        logging.debug("Ignoring malformed HN dupe cache payload in %s", path)
-        return None
-    if target_id is not None and not isinstance(target_id, int):
-        logging.debug("Ignoring malformed HN dupe cache payload in %s", path)
-        return None
-    ttl = HN_DUPE_TRUE_CACHE_TTL if is_dupe else HN_DUPE_FALSE_CACHE_TTL
-    if time.time() - path.stat().st_mtime >= ttl:
-        return None
-    return is_dupe, target_id
-
-
-def _save_cached_hn_dupe_target(sid: int, result: tuple[bool, int | None]) -> None:
-    path = HN_DUPE_CACHE_DIR / f"{sid}.json"
-    path.write_text(json.dumps({"is_dupe": result[0], "target_id": result[1]}))
-
-
-async def _fetch_hn_dupe_target(
-    client: httpx.AsyncClient, sid: int
-) -> tuple[bool, int | None]:
-    cached = _load_cached_hn_dupe_target(sid)
-    if cached is not None:
-        return cached
-
-    try:
-        for attempt in range(2):
-            resp = await client.get(
-                "https://news.ycombinator.com/item",
-                params={"id": sid},
-            )
-            if resp.status_code == 429 and attempt == 0:
-                await asyncio.sleep(1.0)
-                continue
-            if resp.status_code != 200 or not resp.text:
-                return False, None
-            result = _extract_hn_dupe_target(resp.text, sid)
-            _save_cached_hn_dupe_target(sid, result)
-            return result
-    except Exception as exc:
-        logging.debug("Failed to fetch HN dupe marker for %s: %s", sid, exc)
-        return False, None
-    return False, None
 
 
 async def filter_top_ranked_hn_dupes(
@@ -132,44 +51,7 @@ async def filter_top_ranked_hn_dupes(
     progress_callback: Callable[[int, int], None] | None = None,
 ) -> list[RankResult]:
     """Drop [dupe]-marked HN submissions from the final page results."""
-    if not ranked:
-        return ranked
-
-    _ = exclude_ids
-    check_limit = min(len(ranked), count)
-    checked_positions = [
-        pos
-        for pos, result in enumerate(ranked[:check_limit])
-        if cands[result.index].is_hn and cands[result.index].id > 0
-    ]
-    if not checked_positions:
-        return ranked
-
-    checked_by_index: dict[int, tuple[bool, int | None]] = {}
-    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-        for idx, pos in enumerate(checked_positions):
-            if idx:
-                await asyncio.sleep(0.2)
-            checked_by_index[ranked[pos].index] = await _fetch_hn_dupe_target(
-                client, cands[ranked[pos].index].id
-            )
-            if progress_callback:
-                progress_callback(idx + 1, len(checked_positions))
-
-    filtered: list[RankResult] = []
-    skipped = 0
-    for result in ranked:
-        info = checked_by_index.get(result.index)
-        if info is not None:
-            is_dupe, _target_id = info
-            if is_dupe:
-                skipped += 1
-                continue
-        filtered.append(result)
-
-    if skipped:
-        print(f"[+] Filtered {skipped} duplicate HN submissions from final results")
-    return filtered
+    return ranked
 
 
 async def refresh_hn_story_metadata(
@@ -184,7 +66,9 @@ async def refresh_hn_story_metadata(
     async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
         for idx, story in enumerate(hn_stories):
             try:
-                resp = await client.get(HN_FIREBASE_ITEM_URL.format(sid=story.id))
+                resp = await client.get(
+                    f"https://hacker-news.firebaseio.com/v0/item/{story.id}.json"
+                )
                 if resp.status_code == 200:
                     payload = resp.json()
                     if isinstance(payload, dict):
@@ -739,7 +623,7 @@ def select_ranked_results(
 
     # Combine and sort by the active final score.
     selected_results = selected_external + selected_hn
-    selected_results.sort(key=lambda x: x.hybrid_score, reverse=True)
+    selected_results.sort(key=lambda x: x.model_score, reverse=True)
     return selected_results
 
 
@@ -793,9 +677,7 @@ def generate_story_html(story: StoryDisplay) -> str:
     link_url = story.url or story.hn_url or "#"
     if story.is_hn:
         card_url = story.hn_url
-        card_aria_label = (
-            f"Open comments for {story.title}" if story.hn_url else None
-        )
+        card_aria_label = f"Open comments for {story.title}" if story.hn_url else None
     else:
         card_url = story.hn_url or story.url
         card_aria_label = (
@@ -820,8 +702,7 @@ def generate_story_html(story: StoryDisplay) -> str:
         story_comment_count=story.comment_count,
         feedback_key=feedback_key(story.source, story.id, story.url),
         feedback_action=story.feedback_action,
-        hybrid_score=story.hybrid_score,
-        semantic_score=story.semantic_score,
+        model_score=story.model_score,
         knn_score=story.knn_score,
         max_sim_score=story.max_sim_score,
         max_cluster_score=story.max_cluster_score,
@@ -868,9 +749,7 @@ async def main() -> None:
         help="Hacker News username",
     )
     parser.add_argument("-o", "--output", help="Output file path")
-    parser.add_argument(
-        "-c", "--count", type=int, help="Number of stories to show"
-    )
+    parser.add_argument("-c", "--count", type=int, help="Number of stories to show")
     parser.add_argument(
         "-s",
         "--signals",
@@ -994,6 +873,7 @@ async def main() -> None:
         help="Write cluster naming prompts/responses to JSON for debugging",
     )
     args: argparse.Namespace = parser.parse_args()
+    config_path = args.config
 
     # Create unified config from TOML and CLI overrides
     provider_choice = "mistral" if args.mistral else "groq"
@@ -1013,11 +893,18 @@ async def main() -> None:
         debug_scores=args.debug_scores,
         debug_clusters=args.debug_clusters,
     )
-    
+
     # Apply CLI overrides to nested config objects
     from dataclasses import replace
+
     if args.clusters:
-        config = replace(config, clustering=replace(config.clustering, default_count=args.clusters, max_clusters=args.clusters))
+        config = replace(
+            config,
+            clustering=replace(
+                config.clustering,
+                max_clusters=args.clusters,
+            ),
+        )
     if args.open_index_archive or args.bigquery_archive:
         config = replace(
             config,
@@ -1300,7 +1187,9 @@ async def main() -> None:
                 try:
                     debug_path = None
                     if config.debug_clusters:
-                        debug_path = config.output_path.with_name("cluster_name_debug.json")
+                        debug_path = config.output_path.with_name(
+                            "cluster_name_debug.json"
+                        )
                         debug_path.parent.mkdir(parents=True, exist_ok=True)
                     cluster_profiles = await llm_utils.generate_batch_cluster_names(
                         clusters_for_naming,
@@ -1310,7 +1199,7 @@ async def main() -> None:
                     for cid, profile in cluster_profiles.items():
                         cluster_names[cid] = profile["name"]
                         cluster_keywords[cid] = profile["keywords"]
-                    
+
                     progress.update(name_task, description="[green][+] Clusters named.")
                 except RuntimeError as exc:
                     progress.stop()
@@ -1406,14 +1295,10 @@ async def main() -> None:
             else:
                 total = max(event["total"], 1)
                 phase_fraction = min(max(event["current"] / total, 0.0), 1.0)
-                rank_phase_completed[phase] = (
-                    rank_phase_weights[phase] * phase_fraction
-                )
+                rank_phase_completed[phase] = rank_phase_weights[phase] * phase_fraction
                 phase_index = rank_phase_order.index(phase)
                 for prior_phase in rank_phase_order[:phase_index]:
-                    rank_phase_completed[prior_phase] = rank_phase_weights[
-                        prior_phase
-                    ]
+                    rank_phase_completed[prior_phase] = rank_phase_weights[prior_phase]
                 completed = min(sum(rank_phase_completed.values()), 99.0)
                 description = f"[*] {event['label']}..."
             progress.update(r_task, completed=completed, description=description)
@@ -1554,7 +1439,10 @@ async def main() -> None:
                 reason = fav_story.title
                 reason_url = f"https://news.ycombinator.com/item?id={fav_story.id}"
             cid = get_cluster_id_for_result(
-                result, cluster_labels, cand_cluster_map, config.semantic.match_threshold
+                result,
+                cluster_labels,
+                cand_cluster_map,
+                config.semantic.match_threshold,
             )
             cluster_name = resolve_cluster_name(
                 cluster_names, cid, allow_empty_fallback=s.is_external
@@ -1577,8 +1465,7 @@ async def main() -> None:
                 comments=list(s.comments),
                 source=s.source,
                 text_content=s.text_content,
-                hybrid_score=result.hybrid_score,
-                semantic_score=result.semantic_score,
+                model_score=result.model_score,
                 knn_score=result.knn_score,
                 max_sim_score=result.max_sim_score,
                 max_cluster_score=result.max_cluster_score,
@@ -1658,8 +1545,7 @@ async def main() -> None:
                     "title": story.title,
                     "url": story.url,
                     "is_external": story.is_external,
-                    "hybrid_score": result.hybrid_score,
-                    "semantic_score": result.semantic_score,
+                    "model_score": result.model_score,
                     "knn_score": result.knn_score,
                     "max_cluster_score": result.max_cluster_score,
                     "max_sim_score": result.max_sim_score,

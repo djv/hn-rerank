@@ -13,8 +13,8 @@ The dashboard build in `generate_html.py` uses a staged pipeline:
 4. Post-selection HN dupe filtering
 5. HTML/debug output
 
-The main public score field is still named `hybrid_score`, but in the current
-runtime path it is the active single-model score used for ordering.
+The main public score field is `model_score`, the active
+single-model score used for ordering.
 
 ## 1. Candidate Retrieval
 
@@ -66,7 +66,7 @@ What happens:
 6. a feedback-trained single model is scored
 7. candidate scores are produced as normalized ranking scores
 
-In the current code, `hybrid_score` is initially set to this single-model
+In the current code, `model_score` is set to this single-model
 score.
 
 ## 3. Final Slate Selection
@@ -82,7 +82,7 @@ This stage does not learn or rescore. It applies slate policy:
 - enforces per-source diversity for external stories
 - chooses the final `count`
 - sorts the selected slate by active final score:
-  - `hybrid_score`
+  - `model_score`
 
 Current external target:
 
@@ -98,16 +98,11 @@ Entry point:
 
 This happens after slate selection.
 
-Behavior:
+Current status:
 
-- fetches live HN item-page HTML for selected HN stories
-- detects moderator-marked duplicate submissions
-- removes dupes from the final list
-
-Important current limitation:
-
-- there is no refill after a dupe is removed
-- so the rendered page can contain fewer than `count` cards
+- the function is a no-op (body is `return ranked`)
+- the call site and function are preserved for future re-enablement
+- the rendered page always contains exactly `count` cards when enough candidates exist
 
 ## 5. Output
 

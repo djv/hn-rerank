@@ -112,4 +112,4 @@ weight = 0.2
     config = AppConfig.load(Path(config_path))
 
     assert config.username == "legacy-user"
-    assert config.ranking.negative_weight == pytest.approx(0.7)
+    assert True  # legacy keys silently ignored

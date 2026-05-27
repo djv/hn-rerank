@@ -1,8 +1,4 @@
-import json
-import logging
-import os
 import time
-from unittest.mock import AsyncMock
 
 import httpx
 import numpy as np
@@ -12,12 +8,8 @@ import respx
 import generate_html
 from generate_html import (
     _INDEX_TEMPLATE,
-    _extract_hn_dupe_target,
-    _fetch_hn_dupe_target,
-    _load_cached_hn_dupe_target,
     apply_feedback_signal_overrides,
     build_candidate_cluster_map,
-    filter_top_ranked_hn_dupes,
     generate_story_html,
     get_cluster_id_for_result,
     get_relative_time,
@@ -120,8 +112,7 @@ def test_generate_story_html_includes_feedback_controls_and_metadata():
         reason_url="",
         comments=[],
         text_content="Feedback story text",
-        hybrid_score=0.91,
-        semantic_score=0.82,
+        model_score=0.91,
         knn_score=0.65,
         max_sim_score=0.77,
         max_cluster_score=0.9,
@@ -182,7 +173,10 @@ def test_generate_story_html_shows_external_count_without_discussion_link():
 
     html = generate_story_html(story)
 
-    assert '<span class="ml-2 text-xs font-medium text-stone-500" title="Comments">💬 31</span>' in html
+    assert (
+        '<span class="ml-2 text-xs font-medium text-stone-500" title="Comments">💬 31</span>'
+        in html
+    )
     assert 'title="Comments">💬 31</a>' not in html
 
 
@@ -198,7 +192,9 @@ def test_resolve_cluster_name_empty_name_fallback_for_rss():
     cluster_names = {2: ""}
 
     assert resolve_cluster_name(cluster_names, 2) == ""
-    assert resolve_cluster_name(cluster_names, 2, allow_empty_fallback=True) == "Group 3"
+    assert (
+        resolve_cluster_name(cluster_names, 2, allow_empty_fallback=True) == "Group 3"
+    )
 
 
 def test_generate_story_html_includes_cluster_chip():
@@ -336,7 +332,7 @@ def test_generate_story_html_without_hn_url_hides_comment_link():
     )
     html = generate_story_html(story)
     assert "RSS Story" in html
-    assert "title=\"Comments\"" not in html
+    assert 'title="Comments"' not in html
     assert 'aria-label="Open comments for RSS Story"' not in html
     assert 'aria-label="Open story for RSS Story"' in html
     assert 'href="https://example.com/rss"' in html
@@ -401,7 +397,9 @@ def test_generate_story_html_reddit_badge():
     html = generate_story_html(story)
     assert "r/MachineLearning" in html
     assert 'href="https://arxiv.org/abs/2604.21691"' in html
-    assert 'href="https://www.reddit.com/r/MachineLearning/comments/1sun588/post/"' in html
+    assert (
+        'href="https://www.reddit.com/r/MachineLearning/comments/1sun588/post/"' in html
+    )
 
 
 def test_generate_story_html_external_comments_link():
@@ -574,9 +572,7 @@ def test_build_candidate_cluster_map_respects_threshold_for_external(monkeypatch
     monkeypatch.setattr(
         generate_html.rerank,
         "get_cluster_embeddings",
-        lambda _texts, **_kwargs: np.array(
-            [[1.0, 0.0], [1.0, 0.0]], dtype=np.float32
-        ),
+        lambda _texts, **_kwargs: np.array([[1.0, 0.0], [1.0, 0.0]], dtype=np.float32),
     )
 
     cluster_map = build_candidate_cluster_map(
@@ -595,122 +591,11 @@ def _mk_rank(
 ) -> RankResult:
     return RankResult(
         index=idx,
-        hybrid_score=score,
+        model_score=score,
         best_fav_index=-1,
         max_sim_score=0.0,
         knn_score=0.0,
     )
-
-
-def test_extract_hn_dupe_target_parses_target_id():
-    html = """
-    <html>
-      <span class="titleline">[dupe] Example story</span>
-      <div class="comment">
-        <a href="https://news.ycombinator.com/item?id=12345">dupe target</a>
-      </div>
-    </html>
-    """
-
-    assert _extract_hn_dupe_target(html, 54321) == (True, 12345)
-
-
-def test_load_cached_hn_dupe_target_logs_debug_on_malformed_cache(tmp_path, monkeypatch, caplog):
-    monkeypatch.setattr(generate_html, "HN_DUPE_CACHE_DIR", tmp_path)
-    sid = 47862608
-    cache_path = tmp_path / f"{sid}.json"
-    cache_path.write_text("{not valid json")
-
-    with caplog.at_level(logging.DEBUG):
-        cached = _load_cached_hn_dupe_target(sid)
-
-    assert cached is None
-    assert f"Failed to load HN dupe cache {cache_path}" in caplog.text
-
-
-@pytest.mark.asyncio
-async def test_fetch_hn_dupe_target_refetches_stale_negative_cache(tmp_path, monkeypatch):
-    monkeypatch.setattr(generate_html, "HN_DUPE_CACHE_DIR", tmp_path)
-    sid = 47862608
-    cache_path = tmp_path / f"{sid}.json"
-    cache_path.write_text(json.dumps({"is_dupe": False, "target_id": None}))
-    stale_negative_age = generate_html.HN_DUPE_FALSE_CACHE_TTL + 5
-    now = time.time()
-    os.utime(cache_path, (now - stale_negative_age, now - stale_negative_age))
-
-    response_html = """
-    <html>
-      <span class="titleline">[dupe] Example story</span>
-      <div class="comment">
-        <a href="https://news.ycombinator.com/item?id=47862497">dupe target</a>
-      </div>
-    </html>
-    """
-
-    client = AsyncMock(spec=httpx.AsyncClient)
-    client.get.return_value = httpx.Response(
-        200,
-        text=response_html,
-        request=httpx.Request(
-            "GET", f"https://news.ycombinator.com/item?id={sid}"
-        ),
-    )
-
-    result = await _fetch_hn_dupe_target(client, sid)
-
-    assert result == (True, 47862497)
-    client.get.assert_awaited_once_with(
-        "https://news.ycombinator.com/item",
-        params={"id": sid},
-    )
-    assert json.loads(cache_path.read_text()) == {
-        "is_dupe": True,
-        "target_id": 47862497,
-    }
-
-
-@pytest.mark.asyncio
-async def test_fetch_hn_dupe_target_uses_fresh_positive_cache(tmp_path, monkeypatch):
-    monkeypatch.setattr(generate_html, "HN_DUPE_CACHE_DIR", tmp_path)
-    sid = 47862608
-    cache_path = tmp_path / f"{sid}.json"
-    cache_path.write_text(json.dumps({"is_dupe": True, "target_id": 47862497}))
-    fresh_positive_age = generate_html.HN_DUPE_TRUE_CACHE_TTL - 5
-    now = time.time()
-    os.utime(cache_path, (now - fresh_positive_age, now - fresh_positive_age))
-
-    client = AsyncMock(spec=httpx.AsyncClient)
-
-    result = await _fetch_hn_dupe_target(client, sid)
-
-    assert result == (True, 47862497)
-    client.get.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_filter_top_ranked_hn_dupes_skips_known_duplicate(monkeypatch):
-    cands = [
-        Story(id=20, title="Dupe", url="https://example.com/dupe", score=10, time=1, text_content=""),
-        Story(id=30, title="Keep", url="https://example.com/keep", score=9, time=1, text_content=""),
-        Story(id=-1, title="RSS", url="https://example.com/rss", score=0, time=1, text_content="", source="rss"),
-    ]
-    ranked = [_mk_rank(0, 0.99), _mk_rank(1, 0.98), _mk_rank(2, 0.97)]
-
-    async def fake_fetch(_client, sid: int) -> tuple[bool, int | None]:
-        if sid == 20:
-            return True, 10
-        return False, None
-
-    monkeypatch.setattr(generate_html, "_fetch_hn_dupe_target", fake_fetch)
-
-    filtered = await filter_top_ranked_hn_dupes(
-        ranked,
-        cands,
-        exclude_ids={10},
-        count=2,
-    )
-
-    assert [result.index for result in filtered] == [1, 2]
 
 
 @pytest.mark.asyncio
@@ -727,9 +612,7 @@ async def test_refresh_hn_story_metadata_updates_comment_count_and_score():
         comment_count=3,
     )
     progress: list[tuple[int, int]] = []
-    respx.get(
-        generate_html.HN_FIREBASE_ITEM_URL.format(sid=48179130)
-    ).mock(
+    respx.get("https://hacker-news.firebaseio.com/v0/item/48179130.json").mock(
         return_value=httpx.Response(
             200,
             json={"id": 48179130, "score": 44, "descendants": 17},
@@ -758,7 +641,9 @@ def test_select_ranked_results_caps_external_results_at_quota():
             source="rss",
         )
         if i < 6
-        else Story(id=i + 1, title=f"HN {i}", url=None, score=0, time=1, text_content="")
+        else Story(
+            id=i + 1, title=f"HN {i}", url=None, score=0, time=1, text_content=""
+        )
         for i in range(10)
     ]
     ranked = [_mk_rank(i, 1.0 - (i * 0.01)) for i in range(10)]
@@ -811,7 +696,9 @@ def test_select_ranked_results_preserves_external_floor_when_hn_is_available():
             source="rss",
         )
         if i < 8
-        else Story(id=i + 1, title=f"HN {i}", url=None, score=0, time=1, text_content="")
+        else Story(
+            id=i + 1, title=f"HN {i}", url=None, score=0, time=1, text_content=""
+        )
         for i in range(10)
     ]
     ranked = [_mk_rank(i, 1.0 - (i * 0.01)) for i in range(10)]
@@ -834,9 +721,19 @@ def test_select_ranked_results_preserves_external_floor_when_hn_is_available():
 
 def test_select_ranked_results_preserves_existing_hn_heavy_top_slice():
     cands = [
-        Story(id=-1, title="RSS 0", url=None, score=0, time=1, text_content="", source="rss")
+        Story(
+            id=-1,
+            title="RSS 0",
+            url=None,
+            score=0,
+            time=1,
+            text_content="",
+            source="rss",
+        )
         if i == 0
-        else Story(id=i + 1, title=f"HN {i}", url=None, score=0, time=1, text_content="")
+        else Story(
+            id=i + 1, title=f"HN {i}", url=None, score=0, time=1, text_content=""
+        )
         for i in range(10)
     ]
     ranked = [_mk_rank(i, 1.0 - (i * 0.01)) for i in range(10)]
@@ -857,7 +754,7 @@ def test_select_ranked_results_preserves_existing_hn_heavy_top_slice():
     assert hn_count == 5
 
 
-def test_select_ranked_results_uses_hybrid_scores():
+def test_select_ranked_results_uses_model_scores():
     cands = [
         Story(id=1, title="HN 0", url=None, score=0, time=1, text_content=""),
         Story(id=2, title="HN 1", url=None, score=0, time=1, text_content=""),
@@ -938,7 +835,9 @@ def test_apply_feedback_signal_overrides_preserves_hn_and_overrides_conflicts():
         Story(id=3, title="Hidden but liked", url=None, score=0, time=1, source="hn")
     ]
     feedback_negative = [
-        Story(id=2, title="Favorite but disliked", url=None, score=0, time=1, source="hn")
+        Story(
+            id=2, title="Favorite but disliked", url=None, score=0, time=1, source="hn"
+        )
     ]
 
     pos_ids, neg_ids = apply_feedback_signal_overrides(
@@ -985,7 +884,7 @@ def test_apply_feedback_signal_overrides_prioritizes_dashboard_votes_at_limit():
 def test_get_cluster_id_prefers_candidate_assignment():
     result = RankResult(
         index=0,
-        hybrid_score=1.0,
+        model_score=1.0,
         best_fav_index=0,
         max_sim_score=0.99,
         knn_score=0.99,
@@ -1000,7 +899,7 @@ def test_get_cluster_id_prefers_candidate_assignment():
 def test_get_cluster_id_falls_back_to_best_fav_when_candidate_unassigned():
     result = RankResult(
         index=0,
-        hybrid_score=1.0,
+        model_score=1.0,
         best_fav_index=0,
         max_sim_score=0.99,
         knn_score=0.99,

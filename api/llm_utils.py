@@ -51,11 +51,11 @@ from api.constants import (
     RATE_LIMIT_ERROR_BACKOFF_BASE,
     RATE_LIMIT_ERROR_BACKOFF_MAX,
 )
-from api.models import StoryDict, StoryForTldr
-
-type ClusterItem = tuple[StoryDict, float]
+from api.models import StoryForTldr
+from api.rerank import ClusterItem
 
 logger = logging.getLogger(__name__)
+
 
 def build_messages(contents: object | None) -> list[dict[str, str]]:
     messages: list[dict[str, str]] = []
@@ -128,9 +128,7 @@ class LLMRetryableError(RuntimeError):
         self.is_capacity = is_capacity
 
 
-_LLM_LIMITER: AsyncLimiter = AsyncLimiter(
-    1, max(1.0, float(LLM_MIN_REQUEST_INTERVAL))
-)
+_LLM_LIMITER: AsyncLimiter = AsyncLimiter(1, max(1.0, float(LLM_MIN_REQUEST_INTERVAL)))
 
 
 def _parse_retry_after(value: str) -> float | None:
@@ -201,8 +199,10 @@ def _normalize_cluster_context_text(title: str, text: str) -> str:
         return ""
 
     normalized_title = " ".join(title.split())
-    if normalized_title and normalized_text.casefold().startswith(normalized_title.casefold()):
-        remainder = normalized_text[len(normalized_title):].lstrip(" .:-")
+    if normalized_title and normalized_text.casefold().startswith(
+        normalized_title.casefold()
+    ):
+        remainder = normalized_text[len(normalized_title) :].lstrip(" .:-")
         if remainder:
             normalized_text = remainder
 
@@ -220,7 +220,7 @@ def _finalize_cluster_name(raw_name: str) -> str | None:
     cleaned = cleaned.rstrip(" ,&/").rstrip()
     if cleaned.endswith(" and") or cleaned.endswith(" or"):
         cleaned = cleaned.rsplit(" ", 1)[0].rstrip()
-    
+
     return cleaned or None
 
 
@@ -330,7 +330,7 @@ async def _generate_with_retry(
     import os
 
     provider = os.environ.get("LLM_PROVIDER", LLM_PROVIDER).lower()
-    
+
     if provider == "mistral":
         api_key = os.environ.get("MISTRAL_API_KEY")
         base_url = "https://api.mistral.ai/v1/chat/completions"
@@ -385,9 +385,12 @@ async def _generate_with_retry(
                     if resp.status_code == 429:
                         error_msg = _extract_llm_error_message(resp)
                         msg_lower = error_msg.lower()
-                        if any(x in msg_lower for x in ["quota", "tokens per day", "requests per day"]):
+                        if any(
+                            x in msg_lower
+                            for x in ["quota", "tokens per day", "requests per day"]
+                        ):
                             raise LLMQuotaError(error_msg)
-                        
+
                         retry_after = _retry_after_seconds(resp)
                         raise LLMRetryableError(
                             error_msg,
@@ -403,7 +406,10 @@ async def _generate_with_retry(
 
                     error_msg = _extract_llm_error_message(resp)
                     logger.error(
-                        "%s API error %d: %s", provider.upper(), resp.status_code, error_msg or resp.text
+                        "%s API error %d: %s",
+                        provider.upper(),
+                        resp.status_code,
+                        error_msg or resp.text,
                     )
                     return None
         except LLMQuotaError:
@@ -426,6 +432,7 @@ async def _generate_with_retry(
             return None
 
     return None
+
 
 def _extract_llm_error_message(resp: httpx.Response) -> str:
     """Extract error message from LLM provider response."""
@@ -467,7 +474,7 @@ async def generate_batch_cluster_names(
         if not cached_val and fallback_model:
             fallback_key = _cluster_name_cache_key(story_ids, fallback_model)
             cached_val = cache.get(fallback_key)
-        
+
         if cached_val:
             try:
                 parsed = json.loads(cached_val)
@@ -482,7 +489,7 @@ async def generate_batch_cluster_names(
             except json.JSONDecodeError:
                 # Handle old string-only cache entries by re-generating
                 pass
-        
+
         to_generate[cid] = items
 
     if not to_generate:
@@ -514,7 +521,7 @@ async def generate_batch_cluster_names(
             title = " ".join(title.split())
             if len(title) > LLM_CLUSTER_TITLE_MAX_CHARS:
                 title = title[:LLM_CLUSTER_TITLE_MAX_CHARS].rstrip()
-            
+
             entry = f"Title: {title}"
             # Add context for the highest-signal stories only.
             if i < LLM_CLUSTER_CONTEXT_STORY_COUNT:
@@ -537,52 +544,6 @@ async def generate_batch_cluster_names(
         debug_path.parent.mkdir(parents=True, exist_ok=True)
         debug_path.write_text(json.dumps(debug_records, indent=2))
 
-    def _remap_batch_results(
-        batch_results: dict[str, object],
-        pending_ids: Sequence[int],
-        context: str,
-        batch_index: int,
-        attempt: int,
-        model: str,
-    ) -> dict[str, object]:
-        if not batch_results or not pending_ids:
-            return batch_results
-        pending_set = set(pending_ids)
-        numeric_keys: list[str] = []
-        for k in batch_results:
-            if isinstance(k, str) and k.strip().lstrip("-").isdigit():
-                numeric_keys.append(k)
-        if not numeric_keys:
-            return batch_results
-        if any(int(k) in pending_set for k in numeric_keys):
-            return batch_results
-        # No overlap: model ignored requested IDs. Remap by order.
-        ordered_items = sorted(
-            ((int(k), v) for k, v in batch_results.items() if k in numeric_keys),
-            key=lambda x: x[0],
-        )
-        if len(pending_ids) == 1:
-            return {str(pending_ids[0]): ordered_items[0][1]}
-        if len(ordered_items) != len(pending_ids):
-            return batch_results
-        remapped: dict[str, object] = {}
-        for cid, (_, value) in zip(sorted(pending_ids), ordered_items):
-            remapped[str(cid)] = value
-        if debug_path is not None:
-            debug_records.append(
-                {
-                    "event": "remap_keys",
-                    "context": context,
-                    "batch_index": batch_index,
-                    "attempt": attempt,
-                    "model": model,
-                    "pending_ids": sorted(pending_ids),
-                    "original_keys": numeric_keys,
-                }
-            )
-            _flush_debug()
-        return remapped
-
     for batch_index, cid in enumerate(cid_list, start=1):
         batch_cids = [cid]
         pending: set[int] = {cid}
@@ -600,7 +561,11 @@ async def generate_batch_cluster_names(
                     }
                 )
                 _flush_debug()
-                provider_name = active_model.split("-")[0].capitalize() if "-" in active_model else "LLM"
+                provider_name = (
+                    active_model.split("-")[0].capitalize()
+                    if "-" in active_model
+                    else "LLM"
+                )
                 raise RuntimeError(
                     f"{provider_name} cluster naming timed out after "
                     f"{LLM_CLUSTER_MAX_TOTAL_SECONDS:.0f}s. "
@@ -610,14 +575,22 @@ async def generate_batch_cluster_names(
             batch_prompts: list[str] = []
             for cid in sorted(pending):
                 info_entries = payloads.get(cid, [])
-                info_block = "\n\n".join(info_entries) if info_entries else "(no stories)"
+                info_block = (
+                    "\n\n".join(info_entries) if info_entries else "(no stories)"
+                )
                 batch_prompts.append(info_block)
 
             used_names = sorted(
-                set(n["name"] for n in results.values() if isinstance(n, dict) and n.get("name"))
+                set(
+                    n["name"]
+                    for n in results.values()
+                    if isinstance(n, dict) and n.get("name")
+                )
             )
             already_used_str = (
-                f"Already Used Names (DO NOT REUSE): {', '.join(used_names)}" if used_names else ""
+                f"Already Used Names (DO NOT REUSE): {', '.join(used_names)}"
+                if used_names
+                else ""
             )
 
             full_prompt = f"""
@@ -668,10 +641,17 @@ async def generate_batch_cluster_names(
                         batch_results = _safe_json_loads(text)
                         if "name" in batch_results:
                             only_cid = next(iter(pending))
-                            final_name = _finalize_cluster_name(str(batch_results["name"]))
-                            final_keywords = str(batch_results.get("keywords", "")).strip()
+                            final_name = _finalize_cluster_name(
+                                str(batch_results["name"])
+                            )
+                            final_keywords = str(
+                                batch_results.get("keywords", "")
+                            ).strip()
                             if final_name:
-                                profile = {"name": final_name, "keywords": final_keywords}
+                                profile = {
+                                    "name": final_name,
+                                    "keywords": final_keywords,
+                                }
                                 results[only_cid] = profile
                                 items = to_generate[only_cid]
                                 story_ids = sorted(
@@ -800,7 +780,11 @@ async def generate_batch_cluster_names(
                     }
                 )
                 _flush_debug()
-                provider_name = active_model.split("-")[0].capitalize() if "-" in active_model else "LLM"
+                provider_name = (
+                    active_model.split("-")[0].capitalize()
+                    if "-" in active_model
+                    else "LLM"
+                )
                 raise RuntimeError(
                     f"{provider_name} cluster naming timed out after "
                     f"{LLM_CLUSTER_MAX_TOTAL_SECONDS:.0f}s. "
@@ -810,11 +794,23 @@ async def generate_batch_cluster_names(
             rescue_prompts = []
             for cid in batch_missing:
                 info_entries = payloads.get(cid, [])
-                info_block = "\n\n".join(info_entries) if info_entries else "(no stories)"
+                info_block = (
+                    "\n\n".join(info_entries) if info_entries else "(no stories)"
+                )
                 rescue_prompts.append(info_block)
 
-            used_names = sorted(set(n["name"] for n in results.values() if isinstance(n, dict) and n.get("name")))
-            already_used_str = f"Already Used Names (DO NOT REUSE): {', '.join(used_names)}" if used_names else ""
+            used_names = sorted(
+                set(
+                    n["name"]
+                    for n in results.values()
+                    if isinstance(n, dict) and n.get("name")
+                )
+            )
+            already_used_str = (
+                f"Already Used Names (DO NOT REUSE): {', '.join(used_names)}"
+                if used_names
+                else ""
+            )
 
             full_prompt = f"""
             Analyze this cluster of stories and provide:
@@ -858,12 +854,12 @@ async def generate_batch_cluster_names(
                         rescue_model = active_model
                         if debug_path is not None:
                             debug_records.append(
-                            {
-                                "event": "fallback",
-                                "reason": "quota_error_rescue",
-                                "batch_index": rescue_index,
-                                "batch_cids": batch_missing,
-                                "error": str(e),
+                                {
+                                    "event": "fallback",
+                                    "reason": "quota_error_rescue",
+                                    "batch_index": rescue_index,
+                                    "batch_cids": batch_missing,
+                                    "error": str(e),
                                     "from_model": primary_model,
                                     "to_model": fallback_model,
                                 }
@@ -920,21 +916,18 @@ async def generate_batch_cluster_names(
                 returned = 0
                 batch_results: dict[str, object] | None = None
                 if text and len(batch_missing) == 1:
-                    cid = batch_missing[0]
-                    final_name = _finalize_cluster_name(text)
-                    if final_name:
-                        profile = {"name": final_name, "keywords": ""}
+                    batch_results = _safe_json_loads(text)
+                    if "name" in batch_results:
+                        cid = batch_missing[0]
+                        final_name = _finalize_cluster_name(str(batch_results["name"]))
+                        final_keywords = str(batch_results.get("keywords", "")).strip()
+                        profile = {"name": final_name, "keywords": final_keywords}
                         results[cid] = profile
                         items = to_generate[cid]
                         story_ids = sorted(
-                            [
-                                str(s.get("id", s.get("objectID", "")))
-                                for s, _ in items
-                            ]
+                            [str(s.get("id", s.get("objectID", ""))) for s, _ in items]
                         )
-                        cache_key = _cluster_name_cache_key(
-                            story_ids, rescue_model
-                        )
+                        cache_key = _cluster_name_cache_key(story_ids, rescue_model)
                         cache[cache_key] = json.dumps(profile)
                         returned += 1
 
@@ -946,8 +939,7 @@ async def generate_batch_cluster_names(
                             "model": rescue_model,
                             "batch_cids": batch_missing,
                             "payloads": {
-                                str(cid): payloads.get(cid, {})
-                                for cid in batch_missing
+                                str(cid): payloads.get(cid, {}) for cid in batch_missing
                             },
                             "prompt": full_prompt,
                             "response": text,
@@ -972,12 +964,15 @@ async def generate_batch_cluster_names(
             except Exception:
                 logger.exception("Cluster naming rescue batch failed")
 
+    _save_cluster_name_cache(cache)
     _flush_debug()
 
     missing = [cid for cid in clusters if not results.get(cid)]
     if missing:
         elapsed = time.time() - start_time
-        provider_name = active_model.split("-")[0].capitalize() if "-" in active_model else "LLM"
+        provider_name = (
+            active_model.split("-")[0].capitalize() if "-" in active_model else "LLM"
+        )
         raise RuntimeError(
             f"{provider_name} cluster naming failed for "
             f"{len(missing)} clusters after {request_count} requests "
@@ -998,6 +993,7 @@ def _coerce_tldr_value(value: object) -> str:
         return value.strip().strip('"').strip("'")
     if isinstance(value, dict):
         from typing import cast
+
         dict_val = cast(dict[str, object], value)
         for key in ("summary", "tldr", "tl_dr", "text"):
             if key in dict_val:
@@ -1035,31 +1031,18 @@ def _build_tldr_prompt(stories_formatted: Sequence[str]) -> str:
     """Build the TL;DR prompt with a flat JSON contract."""
     batch_context = "\n\n".join(stories_formatted)
     return f"""
-Synthesize one TL;DR per story using only the provided Content and Comments.
+For each story, write exactly 3 bullet points (single paragraph, max 60 words total):
+1. Core claim or finding
+2. Key mechanism or method
+3. Tension, trade-off, or takeaway from discussion
 
-Rules:
-- Return ONLY valid JSON.
-- Return a flat JSON object mapping each requested story ID string to a plain string summary.
-- Do NOT return nested objects, arrays, or metadata fields.
-- Do NOT include title, source, or any extra keys inside the value.
-- Exactly 2 sentences per summary, max 45 words total.
-- Sentence 1: The primary thesis (technical 'how' for tools, industry 'why' for news/meta).
-- Sentence 2: The critical synthesis or trade-offs from the community discussion.
-- Use dense, professional terminology. Avoid conversational filler or repeating the title.
-- Every requested story ID must be present exactly once.
-- Summaries must be grounded only in the data provided for that specific ID.
-
-Bad example:
-{{
-  "12345": {{
-    "title": "Tool X",
-    "summary": "Nested objects are not allowed."
-  }}
-}}
+Use only the provided Content and Comments. Use concrete, domain-specific language.
+Do not repeat the title. Do not use vague filler.
+Return ONLY valid flat JSON (story_id -> string), every ID present exactly once.
 
 Good example:
 {{
-  "12345": "Tool X implements lock-free concurrency via atomic primitives to minimize context switching overhead. Community consensus highlights impressive benchmarks while cautioning against increased memory pressure in multi-tenant environments."
+  "12345": "Tool X implements lock-free concurrency via atomic primitives. Latency drops 40% under 16-core contention by sharding across NUMA domains. Comments flag multi-tenant memory pressure as the main deployment gotcha."
 }}
 
 Stories:
@@ -1117,12 +1100,12 @@ async def generate_batch_tldrs(
                 title = s.get("title", "Untitled")
                 comments = s.get("comments", [])
                 text_content = s.get("text_content", "")
-                
+
                 context = f"### STORY ID: {sid} ###\nTitle: {title}"
                 if text_content:
                     # Include a significant portion of text content for better grounding
                     context += f"\nContent: {text_content[:1000]}"
-                
+
                 if comments:
                     context += "\nComments:\n" + "\n".join(
                         f"- {c[:300]}" for c in comments[:6]
@@ -1160,7 +1143,9 @@ async def generate_batch_tldrs(
                             logger.debug(f"Failed to parse TLDR for {sid_str}: {e}")
                             continue
             except Exception:
-                logger.exception(f"TLDR batch generation failed (attempt {attempt+1})")
+                logger.exception(
+                    f"TLDR batch generation failed (attempt {attempt + 1})"
+                )
 
         if progress_callback:
             progress_callback(completed_initial + i + len(original_batch), len(stories))

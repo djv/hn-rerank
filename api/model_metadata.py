@@ -50,11 +50,11 @@ class EmbeddingModelSpec:
 
 
 CURRENT_PRODUCTION_SPEC = EmbeddingModelSpec(
-    model_id="BAAI/bge-small-en-v1.5",
-    pooling="cls",
+    model_id="sentence-transformers/all-MiniLM-L6-v2",
+    pooling="mean",
     normalize=True,
-    text_mode="query_prefix_all",
-    query_prefix=DEFAULT_QUERY_PREFIX,
+    text_mode="plain",
+    max_tokens=256,
 )
 
 BGE_BASE_OFFICIAL_SPEC = EmbeddingModelSpec(
@@ -62,6 +62,14 @@ BGE_BASE_OFFICIAL_SPEC = EmbeddingModelSpec(
     pooling="cls",
     normalize=True,
     text_mode="plain",
+)
+
+ALL_MINILM_L6_V2_SPEC = EmbeddingModelSpec(
+    model_id="sentence-transformers/all-MiniLM-L6-v2",
+    pooling="mean",
+    normalize=True,
+    text_mode="plain",
+    max_tokens=256,
 )
 
 BGE_SMALL_CLS_QUERY_ALL_SPEC = EmbeddingModelSpec(

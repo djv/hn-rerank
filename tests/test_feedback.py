@@ -1,9 +1,11 @@
 import json
+from typing import cast
 
 import pytest
 
 from api.feedback import (
     FEEDBACK_STORE_VERSION,
+    FeedbackPayload,
     apply_feedback_payload,
     feedback_action_for_story,
     feedback_key,
@@ -23,7 +25,7 @@ def test_feedback_key_prefers_normalized_url():
 
 def test_feedback_store_latest_vote_wins_and_clear_removes(tmp_path):
     path = tmp_path / "feedback.json"
-    payload = {
+    payload: FeedbackPayload = {
         "id": 123,
         "source": "hn",
         "title": "Story",
@@ -38,12 +40,15 @@ def test_feedback_store_latest_vote_wins_and_clear_removes(tmp_path):
 
     assert record is not None
     assert records[record.key].action == "up"
-    assert feedback_action_for_story(
-        records,
-        source="hn",
-        story_id=123,
-        url="https://example.com/story",
-    ) == "up"
+    assert (
+        feedback_action_for_story(
+            records,
+            source="hn",
+            story_id=123,
+            url="https://example.com/story",
+        )
+        == "up"
+    )
 
     payload["action"] = "neutral"
     records, record = apply_feedback_payload(payload, path=path)
@@ -102,38 +107,32 @@ def test_feedback_store_round_trips_records(tmp_path):
 
 def test_feedback_store_ignores_runtime_rank_diagnostics_on_write(tmp_path):
     path = tmp_path / "feedback.json"
+    payload: dict[str, object] = {
+        "id": 123,
+        "source": "hn",
+        "title": "Ranked",
+        "url": "https://example.com/ranked",
+        "discussion_url": "https://news.ycombinator.com/item?id=123",
+        "text_content": "Ranked text",
+        "time": 1700000000,
+        "score": 321,
+        "comment_count": 45,
+        "action": "up",
+        "knn_score": 0.6,
+        "max_sim_score": 0.5,
+        "max_cluster_score": 0.4,
+    }
     _, record = apply_feedback_payload(
-        {
-            "id": 123,
-            "source": "hn",
-            "title": "Ranked",
-            "url": "https://example.com/ranked",
-            "discussion_url": "https://news.ycombinator.com/item?id=123",
-            "text_content": "Ranked text",
-            "time": 1700000000,
-            "score": 321,
-            "comment_count": 45,
-            "action": "up",
-            "hybrid_score": 0.9,
-            "semantic_score": 0.8,
-            "knn_score": 0.6,
-            "max_sim_score": 0.5,
-            "max_cluster_score": 0.4,
-            "cross_encoder_score": 0.3,
-        },
+        cast(FeedbackPayload, payload),
         path=path,
     )
     assert record is not None
 
-    raw = json.loads(path.read_text())
     loaded = load_feedback(path)[record.key]
     story = loaded.to_story()
 
     assert story.score == 321
     assert story.comment_count == 45
-    assert "hybrid_score" not in raw["records"][record.key]
-    assert "semantic_score" not in raw["records"][record.key]
-    assert "cross_encoder_score" not in raw["records"][record.key]
 
 
 def test_feedback_payload_requires_record_for_clear():

@@ -113,30 +113,6 @@ Important note:
 
 - this cache is legacy support for older snapshots, not a live runtime input
 
-## HN Dupe Cache
-
-Code:
-
-- `generate_html.py`
-
-Directory:
-
-- `.cache/hn_dupes`
-
-Payload:
-
-- one JSON file per HN story id
-- stores:
-  - `is_dupe`
-  - `target_id`
-
-Current TTLs:
-
-- dupe result: `15 days`
-- non-dupe result: `1 day`
-
-This cache exists because live item-page dupe checks are slow and rate-limited.
-
 ## Feedback Store
 
 Code:
@@ -179,9 +155,7 @@ If a result looks wrong, ask which cache layer might be serving stale data:
 1. user-signal cache
 2. candidate cache
 3. story cache
-4. legacy CE score cache
-5. dupe cache
-6. feedback store
+4. feedback store
 
 Do not assume a single "the cache" in this repo. There are several distinct
 cache layers with different invalidation rules.

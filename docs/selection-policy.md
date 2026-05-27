@@ -57,7 +57,7 @@ HN selection is simpler:
 After combining selected external and selected HN stories, the slate is sorted
 by active final score:
 
-- `hybrid_score`
+- `model_score`
 
 That means quota affects membership, but final within-slate order is still
 score-driven.
@@ -69,16 +69,8 @@ single-model ranked pool and preserves the external quota policy.
 
 ## Interaction With Dupe Filtering
 
-Important current limitation:
-
-- HN dupe filtering happens after selection
-- if a selected HN story is removed as a dupe, selection is not rerun
-- there is no refill from the remaining ranked pool
-
-Consequences:
-
-- final page can have fewer than `count` cards
-- selected source mix can differ from rendered source mix
+The dupe filtering step (`filter_top_ranked_hn_dupes`) is currently a no-op.
+Selection output is the final rendered result — there is no post-selection removal.
 
 ## Practical Debugging Rule
 

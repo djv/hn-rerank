@@ -2,7 +2,7 @@ from pathlib import Path
 import subprocess
 
 from api.model_metadata import (
-    BGE_SMALL_CLS_QUERY_ALL_SPEC,
+    ALL_MINILM_L6_V2_SPEC,
     load_model_spec,
     write_model_spec,
 )
@@ -16,17 +16,17 @@ MODEL_EXPORT_EXTRA_HINT = (
 def setup():
     model_dir = Path("onnx_model")
     if (model_dir / "model.onnx").exists():
-        if load_model_spec(model_dir) == BGE_SMALL_CLS_QUERY_ALL_SPEC:
+        if load_model_spec(model_dir) == ALL_MINILM_L6_V2_SPEC:
             print("Model already exists.")
             return
         raise SystemExit(
-            "Existing onnx_model is not BGE-small CLS/query-all. "
+            "Existing onnx_model is not all-MiniLM-L6-v2. "
             "Move or remove onnx_model, then rerun setup_model.py."
         )
         return
 
-    print("Setting up model (requires internet and ~150MB space)...")
-    model_id = BGE_SMALL_CLS_QUERY_ALL_SPEC.model_id
+    print("Setting up model (requires internet and ~90MB space)...")
+    model_id = ALL_MINILM_L6_V2_SPEC.model_id
 
     print(f"Exporting {model_id} to ONNX...")
     try:
@@ -48,7 +48,7 @@ def setup():
     except FileNotFoundError as exc:
         raise SystemExit(MODEL_EXPORT_EXTRA_HINT) from exc
 
-    write_model_spec(model_dir, BGE_SMALL_CLS_QUERY_ALL_SPEC)
+    write_model_spec(model_dir, ALL_MINILM_L6_V2_SPEC)
     print("Setup complete.")
 
 

@@ -164,7 +164,5 @@ uv run python evaluate_quality.py pure_coder --classifier --cache-only --age-mat
 ## Current Limitations
 
 - held-out positives are injected
-- final HTML behavior can still differ from eval if post-selection dupe
-  filtering removes cards
 - cached evaluation is easier than live production behavior
 - the feedback replay is still approximate, not exact vote-time reconstruction

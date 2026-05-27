@@ -34,15 +34,20 @@ async def test_generate_html_integration(tmp_path):
         patch("generate_html.rerank.get_embeddings") as mock_emb,
         patch("generate_html.rerank.get_cluster_embeddings") as mock_cluster_emb,
         patch("generate_html.rerank.cluster_interests_with_labels") as mock_cluster,
-        patch("generate_html.train_single_model_from_embeddings") as mock_train_single_model,
+        patch(
+            "generate_html.train_single_model_from_embeddings"
+        ) as mock_train_single_model,
         patch("generate_html.rerank.rank_stories") as mock_rank,
-        patch("generate_html.filter_top_ranked_hn_dupes", new_callable=AsyncMock) as mock_dupes,
+        patch(
+            "generate_html.filter_top_ranked_hn_dupes", new_callable=AsyncMock
+        ) as mock_dupes,
         patch("generate_html.refresh_hn_story_metadata", new_callable=AsyncMock),
         patch(
             "generate_html.llm_utils.generate_batch_tldrs", new_callable=AsyncMock
         ) as mock_batch_tldrs,
         patch(
-            "generate_html.llm_utils.generate_batch_cluster_names", new_callable=AsyncMock
+            "generate_html.llm_utils.generate_batch_cluster_names",
+            new_callable=AsyncMock,
         ) as mock_batch_names,
     ):
         # Mock LLM functions
@@ -78,7 +83,7 @@ async def test_generate_html_integration(tmp_path):
         mock_rank.return_value = [
             RankResult(
                 index=0,
-                hybrid_score=0.95,
+                model_score=0.95,
                 best_fav_index=0,
                 max_sim_score=0.95,
                 knn_score=0.12,

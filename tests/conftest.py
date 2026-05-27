@@ -79,21 +79,15 @@ def make_rank_result() -> Callable[..., RankResult]:
     def _make_rank_result(
         index: int = 0,
         *,
-        hybrid_score: float = 1.0,
+        model_score: float = 1.0,
         best_fav_index: int = -1,
         max_sim_score: float = 0.0,
         knn_score: float = 0.0,
         max_cluster_score: float = 0.0,
-        semantic_score: float = 0.0,
     ) -> RankResult:
         return RankResult(
             index=index,
-            hybrid_score=hybrid_score,
-            best_fav_index=best_fav_index,
-            max_sim_score=max_sim_score,
-            knn_score=knn_score,
-            max_cluster_score=max_cluster_score,
-            semantic_score=semantic_score,
+            model_score=model_score,
         )
 
     return _make_rank_result

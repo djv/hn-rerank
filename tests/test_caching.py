@@ -89,5 +89,12 @@ async def test_cluster_name_fallback_no_api_key(temp_cache_file):
     items: list[tuple[StoryDict, float]] = [(make_story(789, "Story 3"), 1.0)]
     clusters: dict[int, list[tuple[StoryDict, float]]] = {0: items}
 
-    with patch.dict("os.environ", {}, clear=True), pytest.raises(RuntimeError):
+    with (
+        patch(
+            "api.llm_utils._generate_with_retry", side_effect=RuntimeError("no api key")
+        ),
+        patch("asyncio.sleep"),
+        patch.dict("os.environ", {}, clear=True),
+        pytest.raises(RuntimeError),
+    ):
         await llm_utils.generate_batch_cluster_names(clusters)

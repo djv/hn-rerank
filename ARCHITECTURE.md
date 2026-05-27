@@ -98,12 +98,11 @@ Embedding model:
 - embedding results are cached in `.cache/embeddings` and `.cache/embeddings_cluster`
 
 Clustering path:
-- default algorithm is `agglomerative`
-- alternatives exist for `spectral` and `kmeans`
-- cluster count is capped by sample count, `MAX_CLUSTERS`, and `MIN_SAMPLES_PER_CLUSTER`
-- post-processing refines assignments, merges small clusters, splits oversized clusters, and can split low-similarity outliers into singleton clusters
-
-The clustering configuration is controlled by constants and nested TOML sections such as `[hn_rerank.clustering]`.
+- algorithm: KMeans only
+- cluster count: `round(sqrt(n_samples))` clamped to `[min_clusters, max_clusters, n_samples]`
+- centroids are computed from normalized embeddings for reliable cosine similarity
+- post-processing refines assignments, splits oversized clusters, and can split low-similarity outliers into singleton clusters
+- configuration is under `[hn_rerank.clustering]` in the TOML file
 
 ## Ranking
 
@@ -132,10 +131,10 @@ The current production architecture uses **Pairwise Logistic Regression** with *
 
 
 Final ranking behavior:
-- the first-stage score becomes `hybrid_score`
+- the first-stage score becomes `model_score`
 - MMR-style diversification suppresses redundant candidates within the ranked pool
 - the feedback-trained single model scores the ranked list directly
-- the UI match badge uses `max_cluster_score`, while ordering uses `hybrid_score`
+- the UI match badge uses `max_cluster_score`, while ordering uses `model_score`
 
 ## LLM Enrichment
 
