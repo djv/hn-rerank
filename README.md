@@ -294,9 +294,10 @@ attempts HN hide; local feedback is kept even if that HN sync fails.
 ## Development
 
 ```bash
-uv run pytest
+uv run pytest -q -n auto          # full suite in parallel (~9s)
+uv run pytest -q -m "not slow"    # fast dev loop, skips 6 heavy tests (~6s)
 uv run ruff check .
-uv run ty check .
+uv run ty check api/ tests/
 ```
 
 ## UI Change Verification

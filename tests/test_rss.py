@@ -27,7 +27,201 @@ def _stories_from_feed(feed_xml: str, feed_url: str, max_items: int, min_ts: int
     return stories
 
 
-def test_extract_opml_feed_urls():
+# --- Source-specific test cases ---
+# To add a new source: add an entry to _SOURCE_FEED_CASES, set its spec flags in
+# external_sources.py, and add its URL to RSS_EXTRA_FEEDS in constants.py.
+
+_SOURCE_FEED_CASES: dict[str, tuple[str, str, dict[str, object]]] = {
+    "lobsters": (
+        """
+        <rss version="2.0"><channel><language>en</language>
+        <item><title>Lobsters Post</title><link>https://example.com/post</link>
+        <comments>https://lobste.rs/s/example/post</comments>
+        <pubDate>Mon, 02 Feb 2026 12:00:00 GMT</pubDate>
+        <description>Lobsters summary</description></item></channel></rss>
+        """,
+        "https://lobste.rs/rss",
+        {
+            "source": "lobsters",
+            "badge_label": "Lobsters",
+            "discussion_url": "https://lobste.rs/s/example/post",
+        },
+    ),
+    "lesswrong": (
+        """
+        <rss version="2.0"><channel><language>en</language>
+        <item><title>LessWrong Post</title><link>https://www.lesswrong.com/posts/abc/example</link>
+        <pubDate>Mon, 02 Feb 2026 12:00:00 GMT</pubDate>
+        <description>LessWrong summary</description></item></channel></rss>
+        """,
+        "https://www.lesswrong.com/feed.xml",
+        {"source": "lesswrong", "badge_label": "LessWrong"},
+    ),
+    "tildes": (
+        """
+        <rss version="2.0"><channel><language>en</language>
+        <item><title>Tildes Post</title><link>https://tildes.net/~tech/123/example</link>
+        <pubDate>Mon, 02 Feb 2026 12:00:00 GMT</pubDate>
+        <description>&lt;p&gt;Votes: 12&lt;/p&gt;&lt;p&gt;Tildes summary&lt;/p&gt;</description>
+        </item></channel></rss>
+        """,
+        "https://tildes.net/topics.rss",
+        {"source": "tildes", "badge_label": "Tildes", "score": 12},
+    ),
+    "slashdot": (
+        """
+        <rss version="2.0" xmlns:slash="http://purl.org/rss/1.0/modules/slash/">
+        <channel><language>en</language>
+        <item><title>Slashdot Post</title><link>https://slashdot.org/story/26/02/02/123456/example</link>
+        <comments>https://slashdot.org/story/26/02/02/123456/example#comments</comments>
+        <pubDate>Mon, 02 Feb 2026 12:00:00 GMT</pubDate>
+        <description>Slashdot summary</description>
+        <slash:comments>42</slash:comments></item></channel></rss>
+        """,
+        "https://rss.slashdot.org/Slashdot/slashdotMain",
+        {
+            "source": "slashdot",
+            "badge_label": "Slashdot",
+            "url": "https://slashdot.org/story/26/02/02/123456/example",
+            "discussion_url": "https://slashdot.org/story/26/02/02/123456/example#comments",
+            "score": 0,
+            "comment_count": 42,
+        },
+    ),
+    "github_trending": (
+        """
+        <rss version="2.0"><channel><language>en</language>
+        <item><title>owner/project</title><link>https://github.com/owner/project</link>
+        <pubDate>Mon, 02 Feb 2026 12:00:00 GMT</pubDate>
+        <description><![CDATA[<p>Short summary.</p><hr><h1>Project README</h1>
+        <p>Install with <code>uv tool install owner-project</code>.</p>]]></description>
+        </item></channel></rss>
+        """,
+        "https://mshibanami.github.io/GitHubTrendingRSS/monthly/python.xml",
+        {
+            "source": "github_trending",
+            "badge_label": "GitHub Trending",
+            "url": "https://github.com/owner/project",
+        },
+    ),
+    "reddit_machinelearning": (
+        """
+        <feed xmlns="http://www.w3.org/2005/Atom">
+        <title>Machine Learning</title>
+        <entry><title>ML Post [R]</title>
+        <link href="https://www.reddit.com/r/MachineLearning/comments/1sun588/post/"/>
+        <published>2026-04-24T17:58:00+00:00</published>
+        <content type="html">&lt;div class=&quot;md&quot;&gt;&lt;p&gt;Research.&lt;/p&gt;&lt;/div&gt;
+        &lt;span&gt;&lt;a href=&quot;https://arxiv.org/abs/2604.21691&quot;&gt;[link]&lt;/a&gt;&lt;/span&gt;
+        &lt;span&gt;&lt;a href=&quot;https://www.reddit.com/r/MachineLearning/comments/1sun588/post/&quot;&gt;[comments]&lt;/a&gt;&lt;/span&gt;
+        </content></entry></feed>
+        """,
+        "https://www.reddit.com/r/MachineLearning/top/.rss?t=week&limit=25",
+        {
+            "source": "reddit_machinelearning",
+            "badge_label": "r/MachineLearning",
+            "url": "https://arxiv.org/abs/2604.21691",
+            "discussion_url": "https://www.reddit.com/r/MachineLearning/comments/1sun588/post/",
+        },
+    ),
+    "reddit_programming": (
+        """
+        <feed xmlns="http://www.w3.org/2005/Atom">
+        <title>programming</title>
+        <entry><title>Programming Link</title>
+        <link href="https://www.reddit.com/r/programming/comments/abc/post/"/>
+        <published>2026-04-24T17:58:00+00:00</published>
+        <content type="html">
+        &lt;span&gt;&lt;a href=&quot;https://example.com/programming&quot;&gt;[link]&lt;/a&gt;&lt;/span&gt;
+        &lt;span&gt;&lt;a href=&quot;https://www.reddit.com/r/programming/comments/abc/post/&quot;&gt;[comments]&lt;/a&gt;&lt;/span&gt;
+        </content></entry></feed>
+        """,
+        "https://www.reddit.com/r/programming/top/.rss?t=week&limit=25",
+        {
+            "source": "reddit_programming",
+            "badge_label": "r/programming",
+            "url": "https://example.com/programming",
+            "discussion_url": "https://www.reddit.com/r/programming/comments/abc/post/",
+        },
+    ),
+}
+
+_REDIRECT_TEST_CASES: dict[str, tuple[str, str, dict[str, object]]] = {
+    "reddit_self_post": (
+        """
+        <feed xmlns="http://www.w3.org/2005/Atom">
+        <title>Machine Learning</title>
+        <entry><title>Self Post</title>
+        <link href="LINK_PLACEHOLDER"/>
+        <published>2026-04-29T00:46:15+00:00</published>
+        <content type="html">&lt;div class=&quot;md&quot;&gt;&lt;p&gt;Discussion.&lt;/p&gt;&lt;/div&gt;
+        &lt;span&gt;&lt;a href=&quot;LINK_PLACEHOLDER_ESCAPED&quot;&gt;[link]&lt;/a&gt;&lt;/span&gt;
+        &lt;span&gt;&lt;a href=&quot;LINK_PLACEHOLDER_ESCAPED&quot;&gt;[comments]&lt;/a&gt;&lt;/span&gt;
+        </content></entry></feed>
+        """,
+        "https://www.reddit.com/r/MachineLearning/top/.rss?t=week&limit=25",
+        {"source": "reddit_machinelearning"},
+    ),
+    "reddit_score": (
+        """
+        <feed xmlns="http://www.w3.org/2005/Atom">
+        <entry><title>Scored Post</title>
+        <link href="https://www.reddit.com/r/MachineLearning/comments/123/"/>
+        <updated>2026-04-24T17:58:00Z</updated>
+        <content type="html">
+        &lt;span&gt;&lt;a href=&quot;https://example.com/&quot;&gt;[link]&lt;/a&gt;&lt;/span&gt;
+        &lt;span&gt;&lt;a href=&quot;https://www.reddit.com/r/MachineLearning/comments/123/&quot;&gt;[comments]&lt;/a&gt;&lt;/span&gt; (score: 789)
+        </content></entry></feed>
+        """,
+        "https://www.reddit.com/r/MachineLearning/top/.rss?t=week&limit=25",
+        {"source": "reddit_machinelearning", "score": 789},
+    ),
+    "feed_date_github_trending": (
+        """
+        <rss version="2.0"><channel>
+        <title>GitHub All Languages</title><language>en</language>
+        <pubDate>Tue, 19 May 2026 01:56:32 GMT</pubDate>
+        <item><title>owner/project</title><link>https://github.com/owner/project</link>
+        <description>Desc.</description></item></channel></rss>
+        """,
+        "https://mshibanami.github.io/GitHubTrendingRSS/monthly/all.xml",
+        {"source": "github_trending"},
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_SOURCE_FEED_CASES))
+def test_source_detection_and_metadata(name: str) -> None:
+    xml, feed_url, expected = _SOURCE_FEED_CASES[name]
+    stories = _stories_from_feed(xml, feed_url, max_items=5, min_ts=0)
+    assert len(stories) == 1
+    story = stories[0]
+    for attr, val in expected.items():
+        assert getattr(story, attr) == val, f"story.{attr} mismatch for {name}"
+
+
+@pytest.mark.parametrize("name", sorted(_REDIRECT_TEST_CASES))
+def test_reddit_redirect_and_score_variants(name: str) -> None:
+    data = _REDIRECT_TEST_CASES[name]
+    xml_template, feed_url, expected = data
+    comments_url = "https://www.reddit.com/r/MachineLearning/comments/1syjlc2/post/"
+    xml = xml_template.replace(
+        "LINK_PLACEHOLDER_ESCAPED", comments_url.replace("&", "&amp;")
+    ).replace("LINK_PLACEHOLDER", comments_url)
+    stories = _stories_from_feed(xml, feed_url, max_items=5, min_ts=0)
+    assert len(stories) == 1
+    story = stories[0]
+    if name == "reddit_self_post":
+        assert story.url == comments_url
+        assert story.discussion_url == comments_url
+    elif name == "feed_date_github_trending":
+        expected_ts = _parse_date("Tue, 19 May 2026 01:56:32 GMT")
+        assert story.time == expected_ts
+    for attr, val in expected.items():
+        assert getattr(story, attr) == val, f"story.{attr} mismatch for {name}"
+
+
+def test_extract_opml_feed_urls() -> None:
     opml = """
     <opml version="2.0">
       <body>
@@ -150,39 +344,6 @@ def test_parse_feed_entries_skips_undated_items():
     assert stories == []
 
 
-def test_parse_feed_entries_uses_feed_date_for_github_trending_items():
-    xml = """
-    <rss version="2.0">
-      <channel>
-        <title>GitHub All Languages Monthly Trending</title>
-        <language>en</language>
-        <pubDate>Tue, 19 May 2026 01:56:32 GMT</pubDate>
-        <item>
-          <title>mattpocock/skills</title>
-          <link>https://github.com/mattpocock/skills</link>
-          <description>Skills for Real Engineers.</description>
-        </item>
-        <item>
-          <title>multica-ai/andrej-karpathy-skills</title>
-          <link>https://github.com/multica-ai/andrej-karpathy-skills</link>
-          <description>AI agent skills collection.</description>
-        </item>
-      </channel>
-    </rss>
-    """
-    feed_ts = _parse_date("Tue, 19 May 2026 01:56:32 GMT")
-    stories = _stories_from_feed(
-        xml,
-        feed_url="https://mshibanami.github.io/GitHubTrendingRSS/monthly/all.xml",
-        max_items=5,
-        min_ts=0,
-    )
-
-    assert len(stories) == 2
-    assert {story.source for story in stories} == {"github_trending"}
-    assert [story.time for story in stories] == [feed_ts, feed_ts]
-
-
 def test_parse_feed_entries_does_not_use_feed_date_for_generic_items():
     xml = """
     <rss version="2.0">
@@ -256,7 +417,6 @@ def test_parse_feed_entries_allows_supported_feed_language():
     assert stories[0].title == "Bonjour le monde"
 
 
-
 def test_parse_feed_entries_filters_unsupported_feed_language_by_detection():
     xml = """
     <rss version="2.0">
@@ -285,277 +445,6 @@ def test_parse_feed_entries_filters_unsupported_feed_language_by_detection():
         min_ts=0,
     )
     assert stories == []
-
-
-def test_parse_feed_entries_preserves_discussion_url_for_curated_sources():
-    xml = """
-    <rss version="2.0">
-      <channel>
-        <language>en</language>
-        <item>
-          <title>Lobsters Post</title>
-          <link>https://example.com/post</link>
-          <comments>https://lobste.rs/s/example/post</comments>
-          <pubDate>Mon, 02 Feb 2026 12:00:00 GMT</pubDate>
-          <description>Lobsters summary</description>
-        </item>
-      </channel>
-    </rss>
-    """
-    stories = _stories_from_feed(
-        xml,
-        feed_url="https://lobste.rs/rss",
-        max_items=5,
-        min_ts=0,
-    )
-    assert len(stories) == 1
-    story = stories[0]
-    assert story.source == "lobsters"
-    assert story.discussion_url == "https://lobste.rs/s/example/post"
-
-
-def test_parse_feed_entries_marks_lesswrong_source():
-    xml = """
-    <rss version="2.0">
-      <channel>
-        <language>en</language>
-        <item>
-          <title>LessWrong Post</title>
-          <link>https://www.lesswrong.com/posts/abc/example</link>
-          <pubDate>Mon, 02 Feb 2026 12:00:00 GMT</pubDate>
-          <description>LessWrong summary</description>
-        </item>
-      </channel>
-    </rss>
-    """
-    stories = _stories_from_feed(
-        xml,
-        feed_url="https://www.lesswrong.com/feed.xml",
-        max_items=5,
-        min_ts=0,
-    )
-
-    assert len(stories) == 1
-    assert stories[0].source == "lesswrong"
-    assert stories[0].badge_label == "LessWrong"
-
-
-def test_parse_feed_entries_marks_slashdot_source_and_comments():
-    xml = """
-    <rss version="2.0" xmlns:slash="http://purl.org/rss/1.0/modules/slash/">
-      <channel>
-        <language>en</language>
-        <item>
-          <title>Slashdot Post</title>
-          <link>https://slashdot.org/story/26/02/02/123456/example</link>
-          <comments>https://slashdot.org/story/26/02/02/123456/example#comments</comments>
-          <pubDate>Mon, 02 Feb 2026 12:00:00 GMT</pubDate>
-          <description>Slashdot summary</description>
-          <slash:comments>42</slash:comments>
-        </item>
-      </channel>
-    </rss>
-    """
-    stories = _stories_from_feed(
-        xml,
-        feed_url="https://rss.slashdot.org/Slashdot/slashdotMain",
-        max_items=5,
-        min_ts=0,
-    )
-
-    assert len(stories) == 1
-    story = stories[0]
-    assert story.source == "slashdot"
-    assert story.badge_label == "Slashdot"
-    assert story.url == "https://slashdot.org/story/26/02/02/123456/example"
-    assert story.discussion_url == "https://slashdot.org/story/26/02/02/123456/example#comments"
-    assert story.score == 0
-    assert story.comment_count == 42
-
-
-def test_parse_feed_entries_marks_github_trending_source_and_readme_text():
-    xml = """
-    <rss version="2.0">
-      <channel>
-        <language>en</language>
-        <item>
-          <title>owner/project</title>
-          <link>https://github.com/owner/project</link>
-          <pubDate>Mon, 02 Feb 2026 12:00:00 GMT</pubDate>
-          <description><![CDATA[
-            <p>Short repository summary.</p>
-            <hr>
-            <h1>Project README</h1>
-            <p>Install it with <code>uv tool install owner-project</code>.</p>
-          ]]></description>
-        </item>
-      </channel>
-    </rss>
-    """
-    stories = _stories_from_feed(
-        xml,
-        feed_url="https://mshibanami.github.io/GitHubTrendingRSS/monthly/python.xml",
-        max_items=5,
-        min_ts=0,
-    )
-
-    assert len(stories) == 1
-    story = stories[0]
-    assert story.source == "github_trending"
-    assert story.badge_label == "GitHub Trending"
-    assert story.url == "https://github.com/owner/project"
-    assert "Project README" in story.text_content
-    assert "uv tool install owner-project" in story.text_content
-
-
-def test_parse_feed_entries_marks_tildes_source_and_score():
-    xml = """
-    <rss version="2.0">
-      <channel>
-        <language>en</language>
-        <item>
-          <title>Tildes Post</title>
-          <link>https://tildes.net/~tech/123/example</link>
-          <pubDate>Mon, 02 Feb 2026 12:00:00 GMT</pubDate>
-          <description>&lt;p&gt;Votes: 12&lt;/p&gt;&lt;p&gt;Tildes summary&lt;/p&gt;</description>
-        </item>
-      </channel>
-    </rss>
-    """
-    stories = _stories_from_feed(
-        xml,
-        feed_url="https://tildes.net/topics.rss",
-        max_items=5,
-        min_ts=0,
-    )
-
-    assert len(stories) == 1
-    assert stories[0].source == "tildes"
-    assert stories[0].badge_label == "Tildes"
-    assert stories[0].score == 12
-
-
-def test_parse_feed_entries_marks_reddit_source_and_external_link():
-    xml = """
-    <feed xmlns="http://www.w3.org/2005/Atom">
-      <title>Machine Learning</title>
-      <subtitle>Machine learning research discussion and papers.</subtitle>
-      <entry>
-        <title>There Will Be a Scientific Theory of Deep Learning [R]</title>
-        <link href="https://www.reddit.com/r/MachineLearning/comments/1sun588/post/" />
-        <published>2026-04-24T17:58:00+00:00</published>
-        <content type="html">
-          &lt;div class=&quot;md&quot;&gt;&lt;p&gt;Research discussion summary.&lt;/p&gt;&lt;/div&gt;
-          &lt;span&gt;&lt;a href=&quot;https://arxiv.org/abs/2604.21691&quot;&gt;[link]&lt;/a&gt;&lt;/span&gt;
-          &lt;span&gt;&lt;a href=&quot;https://www.reddit.com/r/MachineLearning/comments/1sun588/post/&quot;&gt;[comments]&lt;/a&gt;&lt;/span&gt;
-        </content>
-      </entry>
-    </feed>
-    """
-    stories = _stories_from_feed(
-        xml,
-        feed_url="https://www.reddit.com/r/MachineLearning/top/.rss?t=week&limit=25",
-        max_items=5,
-        min_ts=0,
-    )
-
-    assert len(stories) == 1
-    assert stories[0].source == "reddit_machinelearning"
-    assert stories[0].badge_label == "r/MachineLearning"
-    assert stories[0].url == "https://arxiv.org/abs/2604.21691"
-    assert (
-        stories[0].discussion_url
-        == "https://www.reddit.com/r/MachineLearning/comments/1sun588/post/"
-    )
-
-
-def test_parse_feed_entries_marks_other_subreddits_as_reddit():
-    xml = """
-    <feed xmlns="http://www.w3.org/2005/Atom">
-      <title>programming</title>
-      <subtitle>Computer programming news and technical software discussion.</subtitle>
-      <entry>
-        <title>Interesting Programming Link</title>
-        <link href="https://www.reddit.com/r/programming/comments/abc/post/" />
-        <published>2026-04-24T17:58:00+00:00</published>
-        <content type="html">
-          &lt;span&gt;&lt;a href=&quot;https://example.com/programming&quot;&gt;[link]&lt;/a&gt;&lt;/span&gt;
-          &lt;span&gt;&lt;a href=&quot;https://www.reddit.com/r/programming/comments/abc/post/&quot;&gt;[comments]&lt;/a&gt;&lt;/span&gt;
-        </content>
-      </entry>
-    </feed>
-    """
-    stories = _stories_from_feed(
-        xml,
-        feed_url="https://www.reddit.com/r/programming/top/.rss?t=week&limit=25",
-        max_items=5,
-        min_ts=0,
-    )
-
-    assert len(stories) == 1
-    assert stories[0].source == "reddit_programming"
-    assert stories[0].badge_label == "r/programming"
-    assert stories[0].url == "https://example.com/programming"
-    assert (
-        stories[0].discussion_url
-        == "https://www.reddit.com/r/programming/comments/abc/post/"
-    )
-
-
-def test_parse_feed_entries_reddit_self_post_uses_comments_url():
-    comments_url = "https://www.reddit.com/r/MachineLearning/comments/1syjlc2/post/"
-    xml = f"""
-    <feed xmlns="http://www.w3.org/2005/Atom">
-      <title>Machine Learning</title>
-      <subtitle>Machine learning research discussion and papers.</subtitle>
-      <entry>
-        <title>Why is reasoning not done in vector space? [D]</title>
-        <link href="{comments_url}" />
-        <published>2026-04-29T00:46:15+00:00</published>
-        <content type="html">
-          &lt;div class=&quot;md&quot;&gt;&lt;p&gt;Discussion of vector-space reasoning.&lt;/p&gt;&lt;/div&gt;
-          &lt;span&gt;&lt;a href=&quot;{comments_url}&quot;&gt;[link]&lt;/a&gt;&lt;/span&gt;
-          &lt;span&gt;&lt;a href=&quot;{comments_url}&quot;&gt;[comments]&lt;/a&gt;&lt;/span&gt;
-        </content>
-      </entry>
-    </feed>
-    """
-    stories = _stories_from_feed(
-        xml,
-        feed_url="https://www.reddit.com/r/MachineLearning/top/.rss?t=week&limit=25",
-        max_items=5,
-        min_ts=0,
-    )
-
-    assert len(stories) == 1
-    assert stories[0].source == "reddit_machinelearning"
-    assert stories[0].url == comments_url
-    assert stories[0].discussion_url == comments_url
-
-
-def test_parse_feed_entries_extracts_reddit_score():
-    xml = """
-    <feed xmlns="http://www.w3.org/2005/Atom">
-      <entry>
-        <title>Reddit Post With Score</title>
-        <link href="https://www.reddit.com/r/MachineLearning/comments/123/" />
-        <updated>2026-04-24T17:58:00Z</updated>
-        <content type="html">
-          &lt;span&gt;&lt;a href=&quot;https://example.com/&quot;&gt;[link]&lt;/a&gt;&lt;/span&gt;
-          &lt;span&gt;&lt;a href=&quot;https://www.reddit.com/r/MachineLearning/comments/123/&quot;&gt;[comments]&lt;/a&gt;&lt;/span&gt; (score: 789)
-        </content>
-      </entry>
-    </feed>
-    """
-    stories = _stories_from_feed(
-        xml,
-        feed_url="https://www.reddit.com/r/MachineLearning/top/.rss?t=week&limit=25",
-        max_items=5,
-        min_ts=0,
-    )
-
-    assert len(stories) == 1
-    assert stories[0].score == 789
 
 
 def test_feed_item_limit_uses_registry_curated_flag():
@@ -595,12 +484,13 @@ def test_feed_item_limit_uses_registry_curated_flag():
         == rss.RSS_CURATED_NEWS_PER_FEED_LIMIT
     )
     assert (
-        _feed_item_limit(
-            "https://www.reddit.com/r/compsci/top/.rss?t=week&limit=25", 5
-        )
+        _feed_item_limit("https://www.reddit.com/r/compsci/top/.rss?t=week&limit=25", 5)
         == rss.RSS_CURATED_NEWS_PER_FEED_LIMIT
     )
-    assert _feed_item_limit("https://digg.com/ai", 5) == rss.RSS_CURATED_NEWS_PER_FEED_LIMIT
+    assert (
+        _feed_item_limit("https://digg.com/ai", 5)
+        == rss.RSS_CURATED_NEWS_PER_FEED_LIMIT
+    )
 
 
 @pytest.mark.asyncio
@@ -798,7 +688,6 @@ async def test_fetch_rss_stories_parses_digg_ai_source(monkeypatch):
     assert stories[0].url == "https://digg.com/ai/b2f851a5-0a26-459e-ac2e-35bb611ba02a"
 
 
-
 @pytest.mark.asyncio
 @respx.mock
 async def test_fetch_rss_stories_uses_higher_default_limit_for_regular_rss(monkeypatch):
@@ -822,7 +711,7 @@ async def test_fetch_rss_stories_uses_higher_default_limit_for_regular_rss(monke
     <rss version="2.0">
       <channel>
         <language>en</language>
-        {''.join(items)}
+        {"".join(items)}
       </channel>
     </rss>
     """
@@ -845,7 +734,9 @@ async def test_fetch_rss_stories_uses_higher_default_limit_for_regular_rss(monke
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_fetch_rss_stories_uses_higher_limit_for_curated_news_sources(monkeypatch):
+async def test_fetch_rss_stories_uses_higher_limit_for_curated_news_sources(
+    monkeypatch,
+):
     opml_url = "https://example.com/feeds.opml"
     feed_url = "https://www.lesswrong.com/feed.xml"
     monkeypatch.setattr(rss, "RSS_EXTRA_FEEDS", [feed_url])
@@ -865,7 +756,7 @@ async def test_fetch_rss_stories_uses_higher_limit_for_curated_news_sources(monk
     rss_xml = f"""
     <rss version="2.0">
       <channel>
-        {''.join(items)}
+        {"".join(items)}
       </channel>
     </rss>
     """
@@ -883,7 +774,9 @@ async def test_fetch_rss_stories_uses_higher_limit_for_curated_news_sources(monk
 
     assert len(stories) == rss.RSS_CURATED_NEWS_PER_FEED_LIMIT
     assert stories[0].source == "lesswrong"
-    assert stories[-1].title == f"LessWrong Post {rss.RSS_CURATED_NEWS_PER_FEED_LIMIT - 1}"
+    assert (
+        stories[-1].title == f"LessWrong Post {rss.RSS_CURATED_NEWS_PER_FEED_LIMIT - 1}"
+    )
 
 
 @pytest.mark.asyncio
@@ -895,7 +788,9 @@ async def test_fetch_rss_stories_uses_higher_limit_for_reddit(monkeypatch):
 
     entries = []
     for i in range(60):
-        comments_url = f"https://www.reddit.com/r/MachineLearning/comments/{i}/post-{i}/"
+        comments_url = (
+            f"https://www.reddit.com/r/MachineLearning/comments/{i}/post-{i}/"
+        )
         entries.append(
             f"""
             <entry>
@@ -914,7 +809,7 @@ async def test_fetch_rss_stories_uses_higher_limit_for_reddit(monkeypatch):
     <feed xmlns="http://www.w3.org/2005/Atom">
       <title>Machine Learning</title>
       <subtitle>Machine learning research discussion and papers.</subtitle>
-      {''.join(entries)}
+      {"".join(entries)}
     </feed>
     """
 
@@ -932,7 +827,9 @@ async def test_fetch_rss_stories_uses_higher_limit_for_reddit(monkeypatch):
     assert len(stories) == rss.RSS_CURATED_NEWS_PER_FEED_LIMIT
     assert stories[0].source == "reddit_machinelearning"
     assert stories[0].url == "https://example.com/paper-0"
-    assert stories[-1].title == f"Reddit ML Post {rss.RSS_CURATED_NEWS_PER_FEED_LIMIT - 1}"
+    assert (
+        stories[-1].title == f"Reddit ML Post {rss.RSS_CURATED_NEWS_PER_FEED_LIMIT - 1}"
+    )
 
 
 @pytest.mark.asyncio
@@ -975,4 +872,3 @@ async def test_fetch_rss_stories_loads_local_opml(tmp_path, monkeypatch):
     )
 
     assert [story.title for story in stories] == ["Local Post"]
-

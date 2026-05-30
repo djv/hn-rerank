@@ -425,26 +425,15 @@ def apply_evaluator_overrides(
 ) -> AppConfig:
     updated = config
     if pure_semantic:
+        from api.rerank import METADATA_FEATURES
+
         updated = replace(
             updated,
             classifier=replace(
                 updated.classifier,
-                use_log_points_feature=False,
-                use_log_comments_feature=False,
-                use_comment_ratio_feature=False,
-            ),
-        )
-    if use_new_features:
-        updated = replace(
-            updated,
-            classifier=replace(
-                updated.classifier,
-                use_title_len_feature=True,
-                use_text_len_feature=True,
-                use_has_url_feature=True,
-                use_github_feature=True,
-                use_pdf_feature=True,
-                use_comments_count_feature=True,
+                features=tuple(
+                    f for f in updated.classifier.features if f not in METADATA_FEATURES
+                ),
             ),
         )
     return updated

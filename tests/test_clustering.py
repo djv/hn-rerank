@@ -525,6 +525,7 @@ async def test_cluster_naming_prompt_falls_back_to_comment_context():
     assert "Context: Comment body with enough detail to name the topic." in prompt
 
 
+@pytest.mark.slow
 @given(
     seed=st.integers(min_value=0, max_value=2**32 - 1),
     n_base_samples=st.integers(min_value=20, max_value=40),

@@ -2,11 +2,54 @@
 
 This file explains what the repo's evaluation tooling actually measures.
 
-## Main Script
+## Main Scripts
 
-The current offline evaluator is:
+- `evaluate_quality.py` — HN-upvote-based holdout (legacy)
+- `scripts/evaluate_feedback_models.py` — dashboard-feedback-based holdout (primary)
 
-- `evaluate_quality.py`
+## What `scripts/evaluate_feedback_models.py` Measures
+
+Feedback-first evaluator. Labels and relevance come entirely from
+`.cache/user_feedback/dashboard_feedback.json`:
+
+- `up`    → positive label, relevant for metrics
+- `down`  → negative label, excluded from relevance, tracked as leakage
+- `neutral` → ordinal middle label, excluded from relevance
+
+### Split
+
+Train/test split is time-based by `feedback.updated_at` so the evaluator
+predicts newer votes from older votes.
+
+### Candidate pool
+
+Held-out test feedback stories are injected into a pool of cached HN
+distractor stories for realistic ranking evaluation.
+
+### Relevance key
+
+Relevance is keyed by `feedback_key(source, id, url)` / normalized URL, not
+by HN integer ID. This correctly handles RSS, external, and HN feedback.
+
+### Downvote leakage
+
+Downvotes that appear in the top 10 are reported as `downvote_in_top10`.
+A well-calibrated ranker should push held-out downvotes toward the bottom.
+
+### Model training
+
+The model is trained from scratch each fold using only train-feedback labels
+via `train_single_model_from_embeddings`. HN history is not used as labels,
+only as context for reference embeddings if needed.
+
+### Commands
+
+```bash
+uv run python scripts/evaluate_feedback_models.py --cache-only
+uv run python scripts/evaluate_feedback_models.py --cache-only --final-list --count 40
+uv run python scripts/evaluate_feedback_models.py --cache-only --model-type logistic
+uv run python scripts/evaluate_feedback_models.py --cache-only --model-type svm --svm-kernel linear
+```
 
 ## What `evaluate_quality.py` Measures
 

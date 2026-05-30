@@ -9,14 +9,10 @@ import pytest
 from api.models import Story
 from api.rerank import rank_stories
 from api.config import AppConfig, SemanticConfig
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent))
 from helpers import unit_rows
 
 
-def test_semantic_blend_uses_cluster_max_and_knn_components(
+def test_cluster_max_and_knn_score_components(
     make_stories: Callable[[int], list[Story]],
 ):
     stories = make_stories(2)
@@ -53,48 +49,14 @@ def test_semantic_blend_uses_cluster_max_and_knn_components(
             config=config,
         )
 
+    assert [r.model_score for r in results] == sorted(
+        [r.model_score for r in results], reverse=True
+    )
     by_index = {result.index: result for result in results}
     assert by_index[0].max_cluster_score == pytest.approx(1.0)
     assert by_index[0].knn_score == pytest.approx(1.0)
     assert by_index[0].model_score == pytest.approx(1.0)
 
-    assert by_index[1].model_score == pytest.approx(1.0)
-
-
-def test_pure_cluster_max_weight_ignores_diagnostic_knn_score(
-    make_stories: Callable[[int], list[Story]],
-):
-    stories = make_stories(2)
-    pos_emb = unit_rows(
-        [
-            [1.0, 0.0],
-            [1.0, 0.0],
-            [1.0, 0.0],
-            [0.0, 1.0],
-        ]
-    )
-    cand_emb = unit_rows([[1.0, 0.0], [0.0, 1.0]])
-    centroids = unit_rows([[1.0, 0.0], [0.0, 1.0]])
-
-    config = AppConfig(
-        semantic=SemanticConfig(knn_neighbors=3),
-    )
-    with (
-        patch("api.rerank.get_embeddings", return_value=cand_emb),
-        patch("api.rerank.cluster_interests_with_labels") as mock_cluster,
-    ):
-        mock_cluster.return_value = (
-            centroids,
-            np.array([0, 0, 1, 1], dtype=np.int32),
-        )
-        results = rank_stories(
-            stories,
-            positive_embeddings=pos_emb,
-            config=config,
-        )
-
-    by_index = {result.index: result for result in results}
-    assert by_index[0].model_score == pytest.approx(1.0)
     assert by_index[1].model_score == pytest.approx(1.0)
     assert by_index[1].knn_score == pytest.approx(0.0)
 
@@ -141,7 +103,7 @@ def test_max_cluster_score_populated_in_classifier_path(
 
         from api.config import ClassifierConfig
 
-        config = AppConfig(classifier=ClassifierConfig(use_raw_embedding_features=True))
+        config = AppConfig(classifier=ClassifierConfig(raw_embedding_features=True))
         results = rank_stories(stories, pos_emb, neg_emb, config=config)
 
     by_index = {result.index: result for result in results}
@@ -206,3 +168,4 @@ def test_missing_hn_comment_count_is_treated_as_zero():
 
     assert len(results) == 2
     assert {result.index for result in results} == {0, 1}
+    assert all(r.model_score == pytest.approx(1.0) for r in results)

@@ -14,6 +14,7 @@ class RankingConfig:
     """Weights and limits for the ranking engine."""
 
     max_results: int = 500
+    external_min_model_score: float = 0.52
 
 
 @dataclass(frozen=True)
@@ -29,36 +30,18 @@ class ClassifierConfig:
     """Classifier training and feature parameters."""
 
     k_feat: int = 7
-    use_centroid_feature: bool = True
-    use_pos_knn_feature: bool = True
-    use_neg_knn_feature: bool = True
-    use_log_points_feature: bool = False
-    use_log_comments_feature: bool = False
-    use_comment_ratio_feature: bool = False
-
-    # New metadata features
-    use_title_len_feature: bool = True
-    use_text_len_feature: bool = True
-    use_has_url_feature: bool = True
-    use_github_feature: bool = True
-    use_pdf_feature: bool = True
-    use_comments_count_feature: bool = True
-
-    # Rich similarity features
-    use_closest_pos_feature: bool = False
-    use_closest_neg_feature: bool = False
-    use_closest_centroid_feature: bool = False
-    use_knn_pos_n1_feature: bool = False
-    use_knn_pos_n3_feature: bool = False
-    use_knn_pos_n5_feature: bool = False
-    use_knn_pos_n10_feature: bool = False
-    use_knn_neg_n1_feature: bool = False
-    use_knn_neg_n3_feature: bool = False
-    use_knn_neg_n5_feature: bool = False
-    use_knn_neg_n10_feature: bool = False
-    # When True, raw embedding vectors are included as features for the SVM.
-    # When False, only derived similarity features and metadata are used.
-    use_raw_embedding_features: bool = True
+    raw_embedding_features: bool = True
+    features: tuple[str, ...] = (
+        "centroid",
+        "pos_knn",
+        "neg_knn",
+        "title_len",
+        "text_len",
+        "has_url",
+        "is_github",
+        "is_pdf",
+        "comments_count",
+    )
     # Minimum labeled examples on each side required to activate the model path.
     min_positive_examples: int = 5
     min_negative_examples: int = 5
@@ -114,6 +97,11 @@ class SingleModelConfig:
     svm_kernel: str = "rbf"  # Options: linear, poly, rbf, sigmoid
     svm_c: float = 3.0
     svm_gamma: str | float = "scale"  # "scale", "auto", or a numeric gamma value
+    rf_n_estimators: int = 200
+    rf_max_depth: int = 0  # 0 means None (unlimited)
+    rf_min_samples_leaf: int = 2
+    rf_min_samples_split: int = 2
+    rf_max_features: str = "sqrt"  # "sqrt", "log2", or a float fraction
 
 
 @dataclass(frozen=True)

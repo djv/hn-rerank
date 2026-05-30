@@ -52,6 +52,7 @@ ALGOLIA_DEFAULT_DAYS = 30
 CANDIDATE_FETCH_COUNT = 2000
 RSS_OPML_URL = "api/popular-blogs-2025.opml"
 RSS_EXTRA_FEEDS = [
+    "https://hackaday.com/blog/feed/",
     "https://jack-clark.net/feed/",
     "https://lobste.rs/top/rss",
     "https://tildes.net/topics.rss",
@@ -64,6 +65,30 @@ RSS_EXTRA_FEEDS = [
     "https://www.reddit.com/r/programming/top/.rss?t=week&limit=25",
     "https://www.reddit.com/r/compsci/top/.rss?t=week&limit=25",
     "https://digg.com/ai",
+    "https://www.construction-physics.com/feed",
+    "https://pedestrianobservations.com/feed/",
+    "https://theprepared.org/feed/",
+    "https://www.bitsaboutmoney.com/archive/rss/",
+    "https://eugeneyan.com/rss/",
+    "https://huyenchip.com/feed.xml",
+    "https://www.latent.space/feed",
+    "https://thesequence.substack.com/feed",
+    "https://gowers.wordpress.com/feed/",
+    "https://johncarlosbaez.wordpress.com/feed/",
+    "https://bartoszmilewski.com/feed/",
+    "https://okmij.org/ftp/rss.xml",
+    "https://aphyr.com/posts.atom",
+    "https://googleprojectzero.blogspot.com/feeds/posts/default",
+    "https://blog.trailofbits.com/feed/",
+    "https://felt.com/blog/feed.xml",
+    "https://pudding.cool/feed.xml",
+    "https://nautil.us/feed/",
+    "https://progressforum.org/feed.xml",
+    "https://stratechery.com/feed/",
+    "https://www.stephendiehl.com/posts.rss",
+    "https://www.citationneeded.news/rss/",
+    "https://scottaaronson.blog/?feed=rss2",
+    "https://erikbern.com/feed",
 ]  # Additional feeds not in OPML
 RSS_MAX_FEEDS = 0  # 0 = no max feed limit
 RSS_PER_FEED_LIMIT = 70

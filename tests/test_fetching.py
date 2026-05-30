@@ -1,11 +1,13 @@
 import json
 import time
 from datetime import UTC, datetime
+
 import pytest
 import respx
 import httpx
 from httpx import Response
 from unittest.mock import AsyncMock, MagicMock
+
 from api.constants import (
     MIN_CANDIDATE_COMMENTS,
     MIN_COMMENT_LENGTH,
@@ -25,6 +27,17 @@ from api.fetching import (
 )
 from api.models import Story
 from api.config import AppConfig, ArchiveConfig
+
+
+def _patch_cache(mp: pytest.MonkeyPatch) -> MagicMock:
+    """Apply common cache monkeypatches for fetching tests."""
+    cache = MagicMock()
+    cache.__truediv__.return_value.exists.return_value = False
+    mp.setattr("api.fetching.CACHE_PATH", cache)
+    mp.setattr("api.fetching.CANDIDATE_CACHE_PATH", cache)
+    mp.setattr("api.fetching.atomic_write_json", lambda p, d: None)
+    mp.setattr("api.fetching.evict_old_cache_files", lambda *args, **kwargs: None)
+    return cache
 
 
 class TestCleanText:
@@ -126,12 +139,7 @@ async def test_get_best_stories_accepts_min_comment_length():
     )
 
     with pytest.MonkeyPatch().context() as mp:
-        mock_cache = MagicMock()
-        mp.setattr("api.fetching.CACHE_PATH", mock_cache)
-        mp.setattr("api.fetching.CANDIDATE_CACHE_PATH", mock_cache)
-        mock_cache.__truediv__.return_value.exists.return_value = False
-        mp.setattr("api.fetching.atomic_write_json", lambda p, d: None)
-        mp.setattr("api.fetching.evict_old_cache_files", lambda *args, **kwargs: None)
+        _patch_cache(mp)
 
         config = AppConfig(days=1, no_rss=True)
         stories = await get_best_stories(limit=1, config=config)
@@ -344,13 +352,7 @@ async def test_get_best_stories_filtering():
 
     # We must patch the cache to avoid side effects
     with pytest.MonkeyPatch().context() as mp:
-        mock_cache = MagicMock()
-        mp.setattr("api.fetching.CACHE_PATH", mock_cache)
-        mp.setattr("api.fetching.CANDIDATE_CACHE_PATH", mock_cache)
-        mock_cache.__truediv__.return_value.exists.return_value = False
-        # Mock atomic write and eviction to avoid temp file issues
-        mp.setattr("api.fetching.atomic_write_json", lambda p, d: None)
-        mp.setattr("api.fetching.evict_old_cache_files", lambda *args, **kwargs: None)
+        _patch_cache(mp)
 
         config = AppConfig(days=1, no_rss=True)
         stories = await get_best_stories(
@@ -396,12 +398,7 @@ async def test_get_best_stories_caps_candidate_collection(monkeypatch):
     monkeypatch.setattr("api.fetching.fetch_story", fake_fetch_story)
 
     with pytest.MonkeyPatch().context() as mp:
-        mock_cache = MagicMock()
-        mp.setattr("api.fetching.CACHE_PATH", mock_cache)
-        mp.setattr("api.fetching.CANDIDATE_CACHE_PATH", mock_cache)
-        mock_cache.__truediv__.return_value.exists.return_value = False
-        mp.setattr("api.fetching.atomic_write_json", lambda p, d: None)
-        mp.setattr("api.fetching.evict_old_cache_files", lambda *args, **kwargs: None)
+        _patch_cache(mp)
 
         config = AppConfig(days=1, no_rss=True)
         stories = await get_best_stories(limit=40, config=config)
@@ -411,6 +408,7 @@ async def test_get_best_stories_caps_candidate_collection(monkeypatch):
     assert len(fetched_story_ids) <= 60
 
 
+@pytest.mark.slow
 @pytest.mark.asyncio
 @respx.mock
 async def test_get_best_stories_pagination():
@@ -458,20 +456,8 @@ async def test_get_best_stories_pagination():
             },
         )
     )
-    # Actually, fetch_story takes `sid` as arg and puts it in the result `id`.
-    # But `fetch_story` implementation:
-    # item = resp.json()
-    # story = { "id": sid, ... }
-    # So the ID in the JSON body is ignored in favor of `sid` passed to function.
-    # So this mock is fine.
-
     with pytest.MonkeyPatch().context() as mp:
-        mock_cache = MagicMock()
-        mp.setattr("api.fetching.CACHE_PATH", mock_cache)
-        mp.setattr("api.fetching.CANDIDATE_CACHE_PATH", mock_cache)
-        mock_cache.__truediv__.return_value.exists.return_value = False
-        mp.setattr("api.fetching.atomic_write_json", lambda p, d: None)
-        mp.setattr("api.fetching.evict_old_cache_files", lambda *args, **kwargs: None)
+        _patch_cache(mp)
 
         config = AppConfig(days=4, no_rss=True)
         stories = await get_best_stories(limit=1100, config=config)
@@ -489,12 +475,7 @@ async def test_get_best_stories_empty_response():
     )
 
     with pytest.MonkeyPatch().context() as mp:
-        mock_cache = MagicMock()
-        mp.setattr("api.fetching.CACHE_PATH", mock_cache)
-        mp.setattr("api.fetching.CANDIDATE_CACHE_PATH", mock_cache)
-        mock_cache.__truediv__.return_value.exists.return_value = False
-        mp.setattr("api.fetching.atomic_write_json", lambda p, d: None)
-        mp.setattr("api.fetching.evict_old_cache_files", lambda *args, **kwargs: None)
+        _patch_cache(mp)
 
         config = AppConfig(days=1, no_rss=True)
         stories = await get_best_stories(limit=10, config=config)
@@ -547,17 +528,13 @@ async def test_get_best_stories_partial_failure():
         )
 
     with pytest.MonkeyPatch().context() as mp:
-        mock_cache = MagicMock()
-        mp.setattr("api.fetching.CACHE_PATH", mock_cache)
-        mp.setattr("api.fetching.CANDIDATE_CACHE_PATH", mock_cache)
-        mock_cache.__truediv__.return_value.exists.return_value = False
-        mp.setattr("api.fetching.atomic_write_json", lambda p, d: None)
-        mp.setattr("api.fetching.evict_old_cache_files", lambda *args, **kwargs: None)
+        _patch_cache(mp)
 
         config = AppConfig(days=1, no_rss=True)
         stories = await get_best_stories(limit=10, config=config)
-        # Should still return the stories from successful window
-        assert len(stories) >= 1
+        assert any(s.id in {1, 2} for s in stories), (
+            "No stories from successful window returned"
+        )
 
 
 @pytest.mark.asyncio

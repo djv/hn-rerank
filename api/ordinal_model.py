@@ -243,9 +243,18 @@ def _make_pipeline(config: SingleModelConfig) -> Pipeline:
 
     mtype = config.model_type.lower().strip()
     if mtype == "random_forest":
+        max_depth = config.rf_max_depth if config.rf_max_depth != 0 else None
+        _rf_mf = config.rf_max_features
+        try:
+            max_features = float(_rf_mf)
+        except ValueError:
+            max_features = _rf_mf
         clf = RandomForestClassifier(
-            n_estimators=150,
-            max_depth=10,
+            n_estimators=config.rf_n_estimators,
+            max_depth=max_depth,
+            min_samples_leaf=config.rf_min_samples_leaf,
+            min_samples_split=config.rf_min_samples_split,
+            max_features=max_features,
             class_weight="balanced",
             random_state=0,
         )

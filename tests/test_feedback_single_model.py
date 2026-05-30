@@ -37,18 +37,14 @@ def _story(
 def test_feature_builder_includes_embeddings_and_derived_features_without_ce() -> None:
     config = AppConfig(
         classifier=ClassifierConfig(
-            use_centroid_feature=True,
-            use_pos_knn_feature=True,
-            use_neg_knn_feature=True,
-            use_log_points_feature=True,
-            use_log_comments_feature=True,
-            use_comment_ratio_feature=True,
-            use_title_len_feature=False,
-            use_text_len_feature=False,
-            use_has_url_feature=False,
-            use_github_feature=False,
-            use_pdf_feature=False,
-            use_comments_count_feature=False,
+            features=(
+                "centroid",
+                "pos_knn",
+                "neg_knn",
+                "log_points",
+                "log_comments",
+                "comment_ratio",
+            )
         )
     )
     stories = [
@@ -70,9 +66,9 @@ def test_feature_builder_includes_embeddings_and_derived_features_without_ce() -
 
     assert batch.rows.shape == (2, 9)
     assert batch.feature_names[:3] == ("embedding_0", "embedding_1", "embedding_2")
-    assert "centroid_feature" in batch.feature_names
-    assert "pos_knn_feature" in batch.feature_names
-    assert "neg_knn_feature" in batch.feature_names
+    assert "centroid" in batch.feature_names
+    assert "pos_knn" in batch.feature_names
+    assert "neg_knn" in batch.feature_names
     assert "log_points" in batch.feature_names
     assert "log_comments" in batch.feature_names
     assert "comment_ratio" in batch.feature_names
@@ -123,18 +119,14 @@ def test_feedback_rows_do_not_require_rank_diagnostics_and_default_missing_metad
 
     config = AppConfig(
         classifier=ClassifierConfig(
-            use_centroid_feature=True,
-            use_pos_knn_feature=True,
-            use_neg_knn_feature=True,
-            use_log_points_feature=True,
-            use_log_comments_feature=True,
-            use_comment_ratio_feature=True,
-            use_title_len_feature=False,
-            use_text_len_feature=False,
-            use_has_url_feature=False,
-            use_github_feature=False,
-            use_pdf_feature=False,
-            use_comments_count_feature=False,
+            features=(
+                "centroid",
+                "pos_knn",
+                "neg_knn",
+                "log_points",
+                "log_comments",
+                "comment_ratio",
+            )
         )
     )
     batch = build_single_model_feature_batch(
@@ -155,12 +147,13 @@ def test_single_model_scores_are_stable_and_bounded(
 ) -> None:
     config = AppConfig(
         classifier=ClassifierConfig(
-            use_centroid_feature=True,
-            use_pos_knn_feature=True,
-            use_neg_knn_feature=True,
-            use_log_points_feature=True,
-            use_log_comments_feature=True,
-            use_comment_ratio_feature=False,
+            features=(
+                "centroid",
+                "pos_knn",
+                "neg_knn",
+                "log_points",
+                "log_comments",
+            )
         )
     )
     training_config = SingleModelConfig(
@@ -246,16 +239,8 @@ def test_svm_pipeline_uses_configured_kernel() -> None:
 def test_feature_builder_without_raw_embeddings() -> None:
     config = AppConfig(
         classifier=ClassifierConfig(
-            use_raw_embedding_features=False,
-            use_centroid_feature=True,
-            use_pos_knn_feature=True,
-            use_neg_knn_feature=True,
-            use_title_len_feature=True,
-            use_text_len_feature=False,
-            use_has_url_feature=False,
-            use_github_feature=False,
-            use_pdf_feature=False,
-            use_comments_count_feature=True,
+            raw_embedding_features=False,
+            features=("centroid", "pos_knn", "neg_knn", "title_len", "comments_count"),
         )
     )
     stories = [
@@ -277,9 +262,9 @@ def test_feature_builder_without_raw_embeddings() -> None:
 
     assert batch.rows.shape == (2, 5)
     assert not any(n.startswith("embedding_") for n in batch.feature_names)
-    assert "centroid_feature" in batch.feature_names
-    assert "pos_knn_feature" in batch.feature_names
-    assert "neg_knn_feature" in batch.feature_names
+    assert "centroid" in batch.feature_names
+    assert "pos_knn" in batch.feature_names
+    assert "neg_knn" in batch.feature_names
     assert "title_len" in batch.feature_names
     assert "comments_count" in batch.feature_names
     assert batch.derived_feature_dim == 3
@@ -290,16 +275,8 @@ def test_feature_builder_without_raw_embeddings() -> None:
 def test_feature_builder_similarity_only() -> None:
     config = AppConfig(
         classifier=ClassifierConfig(
-            use_raw_embedding_features=False,
-            use_centroid_feature=True,
-            use_pos_knn_feature=True,
-            use_neg_knn_feature=True,
-            use_title_len_feature=False,
-            use_text_len_feature=False,
-            use_has_url_feature=False,
-            use_github_feature=False,
-            use_pdf_feature=False,
-            use_comments_count_feature=False,
+            raw_embedding_features=False,
+            features=("centroid", "pos_knn", "neg_knn"),
         )
     )
     stories = [

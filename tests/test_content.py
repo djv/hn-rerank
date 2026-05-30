@@ -40,7 +40,7 @@ def test_compose_story_text_combines_cleaned_sources():
         article_text="<p>Article text</p>",
         comments=["First&nbsp;comment", "<i>Second</i> comment"],
     )
-    assert text == "Title. Self text Article text First comment Second comment"
+    assert text == "Title. Self text First comment Second comment Article text"
 
 
 @pytest.mark.asyncio

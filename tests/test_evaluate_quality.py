@@ -3,10 +3,15 @@ from __future__ import annotations
 from dataclasses import replace
 
 from api.config import AppConfig
-from evaluate_quality import apply_evaluator_overrides, build_first_stage_ablation_config
+from evaluate_quality import (
+    apply_evaluator_overrides,
+    build_first_stage_ablation_config,
+)
 
 
-def test_apply_evaluator_overrides_can_strip_metadata_features_for_pure_semantic() -> None:
+def test_apply_evaluator_overrides_can_strip_metadata_features_for_pure_semantic() -> (
+    None
+):
     config = AppConfig()
 
     updated = apply_evaluator_overrides(
@@ -14,9 +19,9 @@ def test_apply_evaluator_overrides_can_strip_metadata_features_for_pure_semantic
         pure_semantic=True,
     )
 
-    assert updated.classifier.use_log_points_feature is False
-    assert updated.classifier.use_log_comments_feature is False
-    assert updated.classifier.use_comment_ratio_feature is False
+    assert "log_points" not in updated.classifier.features
+    assert "log_comments" not in updated.classifier.features
+    assert "comment_ratio" not in updated.classifier.features
 
 
 def test_build_first_stage_ablation_config_preserves_other_settings() -> None:
@@ -26,25 +31,15 @@ def test_build_first_stage_ablation_config_preserves_other_settings() -> None:
 
     assert updated.count == 55
     assert updated.candidates == 321
-    assert updated.classifier.use_log_points_feature is False
-    assert updated.classifier.use_log_comments_feature is False
-    assert updated.classifier.use_comment_ratio_feature is False
+    assert "log_points" not in updated.classifier.features
+    assert "log_comments" not in updated.classifier.features
+    assert "comment_ratio" not in updated.classifier.features
 
 
-def test_apply_evaluator_overrides_can_enable_new_metadata_features() -> None:
+def test_apply_evaluator_overrides_use_new_features_is_noop() -> None:
     config = AppConfig()
-
-    updated = apply_evaluator_overrides(
-        config,
-        use_new_features=True,
-    )
-
-    assert updated.classifier.use_title_len_feature is True
-    assert updated.classifier.use_text_len_feature is True
-    assert updated.classifier.use_has_url_feature is True
-    assert updated.classifier.use_github_feature is True
-    assert updated.classifier.use_pdf_feature is True
-    assert updated.classifier.use_comments_count_feature is True
+    updated = apply_evaluator_overrides(config, use_new_features=True)
+    assert updated.classifier.features == config.classifier.features
 
 
 def test_single_model_config_can_override_svm_kernel() -> None:

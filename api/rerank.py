@@ -54,6 +54,31 @@ from api.config import (  # noqa: E402
     ClassifierConfig,
 )
 
+# --- Feature registries ---
+# Adding a new feature? Write the compute function, add its name here, list it in config.
+
+SIMILARITY_FEATURES: frozenset[str] = frozenset(
+    {
+        "centroid",
+        "pos_knn",
+        "neg_knn",
+        "closest_pos",
+        "closest_neg",
+        "closest_centroid",
+        "knn_pos_n1",
+        "knn_pos_n3",
+        "knn_pos_n5",
+        "knn_pos_n10",
+        "knn_neg_n1",
+        "knn_neg_n3",
+        "knn_neg_n5",
+        "knn_neg_n10",
+    }
+)
+
+MetadataFeatureFn = Callable[[list[Story], float], NDArray[np.float32]]
+METADATA_FEATURES: dict[str, MetadataFeatureFn] = {}
+
 logger = logging.getLogger(__name__)
 
 RankProgressPhase = Literal[
@@ -83,66 +108,121 @@ def _set_rank_diagnostics(
     diagnostics.update(kwargs)
 
 
-def _combine_classifier_features(
-    *,
-    centroid_feature: NDArray[np.float32],
-    pos_knn_feature: NDArray[np.float32],
-    neg_knn_feature: NDArray[np.float32],
+def stack_similarity_features(
+    derived: dict[str, NDArray[np.float32]],
     config: ClassifierConfig,
-    base_embeddings: NDArray[np.float32] | None = None,
-    closest_pos_feature: NDArray[np.float32] | None = None,
-    closest_neg_feature: NDArray[np.float32] | None = None,
-    closest_centroid_feature: NDArray[np.float32] | None = None,
-    knn_pos_n1: NDArray[np.float32] | None = None,
-    knn_pos_n3: NDArray[np.float32] | None = None,
-    knn_pos_n5: NDArray[np.float32] | None = None,
-    knn_pos_n10: NDArray[np.float32] | None = None,
-    knn_neg_n1: NDArray[np.float32] | None = None,
-    knn_neg_n3: NDArray[np.float32] | None = None,
-    knn_neg_n5: NDArray[np.float32] | None = None,
-    knn_neg_n10: NDArray[np.float32] | None = None,
 ) -> NDArray[np.float32]:
-    columns: list[NDArray[np.float32]] = []
+    enabled = [f for f in config.features if f in SIMILARITY_FEATURES]
+    if not enabled:
+        n = len(next(iter(derived.values()))) if derived else 0
+        return np.zeros((n, 0), dtype=np.float32)
+    return np.hstack([derived[f].reshape(-1, 1) for f in enabled]).astype(np.float32)
 
-    # When use_raw_embedding_features is True, include the original embeddings.
-    # Otherwise, only use derived similarity features.
-    if config.use_raw_embedding_features and base_embeddings is not None:
-        columns.append(base_embeddings)
 
-    if config.use_centroid_feature:
-        columns.append(centroid_feature.reshape(-1, 1))
-    if config.use_pos_knn_feature:
-        columns.append(pos_knn_feature.reshape(-1, 1))
-    if config.use_neg_knn_feature:
-        columns.append(neg_knn_feature.reshape(-1, 1))
+# --- Metadata feature compute functions ---
 
-    # Add new rich features if configured
-    if config.use_closest_pos_feature and closest_pos_feature is not None:
-        columns.append(closest_pos_feature.reshape(-1, 1))
-    if config.use_closest_neg_feature and closest_neg_feature is not None:
-        columns.append(closest_neg_feature.reshape(-1, 1))
-    if config.use_closest_centroid_feature and closest_centroid_feature is not None:
-        columns.append(closest_centroid_feature.reshape(-1, 1))
-    if config.use_knn_pos_n1_feature and knn_pos_n1 is not None:
-        columns.append(knn_pos_n1.reshape(-1, 1))
-    if config.use_knn_pos_n3_feature and knn_pos_n3 is not None:
-        columns.append(knn_pos_n3.reshape(-1, 1))
-    if config.use_knn_pos_n5_feature and knn_pos_n5 is not None:
-        columns.append(knn_pos_n5.reshape(-1, 1))
-    if config.use_knn_pos_n10_feature and knn_pos_n10 is not None:
-        columns.append(knn_pos_n10.reshape(-1, 1))
-    if config.use_knn_neg_n1_feature and knn_neg_n1 is not None:
-        columns.append(knn_neg_n1.reshape(-1, 1))
-    if config.use_knn_neg_n3_feature and knn_neg_n3 is not None:
-        columns.append(knn_neg_n3.reshape(-1, 1))
-    if config.use_knn_neg_n5_feature and knn_neg_n5 is not None:
-        columns.append(knn_neg_n5.reshape(-1, 1))
-    if config.use_knn_neg_n10_feature and knn_neg_n10 is not None:
-        columns.append(knn_neg_n10.reshape(-1, 1))
 
-    if not columns:
-        return np.zeros((len(centroid_feature), 0), dtype=np.float32)
-    return np.hstack(columns).astype(np.float32)
+def _meta_log_points(stories: list[Story], now: float) -> NDArray[np.float32]:
+    normalizer = np.log1p(1000.0)
+    points = np.array([max(float(s.score), 0.0) for s in stories], dtype=np.float32)
+    return (np.log1p(points) / normalizer).reshape(-1, 1)
+
+
+METADATA_FEATURES["log_points"] = _meta_log_points
+
+
+def _meta_log_comments(stories: list[Story], now: float) -> NDArray[np.float32]:
+    normalizer = np.log1p(500.0)
+    comments = np.array(
+        [
+            max(float(s.comment_count if s.comment_count is not None else 0.0), 0.0)
+            for s in stories
+        ],
+        dtype=np.float32,
+    )
+    return (np.log1p(comments) / normalizer).reshape(-1, 1)
+
+
+METADATA_FEATURES["log_comments"] = _meta_log_comments
+
+
+def _meta_comment_ratio(stories: list[Story], now: float) -> NDArray[np.float32]:
+    comments = np.array(
+        [
+            max(float(s.comment_count if s.comment_count is not None else 0.0), 0.0)
+            for s in stories
+        ],
+        dtype=np.float32,
+    )
+    points = np.array([max(float(s.score), 0.0) for s in stories], dtype=np.float32)
+    return (np.log1p(comments) / (np.log1p(points) + 1.0)).reshape(-1, 1)
+
+
+METADATA_FEATURES["comment_ratio"] = _meta_comment_ratio
+
+
+def _meta_title_len(stories: list[Story], now: float) -> NDArray[np.float32]:
+    title_len = np.array([float(len(s.title or "")) for s in stories], dtype=np.float32)
+    return (np.log1p(title_len) / np.log1p(120.0)).reshape(-1, 1)
+
+
+METADATA_FEATURES["title_len"] = _meta_title_len
+
+
+def _meta_text_len(stories: list[Story], now: float) -> NDArray[np.float32]:
+    text_len = np.array(
+        [float(len(s.text_content or "")) for s in stories], dtype=np.float32
+    )
+    return (np.log1p(text_len) / np.log1p(5000.0)).reshape(-1, 1)
+
+
+METADATA_FEATURES["text_len"] = _meta_text_len
+
+
+def _meta_has_url(stories: list[Story], now: float) -> NDArray[np.float32]:
+    has_url = np.array([1.0 if s.url else 0.0 for s in stories], dtype=np.float32)
+    return has_url.reshape(-1, 1)
+
+
+METADATA_FEATURES["has_url"] = _meta_has_url
+
+
+def _meta_is_github(stories: list[Story], now: float) -> NDArray[np.float32]:
+    is_github = np.array(
+        [1.0 if s.url and "github.com" in s.url.lower() else 0.0 for s in stories],
+        dtype=np.float32,
+    )
+    return is_github.reshape(-1, 1)
+
+
+METADATA_FEATURES["is_github"] = _meta_is_github
+
+
+def _meta_is_pdf(stories: list[Story], now: float) -> NDArray[np.float32]:
+    is_pdf = np.array(
+        [1.0 if s.url and s.url.lower().endswith(".pdf") else 0.0 for s in stories],
+        dtype=np.float32,
+    )
+    return is_pdf.reshape(-1, 1)
+
+
+METADATA_FEATURES["is_pdf"] = _meta_is_pdf
+
+
+def _meta_comments_count(stories: list[Story], now: float) -> NDArray[np.float32]:
+    comments_count = np.array(
+        [
+            max(float(s.comment_count if s.comment_count is not None else 0.0), 0.0)
+            for s in stories
+        ],
+        dtype=np.float32,
+    )
+    return (np.log1p(comments_count) / np.log1p(15.0)).reshape(-1, 1)
+
+
+METADATA_FEATURES["comments_count"] = _meta_comments_count
+
+# --- Metadata feature matrix builder ---
 
 
 def _classifier_metadata_features(
@@ -151,105 +231,14 @@ def _classifier_metadata_features(
     now: float,
     expected_len: int,
 ) -> NDArray[np.float32]:
+    enabled = [f for f in config.classifier.features if f in METADATA_FEATURES]
     if not stories or len(stories) != expected_len:
-        # Return zeros if metadata is missing or mismatched
-        width = 0
-        if config.classifier.use_log_points_feature:
-            width += 1
-        if config.classifier.use_log_comments_feature:
-            width += 1
-        if config.classifier.use_comment_ratio_feature:
-            width += 1
-        if config.classifier.use_title_len_feature:
-            width += 1
-        if config.classifier.use_text_len_feature:
-            width += 1
-        if config.classifier.use_has_url_feature:
-            width += 1
-        if config.classifier.use_github_feature:
-            width += 1
-        if config.classifier.use_pdf_feature:
-            width += 1
-        if config.classifier.use_comments_count_feature:
-            width += 1
-        return np.zeros((expected_len, width), dtype=np.float32)
-
-    columns: list[NDArray[np.float32]] = []
-
-    if config.classifier.use_log_points_feature:
-        score_normalization_cap = 1000.0
-        normalizer = np.log1p(score_normalization_cap)
-        points = np.array([max(float(s.score), 0.0) for s in stories], dtype=np.float32)
-        columns.append((np.log1p(points) / normalizer).reshape(-1, 1))
-
-    if config.classifier.use_log_comments_feature:
-        comment_normalization_cap = 500.0
-        normalizer = np.log1p(comment_normalization_cap)
-        comments = np.array(
-            [
-                max(float(s.comment_count if s.comment_count is not None else 0.0), 0.0)
-                for s in stories
-            ],
-            dtype=np.float32,
-        )
-        columns.append((np.log1p(comments) / normalizer).reshape(-1, 1))
-
-    if config.classifier.use_comment_ratio_feature:
-        comments = np.array(
-            [
-                max(float(s.comment_count if s.comment_count is not None else 0.0), 0.0)
-                for s in stories
-            ],
-            dtype=np.float32,
-        )
-        points = np.array([max(float(s.score), 0.0) for s in stories], dtype=np.float32)
-        ratio = np.log1p(comments) / (np.log1p(points) + 1.0)
-        columns.append(ratio.reshape(-1, 1))
-
-    if config.classifier.use_title_len_feature:
-        title_len = np.array(
-            [float(len(s.title or "")) for s in stories], dtype=np.float32
-        )
-        columns.append((np.log1p(title_len) / np.log1p(120.0)).reshape(-1, 1))
-
-    if config.classifier.use_text_len_feature:
-        text_len = np.array(
-            [float(len(s.text_content or "")) for s in stories], dtype=np.float32
-        )
-        columns.append((np.log1p(text_len) / np.log1p(5000.0)).reshape(-1, 1))
-
-    if config.classifier.use_has_url_feature:
-        has_url = np.array([1.0 if s.url else 0.0 for s in stories], dtype=np.float32)
-        columns.append(has_url.reshape(-1, 1))
-
-    if config.classifier.use_github_feature:
-        is_github = np.array(
-            [1.0 if s.url and "github.com" in s.url.lower() else 0.0 for s in stories],
-            dtype=np.float32,
-        )
-        columns.append(is_github.reshape(-1, 1))
-
-    if config.classifier.use_pdf_feature:
-        is_pdf = np.array(
-            [1.0 if s.url and s.url.lower().endswith(".pdf") else 0.0 for s in stories],
-            dtype=np.float32,
-        )
-        columns.append(is_pdf.reshape(-1, 1))
-
-    if config.classifier.use_comments_count_feature:
-        comments_count = np.array(
-            [
-                max(float(s.comment_count if s.comment_count is not None else 0.0), 0.0)
-                for s in stories
-            ],
-            dtype=np.float32,
-        )
-        columns.append((np.log1p(comments_count) / np.log1p(15.0)).reshape(-1, 1))
-
-    if not columns:
+        return np.zeros((expected_len, len(enabled)), dtype=np.float32)
+    if not enabled:
         return np.zeros((expected_len, 0), dtype=np.float32)
-
-    return np.hstack(columns).astype(np.float32)
+    return np.hstack([METADATA_FEATURES[f](stories, now) for f in enabled]).astype(
+        np.float32
+    )
 
 
 def compute_classifier_similarity_features(
@@ -331,9 +320,9 @@ def compute_classifier_similarity_features(
         f_knn_neg = np.zeros(len(embs), dtype=np.float32)
 
     return {
-        "centroid_feature": f_centroid_max,
-        "pos_knn_feature": f_knn_pos,
-        "neg_knn_feature": f_knn_neg,
+        "centroid": f_centroid_max,
+        "pos_knn": f_knn_pos,
+        "neg_knn": f_knn_neg,
         "closest_pos": f_closest_pos,
         "closest_neg": f_closest_neg,
         "closest_centroid": f_centroid_max,
@@ -346,36 +335,6 @@ def compute_classifier_similarity_features(
         "knn_neg_n5": knn_n5,
         "knn_neg_n10": knn_n10,
     }
-
-
-def stack_classifier_similarity_features(
-    derived_dict: dict[str, NDArray[np.float32]],
-    config: ClassifierConfig,
-    *,
-    base_embeddings: NDArray[np.float32] | None = None,
-) -> NDArray[np.float32]:
-    """Assemble the similarity feature matrix using the runtime classifier toggles."""
-    row_count = len(next(iter(derived_dict.values()))) if derived_dict else 0
-    if base_embeddings is None:
-        base_embeddings = np.zeros((row_count, 0), dtype=np.float32)
-    return _combine_classifier_features(
-        centroid_feature=derived_dict["centroid_feature"],
-        pos_knn_feature=derived_dict["pos_knn_feature"],
-        neg_knn_feature=derived_dict["neg_knn_feature"],
-        config=config,
-        base_embeddings=base_embeddings,
-        closest_pos_feature=derived_dict["closest_pos"],
-        closest_neg_feature=derived_dict["closest_neg"],
-        closest_centroid_feature=derived_dict["closest_centroid"],
-        knn_pos_n1=derived_dict["knn_pos_n1"],
-        knn_pos_n3=derived_dict["knn_pos_n3"],
-        knn_pos_n5=derived_dict["knn_pos_n5"],
-        knn_pos_n10=derived_dict["knn_pos_n10"],
-        knn_neg_n1=derived_dict["knn_neg_n1"],
-        knn_neg_n3=derived_dict["knn_neg_n3"],
-        knn_neg_n5=derived_dict["knn_neg_n5"],
-        knn_neg_n10=derived_dict["knn_neg_n10"],
-    )
 
 
 type ClusterItem = tuple[StoryDict, float]
@@ -1143,18 +1102,40 @@ def rank_stories(
         stories, config, time.time(), len(stories)
     )
     cand_metadata = cand_metadata[: len(cand_emb)]
-    cand_features = stack_classifier_similarity_features(
-        cand_derived,
-        config.classifier,
-        base_embeddings=cand_emb,
-    )
+
+    def _stack_with_embeddings(
+        derived: dict[str, NDArray[np.float32]],
+        embeddings: NDArray[np.float32],
+        cfg: ClassifierConfig,
+    ) -> NDArray[np.float32]:
+        cols: list[NDArray[np.float32]] = []
+        if cfg.raw_embedding_features:
+            cols.append(embeddings)
+        dr = stack_similarity_features(derived, cfg)
+        if dr.shape[1] > 0:
+            cols.append(dr)
+        return (
+            np.hstack(cols).astype(np.float32)
+            if cols
+            else np.zeros((len(embeddings), 0), dtype=np.float32)
+        )
+
+    cand_columns: list[NDArray[np.float32]] = []
+    if config.classifier.raw_embedding_features:
+        cand_columns.append(cand_emb)
+    derived_rows = stack_similarity_features(cand_derived, config.classifier)
+    if derived_rows.shape[1] > 0:
+        cand_columns.append(derived_rows)
     if cand_metadata.shape[1] > 0:
-        cand_features = np.hstack([cand_features, cand_metadata])
-    derived_width = stack_classifier_similarity_features(
-        cand_derived,
-        config.classifier,
-        base_embeddings=np.zeros((len(cand_emb), 0), dtype=np.float32),
-    ).shape[1]
+        cand_columns.append(cand_metadata)
+    cand_features = (
+        np.hstack(cand_columns).astype(np.float32)
+        if cand_columns
+        else np.zeros((len(cand_emb), 0), dtype=np.float32)
+    )
+    derived_width = int(
+        stack_similarity_features(cand_derived, config.classifier).shape[1]
+    )
     _set_rank_diagnostics(
         diagnostics,
         derived_feature_dim=int(derived_width),
@@ -1179,16 +1160,8 @@ def rank_stories(
                 config.classifier,
                 exclude_self_neg=True,
             )
-            pos_features = stack_classifier_similarity_features(
-                pos_derived,
-                config.classifier,
-                base_embeddings=X_pos,
-            )
-            neg_features = stack_classifier_similarity_features(
-                neg_derived,
-                config.classifier,
-                base_embeddings=X_neg,
-            )
+            pos_features = _stack_with_embeddings(pos_derived, X_pos, config.classifier)
+            neg_features = _stack_with_embeddings(neg_derived, X_neg, config.classifier)
             pos_metadata = _classifier_metadata_features(
                 positive_stories or [],
                 config,
@@ -1230,12 +1203,11 @@ def rank_stories(
         if expected_n != cand_features.shape[1]:
             # Build full single-model features (embeddings + derived + metadata)
             columns: list[NDArray[np.float32]] = []
-            if config.classifier.use_raw_embedding_features:
+            if config.classifier.raw_embedding_features:
                 columns.append(cand_emb.astype(np.float32))
-            derived_rows = stack_classifier_similarity_features(
+            derived_rows = stack_similarity_features(
                 cand_derived,
                 config.classifier,
-                base_embeddings=np.zeros((len(stories), 0), dtype=np.float32),
             )
             if derived_rows.shape[1] > 0:
                 columns.append(derived_rows.astype(np.float32))

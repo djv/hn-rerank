@@ -32,7 +32,7 @@ from api.constants import (
     RSS_OPML_CACHE_TTL,
     RSS_PER_FEED_LIMIT,
 )
-from api.external_sources import detect_source
+from api.external_sources import detect_source, get_spec
 from api.models import Story, StoryDict, StorySource
 from api.url_utils import normalize_url
 
@@ -139,12 +139,8 @@ def _feed_item_limit(feed_url: str, default_limit: int) -> int:
     return max(default_limit, RSS_PER_FEED_LIMIT)
 
 
-def _is_reddit_source(source: StorySource) -> bool:
-    return source == "reddit" or source.startswith("reddit_")
-
-
 def _preserves_feed_text_content(source: StorySource) -> bool:
-    return source == "github_trending"
+    return get_spec(source).preserves_feed_text
 
 
 def _is_digg_ai_source(feed_url: str) -> bool:
@@ -299,7 +295,7 @@ def _extract_score(
     # 1. Direct attribute check (some feed types or custom parser results)
     # Reddit RSS often has reddit_score via feedparser if using the right namespace
     source_score_keys = [f"{source}_score"]
-    if _is_reddit_source(source):
+    if get_spec(source).is_reddit_like:
         source_score_keys.append("reddit_score")
     source_score_keys.extend(["score", "points", "rank_score"])
     for key in source_score_keys:
@@ -330,10 +326,10 @@ def _extract_score(
 def _extract_comment_count(
     entry: feedparser.FeedParserDict, source: StorySource
 ) -> int | None:
-    if source != "slashdot":
+    attrs = get_spec(source).comment_count_attrs
+    if not attrs:
         return None
-
-    for key in ("slash_comments", "comments_count", "comment_count"):
+    for key in attrs:
         value = entry.get(key)
         if value is None:
             continue
@@ -393,7 +389,7 @@ def _parse_feed(
             date_text = entry.get("published") or entry.get("updated") or ""
             ts = _parse_date(str(date_text))
 
-        if ts is None and source == "github_trending":
+        if ts is None and get_spec(source).uses_feed_date:
             ts = feed_timestamp
 
         if ts is None:
@@ -404,7 +400,7 @@ def _parse_feed(
 
         story_url = link or None
         discussion_url = str(entry.get("comments") or "").strip() or None
-        if _is_reddit_source(source):
+        if get_spec(source).is_reddit_like:
             story_url, discussion_url = _extract_reddit_urls(str(summary), link)
 
         text = strip_html(str(summary))

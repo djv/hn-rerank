@@ -24,37 +24,13 @@ from api.rerank import (
     cluster_interests_with_labels,
     compute_classifier_similarity_features,
     get_embeddings,
-    stack_classifier_similarity_features,
+    stack_similarity_features,
+    SIMILARITY_FEATURES,
+    METADATA_FEATURES,
 )
 
-
-DERIVED_FEATURE_FLAGS: tuple[tuple[str, str], ...] = (
-    ("centroid_feature", "use_centroid_feature"),
-    ("pos_knn_feature", "use_pos_knn_feature"),
-    ("neg_knn_feature", "use_neg_knn_feature"),
-    ("closest_pos", "use_closest_pos_feature"),
-    ("closest_neg", "use_closest_neg_feature"),
-    ("closest_centroid", "use_closest_centroid_feature"),
-    ("knn_pos_n1", "use_knn_pos_n1_feature"),
-    ("knn_pos_n3", "use_knn_pos_n3_feature"),
-    ("knn_pos_n5", "use_knn_pos_n5_feature"),
-    ("knn_pos_n10", "use_knn_pos_n10_feature"),
-    ("knn_neg_n1", "use_knn_neg_n1_feature"),
-    ("knn_neg_n3", "use_knn_neg_n3_feature"),
-    ("knn_neg_n5", "use_knn_neg_n5_feature"),
-    ("knn_neg_n10", "use_knn_neg_n10_feature"),
-)
-METADATA_FEATURE_FLAGS: tuple[tuple[str, str], ...] = (
-    ("log_points", "use_log_points_feature"),
-    ("log_comments", "use_log_comments_feature"),
-    ("comment_ratio", "use_comment_ratio_feature"),
-    ("title_len", "use_title_len_feature"),
-    ("text_len", "use_text_len_feature"),
-    ("has_url", "use_has_url_feature"),
-    ("is_github", "use_github_feature"),
-    ("is_pdf", "use_pdf_feature"),
-    ("comments_count", "use_comments_count_feature"),
-)
+# --- Feature flag tables removed ---
+# Feature names are derived from the registries in api/rerank.py.
 
 
 @dataclass(frozen=True)
@@ -106,14 +82,11 @@ def build_single_model_feedback_labels(
 
 def _feature_names(config: AppConfig, embedding_dim: int) -> tuple[str, ...]:
     names: list[str] = []
-    if config.classifier.use_raw_embedding_features:
+    if config.classifier.raw_embedding_features:
         names.extend(f"embedding_{index}" for index in range(embedding_dim))
-    for feature_name, attr_name in DERIVED_FEATURE_FLAGS:
-        if bool(getattr(config.classifier, attr_name, False)):
-            names.append(feature_name)
-    for feature_name, attr_name in METADATA_FEATURE_FLAGS:
-        if bool(getattr(config.classifier, attr_name, False)):
-            names.append(feature_name)
+    for f in config.classifier.features:
+        if f in SIMILARITY_FEATURES or f in METADATA_FEATURES:
+            names.append(f)
     return tuple(names)
 
 
@@ -151,11 +124,7 @@ def build_single_model_feature_batch(
         centroids,
         config.classifier,
     )
-    derived_rows = stack_classifier_similarity_features(
-        derived,
-        config.classifier,
-        base_embeddings=np.zeros((len(stories), 0), dtype=np.float32),
-    )
+    derived_rows = stack_similarity_features(derived, config.classifier)
     metadata_rows = _classifier_metadata_features(
         stories,
         config,
@@ -164,7 +133,7 @@ def build_single_model_feature_batch(
     )
 
     columns: list[NDArray[np.float32]] = []
-    if config.classifier.use_raw_embedding_features:
+    if config.classifier.raw_embedding_features:
         columns.append(story_embeddings.astype(np.float32))
     if derived_rows.shape[1] > 0:
         columns.append(derived_rows.astype(np.float32))

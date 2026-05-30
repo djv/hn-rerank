@@ -88,7 +88,9 @@ def _fallback_extract_text(html_text: str) -> str:
     if not html_text:
         return ""
     soup = BeautifulSoup(html_text, "html.parser")
-    for tag in soup(["script", "style", "noscript", "header", "footer", "nav", "aside"]):
+    for tag in soup(
+        ["script", "style", "noscript", "header", "footer", "nav", "aside"]
+    ):
         tag.decompose()
 
     article = soup.find("article")
@@ -169,12 +171,14 @@ async def enrich_stories_with_full_text(
         try:
             full_text = await task
         except Exception as e:
-            logger.debug(f"Failed to fetch full text for {getattr(story, 'url', None)}: {e}")
+            logger.debug(
+                f"Failed to fetch full text for {getattr(story, 'url', None)}: {e}"
+            )
             continue
         if full_text:
             title = getattr(story, "title", "")
             story.text_content = compose_story_text(title=title, article_text=full_text)
-        
+
         if progress_callback:
             progress_callback(i + 1, len(tasks))
 
@@ -184,20 +188,25 @@ def compose_story_text(
     self_text: str = "",
     article_text: str = "",
     comments: Sequence[str] | None = None,
+    comments_first: bool = True,
 ) -> str:
     clean_title = strip_html(title)
     clean_self = truncate_text(strip_html(self_text), ARTICLE_SNIPPET_LENGTH // 2)
     clean_article = truncate_text(strip_html(article_text), ARTICLE_SNIPPET_LENGTH)
-    clean_comments = " ".join(strip_html(comment) for comment in (comments or []) if comment)
+    clean_comments = " ".join(
+        strip_html(comment) for comment in (comments or []) if comment
+    )
 
     parts: list[str] = []
     if clean_title:
         parts.append(f"{clean_title}.")
     if clean_self:
         parts.append(clean_self)
+    if clean_comments and comments_first:
+        parts.append(clean_comments)
     if clean_article:
         parts.append(clean_article)
-    if clean_comments:
+    if clean_comments and not comments_first:
         parts.append(clean_comments)
 
     return " ".join(part for part in parts if part).strip()

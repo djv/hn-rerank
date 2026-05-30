@@ -629,7 +629,17 @@ async def test_refresh_hn_story_metadata_updates_comment_count_and_score():
     assert progress == [(1, 1)]
 
 
-def test_select_ranked_results_caps_external_results_at_quota():
+@pytest.mark.parametrize(
+    ("num_ext", "num_hn", "count", "expected_ext"),
+    [
+        (6, 4, 6, 6),  # enough external to fill quota
+        (8, 2, 6, 6),  # external floor dominates
+        (1, 9, 6, 1),  # limited external, rest HN
+    ],
+)
+def test_select_ranked_results_external_quota_scenarios(
+    num_ext: int, num_hn: int, count: int, expected_ext: int
+):
     cands = [
         Story(
             id=-(i + 1),
@@ -640,13 +650,18 @@ def test_select_ranked_results_caps_external_results_at_quota():
             text_content="",
             source="rss",
         )
-        if i < 6
+        if i < num_ext
         else Story(
-            id=i + 1, title=f"HN {i}", url=None, score=0, time=1, text_content=""
+            id=i - num_ext + 1,
+            title=f"HN {i - num_ext}",
+            url=None,
+            score=0,
+            time=1,
+            text_content="",
         )
-        for i in range(10)
+        for i in range(num_ext + num_hn)
     ]
-    ranked = [_mk_rank(i, 1.0 - (i * 0.01)) for i in range(10)]
+    ranked = [_mk_rank(i, 1.0 - (i * 0.01)) for i in range(len(cands))]
 
     selected = select_ranked_results(
         ranked,
@@ -654,14 +669,14 @@ def test_select_ranked_results_caps_external_results_at_quota():
         cluster_labels=None,
         cluster_names={},
         cand_cluster_map={},
-        count=6,
+        count=count,
     )
 
-    external_count = sum(1 for r in selected if cands[r.index].is_external)
-    hn_count = len(selected) - external_count
-    assert len(selected) == 6
-    assert external_count == 6
-    assert hn_count == 0
+    ext_count = sum(1 for r in selected if cands[r.index].is_external)
+    hn_count = len(selected) - ext_count
+    assert len(selected) == count
+    assert ext_count == expected_ext
+    assert hn_count == count - expected_ext
 
 
 def test_select_ranked_results_no_longer_prioritizes_cluster_coverage():
@@ -682,76 +697,6 @@ def test_select_ranked_results_no_longer_prioritizes_cluster_coverage():
     )
 
     assert [result.index for result in selected] == [0, 1]
-
-
-def test_select_ranked_results_preserves_external_floor_when_hn_is_available():
-    cands = [
-        Story(
-            id=-(i + 1),
-            title=f"RSS {i}",
-            url=None,
-            score=0,
-            time=1,
-            text_content="",
-            source="rss",
-        )
-        if i < 8
-        else Story(
-            id=i + 1, title=f"HN {i}", url=None, score=0, time=1, text_content=""
-        )
-        for i in range(10)
-    ]
-    ranked = [_mk_rank(i, 1.0 - (i * 0.01)) for i in range(10)]
-
-    selected = select_ranked_results(
-        ranked,
-        cands,
-        cluster_labels=None,
-        cluster_names={},
-        cand_cluster_map={},
-        count=6,
-    )
-
-    external_count = sum(1 for r in selected if cands[r.index].is_external)
-    hn_count = len(selected) - external_count
-    assert len(selected) == 6
-    assert hn_count == 0
-    assert external_count == 6
-
-
-def test_select_ranked_results_preserves_existing_hn_heavy_top_slice():
-    cands = [
-        Story(
-            id=-1,
-            title="RSS 0",
-            url=None,
-            score=0,
-            time=1,
-            text_content="",
-            source="rss",
-        )
-        if i == 0
-        else Story(
-            id=i + 1, title=f"HN {i}", url=None, score=0, time=1, text_content=""
-        )
-        for i in range(10)
-    ]
-    ranked = [_mk_rank(i, 1.0 - (i * 0.01)) for i in range(10)]
-
-    selected = select_ranked_results(
-        ranked,
-        cands,
-        cluster_labels=None,
-        cluster_names={},
-        cand_cluster_map={},
-        count=6,
-    )
-
-    external_count = sum(1 for r in selected if cands[r.index].is_external)
-    hn_count = len(selected) - external_count
-    assert len(selected) == 6
-    assert external_count == 1
-    assert hn_count == 5
 
 
 def test_select_ranked_results_uses_model_scores():

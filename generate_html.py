@@ -579,11 +579,16 @@ def select_ranked_results(
     cluster_names: dict[int, str],
     cand_cluster_map: dict[int, int],
     count: int,
+    *,
+    external_min_model_score: float = 0.0,
 ) -> list[RankResult]:
     """Select a ranked subset with a small fixed external quota and diversity.
 
     The quota compensates for HN's site-score blend so external stories are not
     crowded out purely by HN points. It also ensures source diversity for external items.
+
+    External candidates below *external_min_model_score* are filtered out first,
+    preventing weak items from displacing stronger HN content.
     """
     _ = (cluster_labels, cluster_names, cand_cluster_map)
     if not ranked:
@@ -592,16 +597,23 @@ def select_ranked_results(
     def is_external_result(res: RankResult) -> bool:
         return cands[res.index].is_external
 
+    # Pre-filter external candidates by minimum quality threshold
+    external_candidates = [
+        r
+        for r in ranked
+        if is_external_result(r) and r.model_score >= external_min_model_score
+    ]
+    hn_candidates = [r for r in ranked if not is_external_result(r)]
+
     desired_external = round(count * 0.2) + 5
-    available_external = sum(1 for r in ranked if is_external_result(r))
-    available_hn = len(ranked) - available_external
+    available_external = len(external_candidates)
+    available_hn = len(hn_candidates)
     min_external = max(0, count - available_hn)
     max_external = min(count, available_external)
     target_external = min(max(desired_external, min_external), max_external)
     target_hn = count - target_external
 
     # Select external with diversity: start with strict per-source quota and relax if needed
-    external_candidates = [r for r in ranked if is_external_result(r)]
     selected_external: list[RankResult] = []
 
     for max_per_source in [2, 3, count]:
@@ -617,8 +629,7 @@ def select_ranked_results(
         if len(selected_external) >= target_external:
             break
 
-    # Select HN
-    hn_candidates = [r for r in ranked if not is_external_result(r)]
+    # Select HN (unfiltered)
     selected_hn = hn_candidates[:target_hn]
 
     # Combine and sort by the active final score.
@@ -1392,7 +1403,13 @@ async def main() -> None:
         update_prep("cluster_map", 1, 1, "[*] Assigning story clusters...")
 
         selected_results = select_ranked_results(
-            ranked, cands, cluster_labels, cluster_names, cand_cluster_map, config.count
+            ranked,
+            cands,
+            cluster_labels,
+            cluster_names,
+            cand_cluster_map,
+            config.count,
+            external_min_model_score=config.ranking.external_min_model_score,
         )
         update_prep("select", 1, 1, "[*] Selecting final stories...")
         selected_results = await filter_top_ranked_hn_dupes(
@@ -1452,7 +1469,7 @@ async def main() -> None:
                 discussion_url = f"https://news.ycombinator.com/item?id={s.id}"
             return StoryDisplay(
                 id=s.id,
-                match_percent=format_match_percent(result.max_cluster_score),
+                match_percent=format_match_percent(result.model_score),
                 cluster_name=cluster_name,
                 points=s.score,
                 time_ago=get_relative_time(s.time),
