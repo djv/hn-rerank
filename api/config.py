@@ -102,9 +102,6 @@ class SingleModelConfig:
     rf_min_samples_leaf: int = 2
     rf_min_samples_split: int = 2
     rf_max_features: str = "sqrt"  # "sqrt", "log2", or a float fraction
-    utility_upvote_weight: float = 1.0
-    utility_downvote_penalty: float = 1.0
-    max_downvote_prob: float = 0.35
 
 
 @dataclass(frozen=True)

@@ -581,15 +581,14 @@ def select_ranked_results(
     count: int,
     *,
     external_min_model_score: float = 0.0,
-    max_downvote_prob: float = 1.0,
 ) -> list[RankResult]:
     """Select a ranked subset with a small fixed external quota and diversity.
 
     The quota compensates for HN's site-score blend so external stories are not
     crowded out purely by HN points. It also ensures source diversity for external items.
 
-    External candidates below *external_min_model_score* or above *max_downvote_prob*
-    are filtered out first, preventing weak or risky items from displacing stronger HN content.
+    External candidates below *external_min_model_score* are filtered out first,
+    preventing weak items from displacing stronger HN content.
     """
     _ = (cluster_labels, cluster_names, cand_cluster_map)
     if not ranked:
@@ -598,15 +597,12 @@ def select_ranked_results(
     def is_external_result(res: RankResult) -> bool:
         return cands[res.index].is_external
 
-    def passes_external_gate(res: RankResult) -> bool:
-        return (
-            is_external_result(res)
-            and res.model_score >= external_min_model_score
-            and res.downvote_prob <= max_downvote_prob
-        )
-
-    # Pre-filter external candidates by quality and downvote risk
-    external_candidates = [r for r in ranked if passes_external_gate(r)]
+    # Pre-filter external candidates by minimum quality threshold
+    external_candidates = [
+        r
+        for r in ranked
+        if is_external_result(r) and r.model_score >= external_min_model_score
+    ]
     hn_candidates = [r for r in ranked if not is_external_result(r)]
 
     desired_external = round(count * 0.2) + 5
@@ -1414,7 +1410,6 @@ async def main() -> None:
             cand_cluster_map,
             config.count,
             external_min_model_score=config.ranking.external_min_model_score,
-            max_downvote_prob=config.single_model.max_downvote_prob,
         )
         update_prep("select", 1, 1, "[*] Selecting final stories...")
         selected_results = await filter_top_ranked_hn_dupes(

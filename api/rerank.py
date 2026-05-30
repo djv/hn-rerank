@@ -1067,9 +1067,6 @@ def rank_stories(
 
     # Display-only scores (always populated regardless of scoring path)
     model_scores: NDArray[np.float32] = np.zeros(len(stories), dtype=np.float32)
-    upvote_prob: NDArray[np.float32] = np.zeros(len(stories), dtype=np.float32)
-    neutral_prob: NDArray[np.float32] = np.zeros(len(stories), dtype=np.float32)
-    downvote_prob: NDArray[np.float32] = np.zeros(len(stories), dtype=np.float32)
     max_sim_scores: NDArray[np.float32] = np.zeros(len(stories), dtype=np.float32)
     best_fav_indices: NDArray[np.int64] = np.full(len(stories), -1, dtype=np.int64)
     raw_knn_scores: NDArray[np.float32] = np.zeros(len(stories), dtype=np.float32)
@@ -1203,7 +1200,6 @@ def rank_stories(
         except AttributeError:
             expected_n = cand_features.shape[1]
 
-        sm = config.single_model
         if expected_n != cand_features.shape[1]:
             # Build full single-model features (embeddings + derived + metadata)
             columns: list[NDArray[np.float32]] = []
@@ -1218,23 +1214,9 @@ def rank_stories(
             if cand_metadata.shape[1] > 0:
                 columns.append(cand_metadata.astype(np.float32))
             full_features = np.hstack(columns).astype(np.float32)
-            model_scores, downvote_prob, neutral_prob, upvote_prob = (
-                _predict_ordinal_outputs(
-                    model,
-                    full_features,
-                    upvote_weight=sm.utility_upvote_weight,
-                    downvote_penalty=sm.utility_downvote_penalty,
-                )
-            )
+            model_scores, _, _, _ = _predict_ordinal_outputs(model, full_features)
         else:
-            model_scores, downvote_prob, neutral_prob, upvote_prob = (
-                _predict_ordinal_outputs(
-                    model,
-                    cand_features,
-                    upvote_weight=sm.utility_upvote_weight,
-                    downvote_penalty=sm.utility_downvote_penalty,
-                )
-            )
+            model_scores, _, _, _ = _predict_ordinal_outputs(model, cand_features)
 
     report_progress("scoring", 1, 1, "Scored candidates")
 
@@ -1245,9 +1227,6 @@ def rank_stories(
         RankResult(
             index=int(best_idx),
             model_score=float(model_scores[best_idx]),
-            upvote_prob=float(upvote_prob[best_idx]),
-            neutral_prob=float(neutral_prob[best_idx]),
-            downvote_prob=float(downvote_prob[best_idx]),
             best_fav_index=int(best_fav_indices[best_idx]),
             max_sim_score=float(max_sim_scores[best_idx]),
             knn_score=float(raw_knn_scores[best_idx]),

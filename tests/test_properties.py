@@ -1063,7 +1063,7 @@ def test_svm_scores_bounded_and_finite(seed: int) -> None:
 
     assert scores.shape == (n_cand,)
     assert np.all(np.isfinite(scores)), "NaN or Inf in scores"
-    assert np.all(scores >= -1.0), f"Score < -1.0: {scores[scores < -1.0]}"
+    assert np.all(scores >= 0.0), f"Negative score: {scores[scores < 0]}"
     assert np.all(scores <= 1.0), f"Score > 1.0: {scores[scores > 1.0]}"
 
 
