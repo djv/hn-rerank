@@ -291,8 +291,11 @@ def _run_evaluate(
         ranked_keys = deduped
 
     relevant_ids = {hash(k) for k in ds.test_up_keys}
+    downvote_ids = {hash(k) for k in ds.test_down_keys}
     ranked_ids = [hash(k) for k in ranked_keys]
-    metrics = _compute_metrics(ranked_ids, relevant_ids, DEFAULT_K_METRICS)
+    metrics = _compute_metrics(
+        ranked_ids, relevant_ids, DEFAULT_K_METRICS, downvote_ids=downvote_ids
+    )
 
     down_ranks = [i + 1 for i, k in enumerate(ranked_keys) if k in ds.test_down_keys]
     if down_ranks and ds.test_down_keys:
@@ -360,6 +363,131 @@ def _build_cli_config(args: argparse.Namespace) -> AppConfig:
     return config
 
 
+async def _run_holdout_eval(
+    config: AppConfig,
+    records: dict[str, FeedbackRecord],
+    train_records: dict[str, FeedbackRecord],
+    test_records: dict[str, FeedbackRecord],
+    cache_only: bool,
+    count: int | None,
+) -> dict[str, float] | None:
+    ds = await _build_dataset(records, train_records, test_records, cache_only)
+    if ds is None:
+        return None
+    return _run_evaluate(ds, config, count)
+
+
+async def _run_grid_search(
+    base_config: AppConfig,
+    records: dict[str, FeedbackRecord],
+    args: argparse.Namespace,
+) -> int:
+    from itertools import product
+
+    train_records, test_records = _time_split(records, args.holdout)
+    tu, td, _ = _count_by_action(train_records)
+    su, sd, _ = _count_by_action(test_records)
+    print(
+        f"Train: {len(train_records)} ({tu}u, {td}d)  Test: {len(test_records)} ({su}u, {sd}d)"
+    )
+
+    count = args.count if args.final_list else None
+    results: list[dict[str, object]] = []
+
+    up_weights = args.grid_upvote_weights
+    down_penalties = args.grid_downvote_penalties
+    max_downvote_probs = args.grid_max_downvote_probs
+    total = len(up_weights) * len(down_penalties) * len(max_downvote_probs)
+
+    print(f"Grid search: {total} combinations")
+    print(f"  upvote_weights={up_weights}")
+    print(f"  downvote_penalties={down_penalties}")
+    print(f"  max_downvote_probs={max_downvote_probs}")
+
+    for i, (w_up, w_down, max_dp) in enumerate(
+        product(up_weights, down_penalties, max_downvote_probs)
+    ):
+        config = replace(
+            base_config,
+            single_model=replace(
+                base_config.single_model,
+                utility_upvote_weight=w_up,
+                utility_downvote_penalty=w_down,
+                max_downvote_prob=max_dp,
+            ),
+        )
+        metrics = await _run_holdout_eval(
+            config, records, train_records, test_records, args.cache_only, count
+        )
+        if metrics is None:
+            continue
+
+        entry = {
+            "w_up": w_up,
+            "w_down": w_down,
+            "max_dp": max_dp,
+            "ndcg@30": metrics.get("ndcg@30", 0.0),
+            "ndcg@10": metrics.get("ndcg@10", 0.0),
+            "recall@30": metrics.get("recall@30", 0.0),
+            "recall@10": metrics.get("recall@10", 0.0),
+            "downvote_rate@10": metrics.get("downvote_rate@10", 0.0),
+            "downvote_rate@30": metrics.get("downvote_rate@30", 0.0),
+            "mrr": metrics.get("mrr", 0.0),
+        }
+        results.append(entry)
+        print(
+            f"  [{i + 1}/{total}] w_up={w_up:.1f} w_down={w_down:.1f} "
+            f"dp={max_dp:.1f}  NDCG@30={entry['ndcg@30']:.3f} "
+            f"DV@10={entry['downvote_rate@10']:.2%} DV@30={entry['downvote_rate@30']:.2%}"
+        )
+
+    if not results:
+        print("No valid evaluations.")
+        return 1
+
+    best_by_ndcg = max(results, key=lambda r: r["ndcg@30"])
+    best_by_dv = min(results, key=lambda r: r["downvote_rate@30"])
+    best_combined = max(
+        results,
+        key=lambda r: r["ndcg@30"] - r["downvote_rate@30"],
+    )
+
+    print(f"\n{'=' * 70}")
+    print(f"  Grid Search Results ({total} combinations)")
+    print(f"{'=' * 70}")
+    print(
+        f"{'w_up':>4} {'w_down':>6} {'max_dp':>6} | {'NDCG@10':>8} {'NDCG@30':>8} {'Rec@10':>8} {'Rec@30':>8} {'DV@10':>8} {'DV@30':>8}"
+    )
+    print("-" * 70)
+    for r in results:
+        print(
+            f"{r['w_up']:>4.1f} {r['w_down']:>6.1f} {r['max_dp']:>6.1f} | "
+            f"{r['ndcg@10']:>8.3f} {r['ndcg@30']:>8.3f} "
+            f"{r['recall@10']:>8.1%} {r['recall@30']:>8.1%} "
+            f"{r['downvote_rate@10']:>8.1%} {r['downvote_rate@30']:>8.1%}"
+        )
+    print(
+        f"\nBest NDCG@30:   w_up={best_by_ndcg['w_up']:.1f} w_down={best_by_ndcg['w_down']:.1f} "
+        f"dp={best_by_ndcg['max_dp']:.1f}  NDCG@30={best_by_ndcg['ndcg@30']:.3f}"
+    )
+    print(
+        f"Lowest DV@30:   w_up={best_by_dv['w_up']:.1f} w_down={best_by_dv['w_down']:.1f} "
+        f"dp={best_by_dv['max_dp']:.1f}  DV@30={best_by_dv['downvote_rate@30']:.1%}"
+    )
+    print(
+        f"Best combined:  w_up={best_combined['w_up']:.1f} w_down={best_combined['w_down']:.1f} "
+        f"dp={best_combined['max_dp']:.1f}  NDCG@30={best_combined['ndcg@30']:.3f} "
+        f"DV@30={best_combined['downvote_rate@30']:.1%}"
+    )
+
+    if args.json_output is not None:
+        args.json_output.parent.mkdir(parents=True, exist_ok=True)
+        args.json_output.write_text(json.dumps(results, indent=2, sort_keys=True))
+        print(f"  Results saved to {args.json_output}")
+
+    return 0
+
+
 async def main() -> int:
     parser = argparse.ArgumentParser(
         description="Evaluate ranking models using dashboard feedback as ground truth."
@@ -394,6 +522,30 @@ async def main() -> int:
 
     parser.add_argument("--json-output", type=Path, default=None)
 
+    parser.add_argument(
+        "--grid-search",
+        action="store_true",
+        help="Grid search over utility weights and downvote penalty",
+    )
+    parser.add_argument(
+        "--grid-upvote-weights",
+        type=float,
+        nargs="+",
+        default=[0.5, 1.0, 1.5, 2.0],
+    )
+    parser.add_argument(
+        "--grid-downvote-penalties",
+        type=float,
+        nargs="+",
+        default=[0.5, 1.0, 1.5, 2.0],
+    )
+    parser.add_argument(
+        "--grid-max-downvote-probs",
+        type=float,
+        nargs="+",
+        default=[0.3, 0.5, 0.7, 1.0],
+    )
+
     args = parser.parse_args()
     config = _build_cli_config(args)
 
@@ -407,6 +559,9 @@ async def main() -> int:
     if up < 2:
         print("Need at least 2 upvotes in feedback.")
         return 1
+
+    if args.grid_search:
+        return await _run_grid_search(config, records, args)
 
     model_label = args.model_type or config.single_model.model_type
     label_str = f" {model_label}"

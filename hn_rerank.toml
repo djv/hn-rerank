@@ -50,5 +50,8 @@ rf_max_depth = 16
 rf_min_samples_leaf = 1
 rf_min_samples_split = 2
 rf_max_features = "log2"
+utility_upvote_weight = 1.0
+utility_downvote_penalty = 1.0
+max_downvote_prob = 0.35
 # Sweep winner: NDCG@30 0.410 (time holdout) / 0.833±0.07 (CV@5)
 # vs old default: 0.313 / 3.1% downvote leak → 0.410 / 1.0%

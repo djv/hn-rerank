@@ -143,6 +143,9 @@ class RankResult:
     max_sim_score: float  # Similarity to best matching positive signal
     knn_score: float  # Mean similarity to top-k neighbors (for display)
     max_cluster_score: float = 0.0
+    upvote_prob: float = 0.0
+    neutral_prob: float = 0.0
+    downvote_prob: float = 0.0
 
 
 @dataclass

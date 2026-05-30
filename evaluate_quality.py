@@ -128,6 +128,7 @@ def _compute_metrics(
     ranked_ids: list[int],
     relevant_ids: set[int],
     k_metrics: list[int],
+    downvote_ids: set[int] | None = None,
 ) -> dict[str, float]:
     metrics = {
         "mrr": mrr(ranked_ids, relevant_ids),
@@ -140,6 +141,10 @@ def _compute_metrics(
         metrics[f"precision@{k}"] = precision_at_k(ranked_ids, relevant_ids, k)
         metrics[f"map@{k}"] = map_at_k(ranked_ids, relevant_ids, k)
         metrics[f"hit@{k}"] = hit_rate_at_k(ranked_ids, relevant_ids, k)
+    if downvote_ids:
+        for k in k_metrics:
+            downvoted = sum(1 for sid in ranked_ids[:k] if sid in downvote_ids)
+            metrics[f"downvote_rate@{k}"] = downvoted / max(k, 1)
     return metrics
 
 

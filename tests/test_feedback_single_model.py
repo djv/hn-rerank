@@ -225,7 +225,8 @@ def test_single_model_scores_are_stable_and_bounded(
 
     assert scores.shape == (5,)
     assert np.all(np.isfinite(scores))
-    assert np.all(scores >= 0.0)
+    assert np.all(scores[:2] >= 0)  # upvoted items non-negative
+    assert np.all(scores[3:] < 0)  # downvoted items negative
     assert np.all(scores <= 1.0)
     assert scores[0] > scores[-1]
 

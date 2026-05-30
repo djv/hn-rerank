@@ -361,6 +361,8 @@ def train_model_from_matrix(
 def _predict_ordinal_outputs(
     model: OrdinalThresholdModel,
     x_score: NDArray[np.float32],
+    upvote_weight: float = 1.0,
+    downvote_penalty: float = 1.0,
 ) -> tuple[
     NDArray[np.float32], NDArray[np.float32], NDArray[np.float32], NDArray[np.float32]
 ]:
@@ -373,5 +375,5 @@ def _predict_ordinal_outputs(
     upvote = np.minimum(upvote, at_least_neutral)
     downvote = np.clip(1.0 - at_least_neutral, 0.0, 1.0)
     neutral = np.clip(at_least_neutral - upvote, 0.0, 1.0)
-    utility = np.clip((at_least_neutral + upvote) / 2.0, 0.0, 1.0)
+    utility = upvote_weight * upvote - downvote_penalty * downvote
     return utility, downvote, neutral, upvote
