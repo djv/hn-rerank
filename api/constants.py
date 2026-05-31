@@ -20,12 +20,11 @@ TEXT_CONTENT_MAX_TOKENS = 512
 
 # Cache Paths
 EMBEDDING_CACHE_DIR = ".cache/embeddings"
-CLUSTER_EMBEDDING_CACHE_DIR = ".cache/embeddings_cluster"
 EMBEDDING_CACHE_MAX_FILES = 20000
 STORY_CACHE_DIR = ".cache/stories"
 STORY_CACHE_VERSION = "v2"
 USER_CACHE_DIR = ".cache/user"
-STORY_CACHE_TTL = 43200  # 12 hours
+STORY_CACHE_TTL = 259200  # 72 hours
 USER_CACHE_TTL = 120  # 2 minutes
 CANDIDATE_CACHE_DIR = ".cache/candidates"
 CANDIDATE_CACHE_VERSION = "v2"
@@ -100,8 +99,6 @@ DEFAULT_EMBEDDING_BATCH_SIZE = 8
 EMBEDDING_MIN_CLIP = 1e-9
 # BGE-small CLS/query was selected by the local model bakeoff.
 EMBEDDING_MODEL_VERSION = "all-MiniLM-L6-v2-2026-05-26"
-CLUSTER_EMBEDDING_MODEL_VERSION = "all-MiniLM-L6-v2-2026-05-26"
-CLUSTER_EMBEDDING_MODEL_DIR = "onnx_model"
 
 # Similarity Bounds
 SIMILARITY_MIN = -1.0

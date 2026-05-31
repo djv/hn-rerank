@@ -12,12 +12,14 @@ from datetime import datetime
 from pathlib import Path
 
 import httpx
+import hashlib
 import numpy as np
 from numpy.typing import NDArray
 from jinja2 import Environment
 from markupsafe import Markup
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskID
 from rich.console import Console
+from rich.logging import RichHandler
 
 from sklearn.metrics.pairwise import cosine_similarity
 
@@ -39,6 +41,7 @@ from api.url_utils import normalize_url
 from api.config import AppConfig
 
 console: Console = Console()
+logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG_PATH = Path("hn_rerank.toml")
 
@@ -59,9 +62,14 @@ async def refresh_hn_story_metadata(
     progress_callback: Callable[[int, int], None] | None = None,
 ) -> None:
     """Refresh volatile HN metadata used directly in dashboard cards."""
+    from api.cache_utils import atomic_write_json
+    from api.constants import STORY_CACHE_DIR
+
     hn_stories = [story for story in stories if story.is_hn and story.id > 0]
     if not hn_stories:
         return
+
+    cache_dir = Path(STORY_CACHE_DIR)
 
     async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
         for idx, story in enumerate(hn_stories):
@@ -78,6 +86,23 @@ async def refresh_hn_story_metadata(
                         score = payload.get("score")
                         if isinstance(score, int):
                             story.score = score
+                        # Persist updated metadata back to story cache
+                        cache_file = cache_dir / f"{story.id}.json"
+                        if cache_file.exists():
+                            try:
+                                existing = json.loads(cache_file.read_text())
+                                story_dict = existing.get("story")
+                                if isinstance(story_dict, dict):
+                                    story_dict["score"] = story.score
+                                    story_dict["comment_count"] = story.comment_count
+                                    existing["ts"] = time.time()
+                                    atomic_write_json(cache_file, existing)
+                            except Exception as persist_exc:
+                                logging.debug(
+                                    "Failed to persist metadata cache for %s: %s",
+                                    story.id,
+                                    persist_exc,
+                                )
             except Exception as exc:
                 logging.debug("Failed to refresh HN metadata for %s: %s", story.id, exc)
             if progress_callback:
@@ -494,28 +519,34 @@ def apply_feedback_signal_overrides(
     signal_limit: int,
     use_hidden_signal: bool,
 ) -> tuple[list[int], list[int]]:
-    feedback_positive_hn_ids = {
-        story.id
-        for story in feedback_positive_stories
-        if story.source == "hn" and story.id > 0
-    }
-    feedback_negative_hn_ids = {
-        story.id
-        for story in feedback_negative_stories
-        if story.source == "hn" and story.id > 0
-    }
+    feedback_positive_hn_ids = sorted(
+        {
+            story.id
+            for story in feedback_positive_stories
+            if story.source == "hn" and story.id > 0
+        }
+    )
+    feedback_negative_hn_ids = sorted(
+        {
+            story.id
+            for story in feedback_negative_stories
+            if story.source == "hn" and story.id > 0
+        }
+    )
 
-    pos_baseline = data["pos"] - feedback_negative_hn_ids - feedback_positive_hn_ids
-    pos_ids = list(feedback_positive_hn_ids) + list(pos_baseline)
-    pos_ids = pos_ids[:signal_limit]
+    pos_baseline = sorted(
+        data["pos"] - set(feedback_negative_hn_ids) - set(feedback_positive_hn_ids)
+    )
+    pos_ids = (feedback_positive_hn_ids + pos_baseline)[:signal_limit]
 
     neg_ids: list[int] = []
     if use_hidden_signal:
-        neg_baseline = (
-            data["hidden"] - feedback_positive_hn_ids - feedback_negative_hn_ids
+        neg_baseline = sorted(
+            data["hidden"]
+            - set(feedback_positive_hn_ids)
+            - set(feedback_negative_hn_ids)
         )
-        neg_ids = list(feedback_negative_hn_ids) + list(neg_baseline)
-        neg_ids = neg_ids[:signal_limit]
+        neg_ids = (feedback_negative_hn_ids + neg_baseline)[:signal_limit]
     return pos_ids, neg_ids
 
 
@@ -530,7 +561,7 @@ def build_candidate_cluster_map(
         return {}
 
     cand_texts = [c.text_content for c in cands]
-    cand_emb = rerank.get_cluster_embeddings(
+    cand_emb = rerank.get_embeddings(
         cand_texts,
         progress_callback=progress_callback,
     )
@@ -926,11 +957,12 @@ async def main() -> None:
 
     os.environ["LLM_PROVIDER"] = config.llm.provider
 
-    if config.debug_clusters:
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        )
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(message)s",
+        handlers=[RichHandler(console=console, show_time=True, show_level=True)],
+    )
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
     if not config.username:
         console.print("[red][bold][-] Error:[/bold] username is required.[/red]")
@@ -1000,7 +1032,6 @@ async def main() -> None:
             async def fetch_with_progress(
                 ids: list[int], label: str, weight_share: float
             ) -> list[Story]:
-                results: list[Story] = []
                 progress.update(
                     p_task, description=f"[*] Fetching {label} ({len(ids)} items)..."
                 )
@@ -1013,15 +1044,19 @@ async def main() -> None:
                 step = 100.0 * (weight_share / PROGRESS_WEIGHTS["profile"]) / len(ids)
                 overall_step = weight_share / len(ids)
 
-                for res in asyncio.as_completed(
-                    [fetch_story(hn.client, sid) for sid in ids]
-                ):
-                    s: Story | None = await res
+                tasks = [
+                    asyncio.create_task(fetch_story(hn.client, sid)) for sid in ids
+                ]
+                results_map: dict[int, Story] = {}
+                for coro in asyncio.as_completed(tasks):
+                    s: Story | None = await coro
                     if s:
-                        results.append(s)
+                        results_map[s.id] = s
                     progress.update(p_task, advance=step)
                     progress.update(overall_task, advance=overall_step)
-                return results
+
+                # Return in input order for deterministic clustering
+                return [results_map[sid] for sid in ids if sid in results_map]
 
             # Positive signals = Favorites + Upvoted (merged in fetch_user_data)
             pos_ids, neg_ids = apply_feedback_signal_overrides(
@@ -1046,6 +1081,22 @@ async def main() -> None:
                 story
                 for story in feedback_positive_stories
                 if story.source != "hn" or story.id not in pos_story_ids
+            )
+            hn_fetched = len(pos_story_ids)
+            hn_requested = len(pos_ids)
+            feedback_added = len(pos_stories) - hn_fetched
+            sorted_id_hash = hashlib.sha256(
+                ",".join(
+                    str(s.id) for s in sorted(pos_stories, key=lambda x: x.id)
+                ).encode()
+            ).hexdigest()[:16]
+            logger.info(
+                "pos_stories: %d/%d HN fetched, %d feedback added, total %d, id_hash=%s",
+                hn_fetched,
+                hn_requested,
+                feedback_added,
+                len(pos_stories),
+                sorted_id_hash,
             )
             neg_stories: list[Story] = []
             if neg_ids:
@@ -1122,7 +1173,7 @@ async def main() -> None:
                     progress.update(overall_task, advance=overall_advance)
                     last_ce_completed = curr
 
-            cluster_emb = rerank.get_cluster_embeddings(
+            cluster_emb = rerank.get_embeddings(
                 [s.text_content for s in pos_stories],
                 progress_callback=cluster_emb_cb,
             )

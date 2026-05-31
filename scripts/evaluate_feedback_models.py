@@ -18,9 +18,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
+
 import json
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any, Iterator
 
 import numpy as np
 from numpy.typing import NDArray
@@ -50,6 +53,7 @@ class FeedbackEvalDataset:
     neg_embeddings: NDArray[np.float32]
     test_up_keys: set[str]
     test_down_keys: set[str]
+    test_neutral_keys: set[str]
     candidates: list[Story]
     candidate_keys: list[str]
 
@@ -147,7 +151,7 @@ async def _fetch_distractors(
     exclude_ids: set[int],
     exclude_urls: set[str],
     cache_only: bool,
-    count: int = 300,
+    count: int,
 ) -> list[Story]:
     import httpx
     from api.fetching import get_best_stories
@@ -168,6 +172,7 @@ async def _build_dataset(
     train_records: dict[str, FeedbackRecord],
     test_records: dict[str, FeedbackRecord],
     cache_only: bool,
+    candidate_count: int = 300,
 ) -> FeedbackEvalDataset | None:
     labels, train_emb, pos_emb, neg_emb = _build_train_data(train_records)
     if len(labels) < 2:
@@ -175,6 +180,7 @@ async def _build_dataset(
 
     test_up_keys = {r.key for r in test_records.values() if r.action == "up"}
     test_down_keys = {r.key for r in test_records.values() if r.action == "down"}
+    test_neutral_keys = {r.key for r in test_records.values() if r.action == "neutral"}
 
     candidate_pool: list[Story] = []
     seen_keys: set[str] = set()
@@ -196,7 +202,9 @@ async def _build_dataset(
             if norm:
                 exclude_urls.add(norm)
 
-    distractors = await _fetch_distractors(exclude_ids, exclude_urls, cache_only)
+    distractors = await _fetch_distractors(
+        exclude_ids, exclude_urls, cache_only, candidate_count
+    )
 
     for s in distractors:
         k = _story_key(s)
@@ -207,8 +215,9 @@ async def _build_dataset(
     candidate_keys = [_story_key(s) for s in candidate_pool]
     up_in_cand = sum(1 for k in candidate_keys if k in test_up_keys)
     down_in_cand = sum(1 for k in candidate_keys if k in test_down_keys)
+    neutral_in_cand = sum(1 for k in candidate_keys if k in test_neutral_keys)
     print(
-        f"  Candidates: {len(candidate_pool)} ({up_in_cand}/{len(test_up_keys)} test up, {down_in_cand}/{len(test_down_keys)} test down)"
+        f"  Candidates: {len(candidate_pool)} ({up_in_cand}/{len(test_up_keys)} up, {down_in_cand}/{len(test_down_keys)} down, {neutral_in_cand}/{len(test_neutral_keys)} neutral)"
     )
 
     if up_in_cand == 0 and test_up_keys:
@@ -221,6 +230,7 @@ async def _build_dataset(
         neg_embeddings=neg_emb,
         test_up_keys=test_up_keys,
         test_down_keys=test_down_keys,
+        test_neutral_keys=test_neutral_keys,
         candidates=candidate_pool,
         candidate_keys=candidate_keys,
     )
@@ -302,6 +312,27 @@ def _run_evaluate(
             len(ds.test_down_keys), 1
         )
 
+    neutral_ranks = [
+        i + 1 for i, k in enumerate(ranked_keys) if k in ds.test_neutral_keys
+    ]
+    if neutral_ranks and ds.test_neutral_keys:
+        metrics["neutral_median_rank"] = float(np.median(neutral_ranks))
+        metrics["neutral_min_rank"] = float(min(neutral_ranks))
+        metrics["neutral_in_top10"] = sum(1 for r in neutral_ranks if r <= 10) / max(
+            len(ds.test_neutral_keys), 1
+        )
+
+    nonpositive_keys = ds.test_down_keys | ds.test_neutral_keys
+    nonpositive_ranks = [
+        i + 1 for i, k in enumerate(ranked_keys) if k in nonpositive_keys
+    ]
+    if nonpositive_ranks and nonpositive_keys:
+        metrics["nonpositive_median_rank"] = float(np.median(nonpositive_ranks))
+        metrics["nonpositive_min_rank"] = float(min(nonpositive_ranks))
+        metrics["nonpositive_in_top10"] = sum(
+            1 for r in nonpositive_ranks if r <= 10
+        ) / max(len(nonpositive_keys), 1)
+
     return metrics
 
 
@@ -354,10 +385,37 @@ def _build_cli_config(args: argparse.Namespace) -> AppConfig:
     from evaluate_quality import apply_evaluator_overrides
 
     config = apply_evaluator_overrides(
-        config, pure_semantic=args.pure_semantic, use_new_features=args.use_new_features
+        config,
+        pure_semantic=args.pure_semantic,
+        use_new_features=args.use_new_features,
+        no_raw_embedding_features=args.no_raw_embedding_features,
     )
 
     return config
+
+
+@contextlib.contextmanager
+def _override_rerank(
+    rerank_module: Any,
+    model_dir: str | None,
+    embedding_max_tokens: int | None,
+) -> Iterator[None]:
+    if model_dir is None and embedding_max_tokens is None:
+        yield
+        return
+
+    orig_model = getattr(rerank_module, "_model", None)
+    orig_max_tokens = rerank_module.TEXT_CONTENT_MAX_TOKENS
+    try:
+        if model_dir is not None:
+            model = rerank_module.ONNXEmbeddingModel(model_dir=model_dir)
+            rerank_module._model = model
+        if embedding_max_tokens is not None:
+            rerank_module.TEXT_CONTENT_MAX_TOKENS = embedding_max_tokens
+        yield
+    finally:
+        rerank_module._model = orig_model
+        rerank_module.TEXT_CONTENT_MAX_TOKENS = orig_max_tokens
 
 
 async def main() -> int:
@@ -368,6 +426,12 @@ async def main() -> int:
     parser.add_argument("--holdout", type=float, default=0.2)
     parser.add_argument("--cache-only", action="store_true", default=True)
     parser.add_argument("--no-cache-only", action="store_false", dest="cache_only")
+    parser.add_argument(
+        "--candidate-count",
+        type=int,
+        default=300,
+        help="Number of distractor candidates from HN cache",
+    )
 
     parser.add_argument("--model-type", default=None)
     parser.add_argument("--svm-kernel", default=None)
@@ -383,6 +447,7 @@ async def main() -> int:
 
     parser.add_argument("--use-new-features", action="store_true")
     parser.add_argument("--pure-semantic", action="store_true")
+    parser.add_argument("--no-raw-embedding-features", action="store_true")
 
     parser.add_argument("--final-list", action="store_true")
     parser.add_argument("--count", type=int, default=40)
@@ -394,94 +459,141 @@ async def main() -> int:
 
     parser.add_argument("--json-output", type=Path, default=None)
 
+    parser.add_argument(
+        "--model-dir", type=str, default=None, help="Override embedding model directory"
+    )
+    parser.add_argument(
+        "--embedding-max-tokens",
+        type=int,
+        default=None,
+        help="Override TEXT_CONTENT_MAX_TOKENS",
+    )
+
     args = parser.parse_args()
     config = _build_cli_config(args)
 
-    records = load_feedback(args.feedback_path)
-    if not records:
-        print("No feedback records found.")
-        return 1
+    from api import rerank
 
-    up, down, neutral = _count_by_action(records)
-    print(f"Feedback: {len(records)} total ({up} up, {down} down, {neutral} neutral)")
-    if up < 2:
-        print("Need at least 2 upvotes in feedback.")
-        return 1
+    with _override_rerank(rerank, args.model_dir, args.embedding_max_tokens):
+        records = load_feedback(args.feedback_path)
+        if not records:
+            print("No feedback records found.")
+            return 1
 
-    model_label = args.model_type or config.single_model.model_type
-    label_str = f" {model_label}"
-    if args.final_list:
-        label_str += f" final@{args.count}"
-    if args.pure_semantic:
-        label_str += " psem"
+        up, down, neutral = _count_by_action(records)
+        print(
+            f"Feedback: {len(records)} total ({up} up, {down} down, {neutral} neutral)"
+        )
+        if up < 2:
+            print("Need at least 2 upvotes in feedback.")
+            return 1
 
-    if args.cv > 1:
-        all_metrics: list[dict[str, float]] = []
-        for fold in range(args.cv):
-            seed = args.seed or 0
-            train_records, test_records = _random_fold(records, fold, args.cv, seed)
-            tu, td, _ = _count_by_action(train_records)
-            su, sd, _ = _count_by_action(test_records)
+        model_label = args.model_type or config.single_model.model_type
+        label_str = f" {model_label}"
+        if args.final_list:
+            label_str += f" final@{args.count}"
+        if args.pure_semantic:
+            label_str += " psem"
+
+        if args.cv > 1:
+            all_metrics: list[dict[str, float]] = []
+            for fold in range(args.cv):
+                seed = args.seed or 0
+                train_records, test_records = _random_fold(records, fold, args.cv, seed)
+                tu, td, tn = _count_by_action(train_records)
+                su, sd, sn = _count_by_action(test_records)
+                print(
+                    f"\n[{label_str}] Fold {fold + 1}/{args.cv}: train={len(train_records)} ({tu}u,{td}d,{tn}n) test={len(test_records)} ({su}u,{sd}d,{sn}n)"
+                )
+
+                ds = await _build_dataset(
+                    records,
+                    train_records,
+                    test_records,
+                    args.cache_only,
+                    candidate_count=args.candidate_count,
+                )
+                if ds is None:
+                    print("  Skipping fold — too few training labels.")
+                    continue
+                metrics = _run_evaluate(
+                    ds, config, args.count if args.final_list else None
+                )
+                all_metrics.append(metrics)
+
+            if not all_metrics:
+                print("No valid folds.")
+                return 1
+
+            avg = _average_metrics(all_metrics)
+            print(f"\n{'=' * 50}")
+            print(f"  {label_str}  CV@{args.cv} seed={args.seed or 0}")
+            print(f"{'=' * 50}")
+            _print_metrics_report(
+                avg, DEFAULT_K_METRICS, include_std=True, include_hit=True
+            )
+
+            if "downvote_median_rank" in avg:
+                dr = avg.get("downvote_median_rank", 0)
+                drs = avg.get("downvote_median_rank_std", 0)
+                d10 = avg.get("downvote_in_top10", 0)
+                d10s = avg.get("downvote_in_top10_std", 0)
+                print(
+                    f"\n  Downvote leakage:   median_rank={dr:.0f}±{drs:.0f}, in_top10={d10:.1%}±{d10s:.1%}"
+                )
+
+            if "neutral_median_rank" in avg:
+                nr = avg.get("neutral_median_rank", 0)
+                nrs = avg.get("neutral_median_rank_std", 0)
+                n10 = avg.get("neutral_in_top10", 0)
+                n10s = avg.get("neutral_in_top10_std", 0)
+                print(
+                    f"  Neutral leakage:    median_rank={nr:.0f}±{nrs:.0f}, in_top10={n10:.1%}±{n10s:.1%}"
+                )
+
+            if "nonpositive_median_rank" in avg:
+                nr = avg.get("nonpositive_median_rank", 0)
+                nrs = avg.get("nonpositive_median_rank_std", 0)
+                n10 = avg.get("nonpositive_in_top10", 0)
+                n10s = avg.get("nonpositive_in_top10_std", 0)
+                print(
+                    f"  Nonpositive leakage: median_rank={nr:.0f}±{nrs:.0f}, in_top10={n10:.1%}±{n10s:.1%}"
+                )
+        else:
+            train_records, test_records = _time_split(records, args.holdout)
+            tu, td, tn = _count_by_action(train_records)
+            su, sd, sn = _count_by_action(test_records)
             print(
-                f"\n[{label_str}] Fold {fold + 1}/{args.cv}: train={len(train_records)} ({tu}u,{td}d) test={len(test_records)} ({su}u,{sd}d)"
+                f"Train: {len(train_records)} ({tu}u, {td}d, {tn}n)  Test: {len(test_records)} ({su}u, {sd}d, {sn}n)"
             )
 
             ds = await _build_dataset(
-                records, train_records, test_records, args.cache_only
+                records,
+                train_records,
+                test_records,
+                args.cache_only,
+                candidate_count=args.candidate_count,
             )
             if ds is None:
-                print("  Skipping fold — too few training labels.")
-                continue
+                print("Too few training labels with content.")
+                return 1
             metrics = _run_evaluate(ds, config, args.count if args.final_list else None)
-            all_metrics.append(metrics)
 
-        if not all_metrics:
-            print("No valid folds.")
-            return 1
-
-        avg = _average_metrics(all_metrics)
-        print(f"\n{'=' * 50}")
-        print(f"  {label_str}  CV@{args.cv} seed={args.seed or 0}")
-        print(f"{'=' * 50}")
-        _print_metrics_report(
-            avg, DEFAULT_K_METRICS, include_std=True, include_hit=True
-        )
-
-        if "downvote_median_rank" in avg:
-            dr = avg.get("downvote_median_rank", 0)
-            drs = avg.get("downvote_median_rank_std", 0)
-            d10 = avg.get("downvote_in_top10", 0)
-            d10s = avg.get("downvote_in_top10_std", 0)
-            print(
-                f"\n  Downvote leakage: median_rank={dr:.0f}±{drs:.0f}, in_top10={d10:.1%}±{d10s:.1%}"
-            )
-    else:
-        train_records, test_records = _time_split(records, args.holdout)
-        tu, td, _ = _count_by_action(train_records)
-        su, sd, _ = _count_by_action(test_records)
-        print(
-            f"Train: {len(train_records)} ({tu}u, {td}d)  Test: {len(test_records)} ({su}u, {sd}d)"
-        )
-
-        ds = await _build_dataset(records, train_records, test_records, args.cache_only)
-        if ds is None:
-            print("Too few training labels with content.")
-            return 1
-        metrics = _run_evaluate(ds, config, args.count if args.final_list else None)
-
-        print()
-        _print_metrics_report(
-            metrics, DEFAULT_K_METRICS, include_std=False, include_hit=True
-        )
-
-        if "downvote_median_rank" in metrics:
-            print(
-                f"\n  Downvote leakage: median_rank={metrics['downvote_median_rank']:.0f}, in_top10={metrics.get('downvote_in_top10', 0):.1%}"
+            print()
+            _print_metrics_report(
+                metrics, DEFAULT_K_METRICS, include_std=False, include_hit=True
             )
 
-        if args.json_output is not None:
-            args.json_output.parent.mkdir(parents=True, exist_ok=True)
-            args.json_output.write_text(json.dumps(metrics, indent=2, sort_keys=True))
+            if "downvote_median_rank" in metrics:
+                print(
+                    f"\n  Downvote leakage: median_rank={metrics['downvote_median_rank']:.0f}, in_top10={metrics.get('downvote_in_top10', 0):.1%}"
+                )
+
+            if args.json_output is not None:
+                args.json_output.parent.mkdir(parents=True, exist_ok=True)
+                args.json_output.write_text(
+                    json.dumps(metrics, indent=2, sort_keys=True)
+                )
 
     return 0
 

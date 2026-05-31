@@ -571,7 +571,7 @@ def test_build_candidate_cluster_map_respects_threshold_for_external(monkeypatch
 
     monkeypatch.setattr(
         generate_html.rerank,
-        "get_cluster_embeddings",
+        "get_embeddings",
         lambda _texts, **_kwargs: np.array([[1.0, 0.0], [1.0, 0.0]], dtype=np.float32),
     )
 

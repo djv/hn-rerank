@@ -40,9 +40,6 @@ from api.constants import (  # noqa: E402
     EMBEDDING_CACHE_MAX_FILES,
     EMBEDDING_MIN_CLIP,
     EMBEDDING_MODEL_VERSION,
-    CLUSTER_EMBEDDING_CACHE_DIR,
-    CLUSTER_EMBEDDING_MODEL_DIR,
-    CLUSTER_EMBEDDING_MODEL_VERSION,
     SIMILARITY_MIN,
     TEXT_CONTENT_MAX_TOKENS,
 )
@@ -64,6 +61,7 @@ SIMILARITY_FEATURES: frozenset[str] = frozenset(
         "neg_knn",
         "closest_pos",
         "closest_neg",
+        "closest_margin",
         "closest_centroid",
         "knn_pos_n1",
         "knn_pos_n3",
@@ -319,12 +317,15 @@ def compute_classifier_similarity_features(
     else:
         f_knn_neg = np.zeros(len(embs), dtype=np.float32)
 
+    f_closest_margin = f_closest_pos - f_closest_neg
+
     return {
         "centroid": f_centroid_max,
         "pos_knn": f_knn_pos,
         "neg_knn": f_knn_neg,
         "closest_pos": f_closest_pos,
         "closest_neg": f_closest_neg,
+        "closest_margin": f_closest_margin,
         "closest_centroid": f_centroid_max,
         "knn_pos_n1": knn_p1,
         "knn_pos_n3": knn_p3,
@@ -342,14 +343,10 @@ type ClusterItem = tuple[StoryDict, float]
 
 # Global singleton for the model
 _model: ONNXEmbeddingModel | None = None
-_cluster_model: ONNXEmbeddingModel | None = None
 _model_init_lock = threading.Lock()
-_cluster_model_init_lock = threading.Lock()
 
 CACHE_DIR: Path = Path(EMBEDDING_CACHE_DIR)
-CLUSTER_CACHE_DIR: Path = Path(CLUSTER_EMBEDDING_CACHE_DIR)
-for _cache_dir in (CACHE_DIR, CLUSTER_CACHE_DIR):
-    _cache_dir.mkdir(parents=True, exist_ok=True)
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _evict_old_embedding_cache_files(
@@ -461,7 +458,7 @@ class ONNXEmbeddingModel:
                     batch,
                     padding=True,
                     truncation=True,
-                    max_length=512,
+                    max_length=self.spec.max_tokens,
                     return_tensors="np",
                 )
                 # Copy arrays while tokenizer internals are exclusively held.
@@ -537,16 +534,7 @@ def get_model() -> ONNXEmbeddingModel:
 
 
 def init_cluster_model() -> ONNXEmbeddingModel:
-    global _cluster_model
-    if _cluster_model is None:
-        with _cluster_model_init_lock:
-            if _cluster_model is None:
-                logger.info("Loading cluster embedding model (ONNX)...")
-                _cluster_model = ONNXEmbeddingModel(
-                    model_dir=CLUSTER_EMBEDDING_MODEL_DIR
-                )
-    assert _cluster_model is not None
-    return _cluster_model
+    return init_model()
 
 
 def _get_embeddings_with_model(
@@ -676,15 +664,7 @@ def get_cluster_embeddings(
     texts: list[str],
     progress_callback: Callable[[int, int], None] | None = None,
 ) -> NDArray[np.float32]:
-    model: ONNXEmbeddingModel = init_cluster_model()
-    return _get_embeddings_with_model(
-        texts,
-        model=model,
-        cache_dir=CLUSTER_CACHE_DIR,
-        cache_version=CLUSTER_EMBEDDING_MODEL_VERSION,
-        is_query=False,
-        progress_callback=progress_callback,
-    )
+    return get_embeddings(texts, is_query=False, progress_callback=progress_callback)
 
 
 def cluster_interests_with_labels(

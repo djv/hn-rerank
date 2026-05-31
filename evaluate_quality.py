@@ -422,6 +422,7 @@ def apply_evaluator_overrides(
     *,
     pure_semantic: bool = False,
     use_new_features: bool = False,
+    no_raw_embedding_features: bool = False,
 ) -> AppConfig:
     updated = config
     if pure_semantic:
@@ -434,6 +435,14 @@ def apply_evaluator_overrides(
                 features=tuple(
                     f for f in updated.classifier.features if f not in METADATA_FEATURES
                 ),
+            ),
+        )
+    if no_raw_embedding_features:
+        updated = replace(
+            updated,
+            classifier=replace(
+                updated.classifier,
+                raw_embedding_features=False,
             ),
         )
     return updated

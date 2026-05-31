@@ -24,7 +24,7 @@ features = [
     "centroid", "pos_knn", "neg_knn",
     "log_points", "log_comments", "comment_ratio",
     "title_len", "text_len", "has_url", "is_github", "is_pdf", "comments_count",
-    "closest_pos", "closest_neg",
+    "closest_pos", "closest_neg", "closest_margin",
 ]
 
 [hn_rerank.clustering]
@@ -44,11 +44,11 @@ open_index_candidate_limit = 500
 min_positive_labels = 10
 min_negative_labels = 10
 balance_training_labels = true
-model_type = "random_forest"
-rf_n_estimators = 400
-rf_max_depth = 16
-rf_min_samples_leaf = 1
-rf_min_samples_split = 2
-rf_max_features = "log2"
-# Sweep winner: NDCG@30 0.410 (time holdout) / 0.833±0.07 (CV@5)
-# vs old default: 0.313 / 3.1% downvote leak → 0.410 / 1.0%
+model_type = "svm"
+svm_kernel = "rbf"
+svm_c = 1.0
+svm_gamma = "scale"
+# MiniLM + SVM RBF C=1.0 g=scale winner: NDCG@10 0.773 (300cand) / 0.817 (1300cand)
+# Grid sweep 2026-05-31 across C∈{0.3,1,3,10,30}, γ∈{scale,auto,0.001,0.003,0.01,0.03}
+# Best: C=1.0 g=scale/auto. C=3.0 baseline gave 0.675 at 1300cand.
+# See docs/evals/embedding_context_candidate_sweep.md

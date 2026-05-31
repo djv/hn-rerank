@@ -35,6 +35,7 @@ class ClassifierConfig:
         "centroid",
         "pos_knn",
         "neg_knn",
+        "closest_margin",
         "title_len",
         "text_len",
         "has_url",

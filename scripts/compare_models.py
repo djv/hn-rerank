@@ -44,9 +44,7 @@ def parse_model_arg(raw: str) -> ModelSpec:
     path_text = path_text.strip()
 
     if not sep or not label or not path_text:
-        raise argparse.ArgumentTypeError(
-            "model must be provided as label=path"
-        )
+        raise argparse.ArgumentTypeError("model must be provided as label=path")
 
     path = Path(path_text).expanduser()
     if not path.is_dir():
@@ -168,6 +166,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=40,
         help="Displayed story count when --final-list is enabled",
     )
+    parser.add_argument(
+        "--embedding-max-tokens",
+        type=int,
+        default=None,
+        help="Override TEXT_CONTENT_MAX_TOKENS for this benchmark (default: no override, uses API constant)",
+    )
     return parser
 
 
@@ -197,6 +201,7 @@ def override_rerank_model(
     rerank_module: Any,
     spec: ModelSpec,
     cache_root: Path,
+    embedding_max_tokens: int | None = None,
 ) -> Any:
     fingerprint = sha256_file(spec.path / "model.onnx")
     cache_version = f"compare-{fingerprint[:12]}"
@@ -206,11 +211,14 @@ def override_rerank_model(
     original_model = getattr(rerank_module, "_model", None)
     original_version = rerank_module.EMBEDDING_MODEL_VERSION
     original_cache_dir = rerank_module.CACHE_DIR
+    original_max_tokens = rerank_module.TEXT_CONTENT_MAX_TOKENS
 
     model = rerank_module.ONNXEmbeddingModel(model_dir=str(spec.path))
     rerank_module._model = model
     rerank_module.EMBEDDING_MODEL_VERSION = cache_version
     rerank_module.CACHE_DIR = cache_dir
+    if embedding_max_tokens is not None:
+        rerank_module.TEXT_CONTENT_MAX_TOKENS = embedding_max_tokens
     try:
         yield ModelRuntime(
             fingerprint=fingerprint,
@@ -221,6 +229,7 @@ def override_rerank_model(
         rerank_module._model = original_model
         rerank_module.EMBEDDING_MODEL_VERSION = original_version
         rerank_module.CACHE_DIR = original_cache_dir
+        rerank_module.TEXT_CONTENT_MAX_TOKENS = original_max_tokens
 
 
 def clone_dataset_for_model(eq_module: Any, rerank_module: Any, dataset: Any) -> Any:
@@ -304,7 +313,9 @@ async def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     cache_root = Path(".cache/model_compare_embeddings")
 
     first_spec = args.models[0]
-    with override_rerank_model(rerank, first_spec, cache_root):
+    with override_rerank_model(
+        rerank, first_spec, cache_root, args.embedding_max_tokens
+    ):
         evaluator = eq.RankingEvaluator(args.username or "snapshot")
         if args.snapshot is not None:
             success = evaluator.load_snapshot(args.snapshot)
@@ -326,7 +337,9 @@ async def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
 
     results: list[dict[str, Any]] = []
     for spec in args.models:
-        with override_rerank_model(rerank, spec, cache_root) as runtime:
+        with override_rerank_model(
+            rerank, spec, cache_root, args.embedding_max_tokens
+        ) as runtime:
             evaluator = eq.RankingEvaluator(args.username or "snapshot")
             if args.snapshot is not None:
                 if not evaluator.load_snapshot(args.snapshot):
@@ -336,11 +349,11 @@ async def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
 
             per_seed: list[dict[str, Any]] = []
             from api.config import AppConfig
+
             for seed in args.seeds:
                 np.random.seed(seed)
                 config = AppConfig(
                     username=args.username or "snapshot",
-                    use_classifier=args.classifier,
                     count=args.count,
                 )
                 metrics = evaluator.evaluate_cv(

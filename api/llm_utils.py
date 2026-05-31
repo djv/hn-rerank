@@ -465,6 +465,8 @@ async def generate_batch_cluster_names(
     fallback_model = LLM_CLUSTER_NAME_MODEL_FALLBACK
     active_model = primary_model
     fallback_triggered = False
+    hit_count = 0
+    miss_count = 0
 
     for cid, items in clusters.items():
         # Generate cache key based on sorted story IDs
@@ -485,12 +487,37 @@ async def generate_batch_cluster_names(
                             "name": parsed_name,
                             "keywords": str(parsed.get("keywords", "")).strip(),
                         }
+                        hit_count += 1
+                        logger.debug(
+                            "Cluster %d: cache HIT (%d stories, name=%s)",
+                            cid,
+                            len(items),
+                            parsed_name,
+                        )
                         continue
             except json.JSONDecodeError:
-                # Handle old string-only cache entries by re-generating
                 pass
 
+        miss_count += 1
+        top_titles = [
+            str(s.get("title", "?"))[:60]
+            for s, _ in sorted(items, key=lambda x: -x[1])[:5]
+        ]
+        logger.info(
+            "Cluster %d: cache MISS (%d stories, key hash=%s). Top titles: %s",
+            cid,
+            len(items),
+            primary_key[:16],
+            top_titles,
+        )
         to_generate[cid] = items
+
+    logger.info(
+        "Cluster name cache summary: %d hits, %d misses, %d total",
+        hit_count,
+        miss_count,
+        len(clusters),
+    )
 
     if not to_generate:
         if progress_callback:

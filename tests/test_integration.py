@@ -33,7 +33,6 @@ async def test_generate_html_integration(tmp_path):
         patch("generate_html.get_best_stories", new_callable=AsyncMock) as mock_best,
         patch("generate_html.fetch_story", new_callable=AsyncMock) as mock_fetch,
         patch("generate_html.rerank.get_embeddings") as mock_emb,
-        patch("generate_html.rerank.get_cluster_embeddings") as mock_cluster_emb,
         patch("generate_html.rerank.cluster_interests_with_labels") as mock_cluster,
         patch(
             "generate_html.train_single_model_from_embeddings"
@@ -78,7 +77,6 @@ async def test_generate_html_integration(tmp_path):
         import numpy as np
 
         mock_emb.return_value = np.zeros((1, 768))
-        mock_cluster_emb.return_value = np.zeros((1, 768))
         mock_cluster.return_value = (np.zeros((1, 768)), np.array([0], dtype=np.int32))
         mock_train_single_model.return_value = (MagicMock(), MagicMock())
         mock_rank.return_value = [
