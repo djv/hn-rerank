@@ -73,6 +73,28 @@ logger = logging.getLogger(__name__)
 DEFAULT_CONFIG_PATH = Path("hn_rerank.toml")
 
 
+def compute_config_hash(config: AppConfig) -> str:
+    """Stable config fingerprint for impression tracking."""
+    relevant = {
+        "embedding_model": EMBEDDING_MODEL_VERSION,
+        "features": config.classifier.features,
+        "raw_embedding_features": config.classifier.raw_embedding_features,
+        "k_feat": config.classifier.k_feat,
+        "model_type": config.single_model.model_type,
+        "svm_kernel": config.single_model.svm_kernel,
+        "svm_c": config.single_model.svm_c,
+        "svm_gamma": str(config.single_model.svm_gamma),
+        "explore_enabled": config.explore.enabled,
+        "explore_slots": config.explore.slots,
+        "explore_min_quality": config.explore.min_quality,
+        "explore_top_reserve": config.explore.top_reserve,
+        "external_min_model_score": config.ranking.external_min_model_score,
+    }
+    return hashlib.sha256(json.dumps(relevant, sort_keys=True).encode()).hexdigest()[
+        :12
+    ]
+
+
 async def filter_top_ranked_hn_dupes(
     ranked: list[RankResult],
     cands: list[Story],
@@ -227,6 +249,8 @@ HTML_TEMPLATE: str = """
             const TOKEN_KEY = 'hnRerankFeedbackToken';
             const ACTED_KEYS_KEY = 'hnRerankActedFeedbackKeys';
             const FEEDBACK_URL = window.HN_RERANK_FEEDBACK_URL || '/api/feedback';
+            const IMPRESSIONS_URL = window.HN_RERANK_IMPRESSIONS_URL || '/api/impressions';
+            const CONFIG_HASH = '{{ config_hash }}';
             const cards = Array.from(document.querySelectorAll('[data-feedback-key]'));
             if (!cards.length) return;
             const cardsByKey = new Map(cards.map((card) => [card.dataset.feedbackKey, card]));
@@ -333,8 +357,105 @@ HTML_TEMPLATE: str = """
                 }
             };
 
+            const sendImpressionsImmediately = async () => {
+                const cardsWithData = Array.from(document.querySelectorAll('[data-rank-index]')).filter(c => c.dataset.storyId);
+                if (!cardsWithData.length) return;
+                const token = localStorage.getItem(TOKEN_KEY);
+                if (!token) return;
+                const records = cardsWithData.map(c => ({
+                    event: 'impression',
+                    feedback_key: c.dataset.feedbackKey,
+                    story_id: Number(c.dataset.storyId),
+                    story_source: c.dataset.storySource,
+                    title: c.dataset.storyTitle,
+                    url: c.dataset.storyUrl || '',
+                    rank_index: Number(c.dataset.rankIndex),
+                    model_score: Number(c.dataset.modelScore),
+                    knn_score: Number(c.dataset.knnScore),
+                    max_sim_score: Number(c.dataset.maxSimScore),
+                    max_cluster_score: Number(c.dataset.maxClusterScore),
+                    acquisition_kind: c.dataset.acquisitionKind || 'exploit',
+                    config_hash: CONFIG_HASH,
+                }));
+                try {
+                    await fetch(IMPRESSIONS_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'X-HN-RERANK-FEEDBACK-TOKEN': token },
+                        body: JSON.stringify({ impressions: records }),
+                    });
+                } catch { /* silent */ }
+            };
+
+            const setupIntersectionObserverImpressions = () => {
+                if (!('IntersectionObserver' in window)) {
+                    sendImpressionsImmediately();
+                    return;
+                }
+
+                let impressionTimer = null;
+                const pendingImpressions = [];
+
+                const observer = new IntersectionObserver((entries) => {
+                    for (const entry of entries) {
+                        if (entry.isIntersecting) {
+                            const card = entry.target;
+                            if (card.dataset.impressionSent) continue;
+                            card.dataset.impressionSent = '1';
+
+                            pendingImpressions.push({
+                                event: 'impression',
+                                feedback_key: card.dataset.feedbackKey,
+                                story_id: Number(card.dataset.storyId),
+                                story_source: card.dataset.storySource,
+                                title: card.dataset.storyTitle,
+                                url: card.dataset.storyUrl || '',
+                                rank_index: Number(card.dataset.rankIndex),
+                                model_score: Number(card.dataset.modelScore),
+                                knn_score: Number(card.dataset.knnScore),
+                                max_sim_score: Number(card.dataset.maxSimScore),
+                                max_cluster_score: Number(card.dataset.maxClusterScore),
+                                acquisition_kind: card.dataset.acquisitionKind || 'exploit',
+                                config_hash: CONFIG_HASH,
+                            });
+
+                            observer.unobserve(card);
+
+                            // Debounce: batch-send pending after 2s of no new visible cards
+                            if (impressionTimer) clearTimeout(impressionTimer);
+                            impressionTimer = setTimeout(() => {
+                                if (pendingImpressions.length === 0) return;
+                                const batch = pendingImpressions.splice(0);
+                                const token = localStorage.getItem(TOKEN_KEY);
+                                if (!token) return;
+                                fetch(IMPRESSIONS_URL, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json', 'X-HN-RERANK-FEEDBACK-TOKEN': token },
+                                    body: JSON.stringify({ impressions: batch }),
+                                }).catch(() => {});
+                            }, 2000);
+                        }
+                    }
+                }, { rootMargin: '0px 0px 200px 0px' });
+
+                // Observe all story cards with story ID
+                const cardsWithData = Array.from(document.querySelectorAll('[data-rank-index]')).filter(c => c.dataset.storyId);
+                for (const card of cardsWithData) {
+                    observer.observe(card);
+                }
+
+                // Flush pending impressions on page unload so we don't lose
+                // data when the user closes the tab within the 2s debounce.
+                window.addEventListener('beforeunload', () => {
+                    if (impressionTimer) clearTimeout(impressionTimer);
+                    if (pendingImpressions.length === 0) return;
+                    const batch = pendingImpressions.splice(0);
+                    navigator.sendBeacon(IMPRESSIONS_URL,
+                        new Blob([JSON.stringify({ impressions: batch })], { type: 'application/json' }));
+                });
+            };
+
             hidePreviouslyActedCards();
-            syncServerFeedback();
+            syncServerFeedback().then(() => setupIntersectionObserverImpressions());
 
             for (const card of cards) {
                 setCardAction(card, card.dataset.feedbackAction || '');
@@ -394,6 +515,44 @@ HTML_TEMPLATE: str = """
                         }
                     });
                 }
+            }
+
+            // Log card clicks via the same impressions pipeline
+            const logClick = async (card) => {
+                if (!card.dataset.storyId) return;
+                const token = localStorage.getItem(TOKEN_KEY);
+                if (!token) return;
+                try {
+                    await fetch(IMPRESSIONS_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'X-HN-RERANK-FEEDBACK-TOKEN': token },
+                        body: JSON.stringify({
+                            impressions: [{
+                                event: 'click',
+                                feedback_key: card.dataset.feedbackKey,
+                                story_id: Number(card.dataset.storyId),
+                                story_source: card.dataset.storySource,
+                                title: card.dataset.storyTitle,
+                                url: card.dataset.storyUrl || '',
+                                rank_index: Number(card.dataset.rankIndex),
+                                model_score: Number(card.dataset.modelScore),
+                                knn_score: Number(card.dataset.knnScore),
+                                max_sim_score: Number(card.dataset.maxSimScore),
+                                max_cluster_score: Number(card.dataset.maxClusterScore),
+                                acquisition_kind: card.dataset.acquisitionKind || 'exploit',
+                                config_hash: CONFIG_HASH,
+                            }],
+                        }),
+                    });
+                } catch { /* silent */ }
+            };
+
+            for (const card of cards) {
+                card.addEventListener('click', (e) => {
+                    if (e.target.closest('[data-feedback-button]')) return;
+                    if (e.target.closest('[data-feedback-status]')) return;
+                    logClick(card);
+                });
             }
         })();
     </script>
@@ -896,13 +1055,14 @@ def generate_story_html(story: StoryDisplay) -> str:
         knn_score=story.knn_score,
         max_sim_score=story.max_sim_score,
         max_cluster_score=story.max_cluster_score,
+        acquisition_kind=story.acquisition_kind,
         card_url=card_url,
         card_aria_label=card_aria_label,
         url=link_url,
         title=story.title,
         hn_url=story.hn_url,
         comment_count=story.comment_count,
-        tldr=story.tldr,
+        tldr=story.tldr if len(story.tldr) > 20 else "",
     )
 
 
@@ -1104,6 +1264,7 @@ async def main() -> None:
     config = replace(config, llm=replace(config.llm, provider=provider_choice))
 
     os.environ["LLM_PROVIDER"] = config.llm.provider
+    config_hash: str = compute_config_hash(config)
 
     logging.basicConfig(
         level=logging.INFO,
@@ -1831,6 +1992,7 @@ async def main() -> None:
     final_html: str = _INDEX_TEMPLATE.render(
         username=config.username,
         n_clusters=n_clusters,
+        config_hash=config_hash,
         timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         stories_html=Markup(stories_html),
     )

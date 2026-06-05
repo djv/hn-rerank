@@ -534,6 +534,7 @@ def test_index_template_syncs_server_feedback_without_prompting_on_load():
     html = _INDEX_TEMPLATE.render(
         username="test",
         n_clusters=1,
+        config_hash="abc123",
         timestamp="now",
         stories_html="",
     )
@@ -544,7 +545,10 @@ def test_index_template_syncs_server_feedback_without_prompting_on_load():
     assert "'X-HN-RERANK-FEEDBACK-TOKEN': token" in html
     assert "for (const [key, record] of Object.entries(payload.records))" in html
     assert "['up', 'neutral', 'down'].includes(record.action)" in html
-    assert "syncServerFeedback();" in html
+    assert "syncServerFeedback().then(() => setupIntersectionObserverImpressions());" in html
+    assert "setupIntersectionObserverImpressions" in html
+    assert "IMPRESSIONS_URL" in html
+    assert "CONFIG_HASH" in html
 
 
 def test_build_candidate_cluster_map_respects_threshold_for_external(monkeypatch):

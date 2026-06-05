@@ -22,6 +22,12 @@ from api.feedback import (
     apply_feedback_payload,
     load_feedback,
 )
+from api.impressions import (
+    ImpressionRecord,
+    append_impressions,
+    impression_from_payload,
+)
+from api.regen_scheduler import request_regen
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
@@ -62,7 +68,9 @@ def _extract_hn_action_path(html: str, story_id: int, action: str) -> str | None
     return None
 
 
-async def _mirror_hn_action(payload: FeedbackPayload) -> tuple[FeedbackMirrorStatus, str | None]:
+async def _mirror_hn_action(
+    payload: FeedbackPayload,
+) -> tuple[FeedbackMirrorStatus, str | None]:
     if payload.get("source") != "hn":
         return "none", None
     story_id = int(payload.get("id", 0))
@@ -108,9 +116,14 @@ class FeedbackHandler(BaseHTTPRequestHandler):
         )
 
     def do_POST(self) -> None:
-        if self.path != "/api/feedback":
+        if self.path == "/api/feedback":
+            self._handle_feedback()
+        elif self.path == "/api/impressions":
+            self._handle_impressions()
+        else:
             self.send_error(HTTPStatus.NOT_FOUND)
-            return
+
+    def _handle_feedback(self) -> None:
         if not self._authorized():
             self.send_error(HTTPStatus.UNAUTHORIZED)
             return
@@ -136,11 +149,36 @@ class FeedbackHandler(BaseHTTPRequestHandler):
                 "ok": True,
                 "record": record.to_dict() if record else None,
                 "records": {
-                    key: saved_record.to_dict()
-                    for key, saved_record in records.items()
+                    key: saved_record.to_dict() for key, saved_record in records.items()
                 },
             }
         )
+        request_regen()
+
+    def _handle_impressions(self) -> None:
+        if not self._authorized():
+            self.send_error(HTTPStatus.UNAUTHORIZED)
+            return
+
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+            raw_body = self.rfile.read(content_length)
+            data = cast(dict[str, Any], json.loads(raw_body.decode("utf-8")))
+            items = data.get("impressions", [])
+            if not isinstance(items, list):
+                raise ValueError("impressions must be a list")
+        except Exception as exc:
+            self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        records: list[ImpressionRecord] = []
+        for item in items:
+            record = impression_from_payload(item)
+            if record is not None:
+                records.append(record)
+
+        append_impressions(records)
+        self._send_json({"ok": True, "count": len(records)})
 
     def log_message(self, format: str, *args: object) -> None:
         return
@@ -151,7 +189,9 @@ class FeedbackHandler(BaseHTTPRequestHandler):
             return False
         return self.headers.get("X-HN-RERANK-FEEDBACK-TOKEN") == token
 
-    def _send_json(self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
+    def _send_json(
+        self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK
+    ) -> None:
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
