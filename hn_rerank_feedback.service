@@ -5,8 +5,9 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/home/dev/hn_rerank
-ExecStart=/home/dev/.local/bin/uv run scripts/feedback_server.py
+ExecStart=/home/dev/.local/bin/uv run python scripts/feedback_server.py
 Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/home/dev/hn_rerank
 EnvironmentFile=-%h/.config/hn_rerank/secrets.env
 Restart=on-failure
 RestartSec=5s

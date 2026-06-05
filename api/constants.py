@@ -88,6 +88,17 @@ RSS_EXTRA_FEEDS = [
     "https://www.citationneeded.news/rss/",
     "https://scottaaronson.blog/?feed=rss2",
     "https://erikbern.com/feed",
+    "https://kevinlynagh.com/feed.xml",
+    "https://feedpress.me/thetechnium",
+    "https://www.countbayesie.com/blog?format=rss",
+    "https://anderegg.ca/feed.xml",
+    "https://artemis.sh/feed.xml",
+    "https://blog.davep.org/feed.xml",
+    "https://den.dev/index.xml",
+    "https://jonlu.ca/feed.xml",
+    "https://ludic.mataroa.blog/rss/",
+    "https://rednafi.com/index.xml",
+    "https://taylor.town/feed.xml",
 ]  # Additional feeds not in OPML
 RSS_MAX_FEEDS = 0  # 0 = no max feed limit
 RSS_PER_FEED_LIMIT = 70

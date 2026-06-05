@@ -28,3 +28,15 @@
 - `README.md` is the canonical user-facing setup reference.
 - `public/index.html` and `public/clusters.html` are generated artifacts.
 - Tests marked `@pytest.mark.slow` (6 tests: integration, pagination, SVM, clustering stability) are skipped with `-m "not slow"`.
+
+## Long-running services
+
+All persistent services run as **systemd user services**. Never start long-running Python processes with `&` or `nohup` — use systemd.
+
+| Service | File | Manage |
+|---------|------|--------|
+| Feedback API | `~/.config/systemd/user/hn_rerank_feedback.service` | `systemctl --user {start\|stop\|restart\|status} hn_rerank_feedback` |
+| Dashboard regen timer | `~/.config/systemd/user/hn_rerank.timer` + `hn_rerank.service` | `systemctl --user {start\|stop} hn_rerank.timer` |
+| Caddy reverse proxy | `/etc/systemd/system/hn-dashboard.service` | `sudo systemctl {start\|stop\|restart\|status} hn-dashboard` |
+
+The feedback server auto-triggers dashboard regeneration on upvote/neutral/down via `api/regen_scheduler.py`. Regen logs to `.cache/regen.log`.

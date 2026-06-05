@@ -8,7 +8,7 @@ no_tldr = false
 debug_scores = true
 
 [hn_rerank.ranking]
-external_min_model_score = 0.52
+external_min_model_score = 0.40
 
 [hn_rerank.llm]
 provider = "mistral"
