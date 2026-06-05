@@ -1058,7 +1058,7 @@ def _build_tldr_prompt(stories_formatted: Sequence[str]) -> str:
     """Build the TL;DR prompt with a flat JSON contract."""
     batch_context = "\n\n".join(stories_formatted)
     return f"""
-For each story, write exactly 3 bullet points (single paragraph, max 60 words total):
+For each story, write exactly 3 bullet points (single paragraph, max 80 words total):
 1. Core claim or finding
 2. Key mechanism or method
 3. Tension, trade-off, or takeaway from discussion
