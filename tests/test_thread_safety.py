@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
+from api.model_metadata import EmbeddingModelSpec
 from api.rerank import ONNXEmbeddingModel, _get_embeddings_with_model
 
 
@@ -71,6 +72,13 @@ class _DummySession:
 def _make_stub_model() -> ONNXEmbeddingModel:
     model = ONNXEmbeddingModel.__new__(ONNXEmbeddingModel)
     model.model_id = "thread-test"
+    model.spec = EmbeddingModelSpec(
+        model_id="thread-test",
+        pooling="mean",
+        normalize=True,
+        text_mode="plain",
+        max_tokens=512,
+    )
     model.tokenizer = _BorrowCheckingTokenizer()
     model.session = _DummySession()
     model._tokenizer_lock = threading.Lock()
