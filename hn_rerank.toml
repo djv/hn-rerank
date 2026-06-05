@@ -42,6 +42,10 @@ open_index_enabled = true
 use_cached_stories = true
 open_index_candidate_limit = 500
 
+[hn_rerank.explore]
+enabled = true
+slots = 7
+
 [hn_rerank.single_model]
 min_positive_labels = 10
 min_negative_labels = 10

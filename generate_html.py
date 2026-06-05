@@ -342,6 +342,7 @@ HTML_TEMPLATE: str = """
                                     score: Number(card.dataset.storyScore),
                                     comment_count: card.dataset.storyCommentCount === '' ? null : Number(card.dataset.storyCommentCount),
                                     action: nextAction,
+                                    acquisition_kind: card.dataset.acquisitionKind || '',
                                 }),
                             });
                             const payload = await response.json();
@@ -669,8 +670,125 @@ def select_ranked_results(
     return selected_results
 
 
+def _percentile_rank(values: list[float]) -> list[float]:
+    """Rank each value 0..1 across the pool."""
+    n = len(values)
+    if n <= 1:
+        return [1.0] * n
+    sorted_idx = sorted(range(n), key=lambda i: values[i])
+    ranks = [0.0] * n
+    for pos, i in enumerate(sorted_idx):
+        ranks[i] = pos / (n - 1)
+    return ranks
+
+
+def _partition_pool_by_percentile(
+    pool: list[RankResult],
+) -> dict[str, list[RankResult]]:
+    """Partition pool into types by each candidate's strongest percentile signal.
+
+    Every candidate lands in exactly one bucket; tie-break order favours non-uncertainty
+    types so disagreement/novel buckets are never empty.
+    """
+    buckets: dict[str, list[RankResult]] = {
+        "uncertainty": [],
+        "disagreement": [],
+        "novel": [],
+    }
+    if not pool:
+        return buckets
+
+    ent_pct = _percentile_rank([r.entropy for r in pool])
+    gap_pct = _percentile_rank([r.max_sim_score - r.model_score for r in pool])
+    novel_pct = _percentile_rank([-r.max_sim_score for r in pool])
+
+    # tie-break priority: disagreement > novel > uncertainty
+    tie_break = {"disagreement": 0, "novel": 1, "uncertainty": 2}
+
+    for i, r in enumerate(pool):
+        candidates = [
+            ("uncertainty", ent_pct[i]),
+            ("disagreement", gap_pct[i]),
+            ("novel", novel_pct[i]),
+        ]
+        candidates.sort(key=lambda x: (-x[1], tie_break[x[0]]))
+        kind = candidates[0][0]
+        buckets[kind].append(r)
+
+    return buckets
+
+
+def select_explore_slots(
+    selected: list[RankResult],
+    config: ExploreConfig,
+) -> list[RankResult]:
+    """Reserve explore slots in the final dashboard list.
+
+    Top *top_reserve* stay as pure exploit.
+    Remaining *slots* are filled by type: disagreement > novel > uncertainty,
+    then interleaved every 5th position.
+    """
+    if not selected or config.slots <= 0:
+        return selected
+
+    n = len(selected)
+    reserve = min(config.top_reserve, n)
+    slot_count = min(config.slots, n - reserve)
+
+    exploit_part = list(selected[:reserve])
+    pool_part = list(selected[reserve:])
+
+    if slot_count <= 0:
+        return selected
+
+    # Classify and partition pool candidates by percentile signal
+    candidates_by_type = _partition_pool_by_percentile(pool_part)
+
+    # Sort each bucket by its probe-specific criterion
+    candidates_by_type["uncertainty"].sort(key=lambda x: -x.entropy)
+    candidates_by_type["disagreement"].sort(
+        key=lambda x: -(x.max_sim_score - x.model_score)
+    )
+    candidates_by_type["novel"].sort(key=lambda x: x.max_sim_score)
+
+    # Each non-uncertainty type gets slot_count // 3 slots; uncertainty fills rest.
+    per_type = slot_count // 3
+    priority: list[str] = ["disagreement", "novel", "uncertainty"]
+    explore_items: list[RankResult] = []
+    for kind in priority:
+        bucket = candidates_by_type[kind]
+        target = per_type if kind != "uncertainty" else slot_count - len(explore_items)
+        for r in bucket[:target]:
+            if len(explore_items) >= slot_count:
+                break
+            r.acquisition_kind = kind
+            explore_items.append(r)
+
+    # Sort explore items by model_score so the best appears first
+    explore_items.sort(key=lambda x: -x.model_score)
+    explore_ids = {id(r) for r in explore_items}
+    remaining = [r for r in pool_part if id(r) not in explore_ids]
+
+    # Interleave: after reserve, every 5th slot is explore
+    result: list[RankResult] = list(exploit_part)
+    explore_idx = 0
+    slot = len(result)
+    while slot < n:
+        if (slot + 1) % 5 == 0 and explore_idx < len(explore_items):
+            result.append(explore_items[explore_idx])
+            explore_idx += 1
+        elif remaining:
+            result.append(remaining.pop(0))
+        else:
+            result.extend(explore_items[explore_idx:])
+            break
+        slot += 1
+
+    return result
+
+
 STORY_CARD_TEMPLATE: str = """
-<div class="story-card group relative{% if is_external %} rss-story{% endif %}" data-rank-index="{{ rank_index }}" data-story-time="{{ story_time }}" data-story-id="{{ story_id }}" data-story-source="{{ story_source }}" data-story-title="{{ title }}" data-story-url="{{ story_url or '' }}" data-story-discussion-url="{{ hn_url or '' }}" data-story-text-content="{{ text_content }}" data-story-score="{{ story_score }}" data-story-comment-count="{{ story_comment_count if story_comment_count is not none else '' }}" data-feedback-key="{{ feedback_key }}" data-feedback-action="{{ feedback_action or '' }}">
+<div class="story-card group relative{% if is_external %} rss-story{% endif %}" data-rank-index="{{ rank_index }}" data-story-time="{{ story_time }}" data-story-id="{{ story_id }}" data-story-source="{{ story_source }}" data-story-title="{{ title }}" data-story-url="{{ story_url or '' }}" data-story-discussion-url="{{ hn_url or '' }}" data-story-text-content="{{ text_content }}" data-story-score="{{ story_score }}" data-story-comment-count="{{ story_comment_count if story_comment_count is not none else '' }}" data-feedback-key="{{ feedback_key }}" data-feedback-action="{{ feedback_action or '' }}" data-acquisition-kind="{{ acquisition_kind }}" data-model-score="{{ model_score }}" data-knn-score="{{ knn_score }}" data-max-sim-score="{{ max_sim_score }}" data-max-cluster-score="{{ max_cluster_score }}">
     {% if card_url %}
     <a href="{{ card_url }}" target="_blank" class="absolute inset-0 z-10 rounded-lg" aria-label="{{ card_aria_label }}"></a>
     {% endif %}
@@ -683,6 +801,9 @@ STORY_CARD_TEMPLATE: str = """
         {% endif %}
         {% if cluster_name %}
         <span class="cluster-chip">{{ cluster_name }}</span>
+        {% endif %}
+        {% if acquisition_kind != 'exploit' %}
+        <span class="px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-[10px] font-mono font-semibold">{{ acquisition_kind }}</span>
         {% endif %}
         <span class="text-[10px] text-stone-400 font-mono">{{ points }} pts</span>
         <span class="text-[10px] text-stone-400 font-mono">{{ time_ago }}</span>
@@ -1477,6 +1598,9 @@ async def main() -> None:
         )
         update_prep("dupes", 1, 1, "[*] Checking duplicate HN submissions...")
 
+        if config.explore.enabled and config.explore.slots > 0:
+            selected_results = select_explore_slots(selected_results, config.explore)
+
         selected_stories = [cands[result.index] for result in selected_results]
         await refresh_hn_story_metadata(
             selected_stories,
@@ -1544,6 +1668,7 @@ async def main() -> None:
                     story_id=s.id,
                     url=s.url,
                 ),
+                acquisition_kind=result.acquisition_kind,
             )
 
         for rank_index, result in enumerate(selected_results):

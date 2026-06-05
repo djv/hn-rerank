@@ -1279,11 +1279,22 @@ def rank_stories(
             if cand_metadata.shape[1] > 0:
                 columns.append(cand_metadata.astype(np.float32))
             full_features = np.hstack(columns).astype(np.float32)
-            model_scores, _, _, _ = _predict_ordinal_outputs(model, full_features)
+            model_scores, downvote, neutral, upvote = _predict_ordinal_outputs(
+                model, full_features
+            )
         else:
-            model_scores, _, _, _ = _predict_ordinal_outputs(model, cand_features)
+            model_scores, downvote, neutral, upvote = _predict_ordinal_outputs(
+                model, cand_features
+            )
+    else:
+        downvote = np.zeros(len(stories), dtype=np.float32)
+        neutral = np.zeros(len(stories), dtype=np.float32)
+        upvote = np.zeros(len(stories), dtype=np.float32)
 
     report_progress("scoring", 1, 1, "Scored candidates")
+
+    probs = np.stack([downvote, neutral, upvote], axis=1) + 1e-12
+    entropy_per_cand = -np.sum(probs * np.log2(probs), axis=1) / np.log2(3)
 
     ranked_indices = np.argsort(-model_scores, kind="stable")
 
@@ -1296,6 +1307,10 @@ def rank_stories(
             max_sim_score=float(max_sim_scores[best_idx]),
             knn_score=float(raw_knn_scores[best_idx]),
             max_cluster_score=float(cluster_max_scores[best_idx]),
+            p_down=float(downvote[best_idx]),
+            p_neutral=float(neutral[best_idx]),
+            p_up=float(upvote[best_idx]),
+            entropy=float(entropy_per_cand[best_idx]),
         )
         for best_idx in ranked_indices
     ]

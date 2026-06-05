@@ -37,6 +37,7 @@ class FeedbackRecordDict(TypedDict):
     knn_score: NotRequired[float | None]
     max_sim_score: NotRequired[float | None]
     max_cluster_score: NotRequired[float | None]
+    acquisition_kind: NotRequired[str]
 
 
 class FeedbackStoreFile(TypedDict):
@@ -55,6 +56,7 @@ class FeedbackPayload(TypedDict):
     score: NotRequired[int | float | None]
     comment_count: NotRequired[int | None]
     action: Literal["up", "neutral", "down", "clear"]
+    acquisition_kind: NotRequired[str]
 
 
 @dataclass(frozen=True)
@@ -73,6 +75,7 @@ class FeedbackRecord:
     hn_mirror_status: FeedbackMirrorStatus = "none"
     hn_mirror_error: str | None = None
     updated_at: float = 0.0
+    acquisition_kind: str = "exploit"
 
     @classmethod
     def from_dict(cls, data: FeedbackRecordDict) -> FeedbackRecord:
@@ -91,6 +94,7 @@ class FeedbackRecord:
             hn_mirror_status=data.get("hn_mirror_status", "none"),
             hn_mirror_error=data.get("hn_mirror_error"),
             updated_at=float(data.get("updated_at", 0.0)),
+            acquisition_kind=str(data.get("acquisition_kind", "exploit")),
         )
 
     def to_dict(self) -> FeedbackRecordDict:
@@ -109,6 +113,7 @@ class FeedbackRecord:
             "hn_mirror_status": self.hn_mirror_status,
             "hn_mirror_error": self.hn_mirror_error,
             "updated_at": self.updated_at,
+            "acquisition_kind": self.acquisition_kind,
         }
 
     def to_story(self) -> Story:
@@ -176,6 +181,7 @@ def record_from_payload(
         hn_mirror_status=mirror_status,
         hn_mirror_error=mirror_error,
         updated_at=time.time(),
+        acquisition_kind=str(payload.get("acquisition_kind", "exploit")),
     )
 
 

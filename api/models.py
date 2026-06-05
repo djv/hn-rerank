@@ -72,6 +72,7 @@ class StoryDisplayDict(StoryForTldr):
     max_cluster_score: NotRequired[float]
     comment_count: NotRequired[int | None]
     feedback_action: NotRequired[Literal["up", "neutral", "down"] | None]
+    acquisition_kind: NotRequired[str]
 
 
 @dataclass
@@ -143,6 +144,11 @@ class RankResult:
     max_sim_score: float  # Similarity to best matching positive signal
     knn_score: float  # Mean similarity to top-k neighbors (for display)
     max_cluster_score: float = 0.0
+    p_down: float = 0.0
+    p_neutral: float = 0.0
+    p_up: float = 0.0
+    entropy: float = 0.0
+    acquisition_kind: str = "exploit"
 
 
 @dataclass
@@ -171,6 +177,7 @@ class StoryDisplay:
     max_cluster_score: float = 0.0
     comment_count: int | None = None
     feedback_action: Literal["up", "neutral", "down"] | None = None
+    acquisition_kind: str = "exploit"
 
     def to_dict(self) -> StoryDisplayDict:
         """Convert to dict for template rendering."""
@@ -197,6 +204,7 @@ class StoryDisplay:
             "max_cluster_score": self.max_cluster_score,
             "comment_count": self.comment_count,
             "feedback_action": self.feedback_action,
+            "acquisition_kind": self.acquisition_kind,
         }
 
     @property

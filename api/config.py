@@ -79,6 +79,17 @@ class LLMConfig:
 
 
 @dataclass(frozen=True)
+class ExploreConfig:
+    """Explore/exploit dashboard acquisition settings."""
+
+    enabled: bool = False
+    slots: int = 4
+    method: str = "entropy"
+    min_quality: float = 0.4
+    top_reserve: int = 5
+
+
+@dataclass(frozen=True)
 class ArchiveConfig:
     """Historical HN archive fetching parameters."""
 
@@ -130,6 +141,7 @@ class AppConfig:
     clustering: ClusteringConfig = field(default_factory=ClusteringConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
     archive: ArchiveConfig = field(default_factory=ArchiveConfig)
+    explore: ExploreConfig = field(default_factory=ExploreConfig)
     single_model: SingleModelConfig = field(default_factory=SingleModelConfig)
 
     @classmethod
@@ -162,6 +174,7 @@ class AppConfig:
         clustering = ClusteringConfig(**_safe_section("clustering", ClusteringConfig))
         llm = LLMConfig(**_safe_section("llm", LLMConfig))
         archive = ArchiveConfig(**_safe_section("archive", ArchiveConfig))
+        explore = ExploreConfig(**_safe_section("explore", ExploreConfig))
         single_model = SingleModelConfig(
             **_safe_section("single_model", SingleModelConfig)
         )
@@ -192,5 +205,6 @@ class AppConfig:
             clustering=clustering,
             llm=llm,
             archive=archive,
+            explore=explore,
             single_model=single_model,
         )
