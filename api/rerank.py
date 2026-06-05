@@ -50,6 +50,10 @@ from api.config import (  # noqa: E402
     ClusteringConfig,
     ClassifierConfig,
 )
+from api.feedback import FEEDBACK_STORE_PATH as _FEEDBACK_STORE_PATH  # noqa: E402
+from api.url_utils import extract_domain as _extract_domain  # noqa: E402
+
+import json as _json  # noqa: E402
 
 # --- Feature registries ---
 # Adding a new feature? Write the compute function, add its name here, list it in config.
@@ -122,7 +126,10 @@ def stack_similarity_features(
 
 def _meta_log_points(stories: list[Story], now: float) -> NDArray[np.float32]:
     normalizer = np.log1p(1000.0)
-    points = np.array([max(float(s.score), 0.0) for s in stories], dtype=np.float32)
+    points = np.array(
+        [max(float(s.score), 0.0) if s.is_hn else 0.0 for s in stories],
+        dtype=np.float32,
+    )
     return (np.log1p(points) / normalizer).reshape(-1, 1)
 
 
@@ -134,6 +141,8 @@ def _meta_log_comments(stories: list[Story], now: float) -> NDArray[np.float32]:
     comments = np.array(
         [
             max(float(s.comment_count if s.comment_count is not None else 0.0), 0.0)
+            if s.is_hn
+            else 0.0
             for s in stories
         ],
         dtype=np.float32,
@@ -148,11 +157,16 @@ def _meta_comment_ratio(stories: list[Story], now: float) -> NDArray[np.float32]
     comments = np.array(
         [
             max(float(s.comment_count if s.comment_count is not None else 0.0), 0.0)
+            if s.is_hn
+            else 0.0
             for s in stories
         ],
         dtype=np.float32,
     )
-    points = np.array([max(float(s.score), 0.0) for s in stories], dtype=np.float32)
+    points = np.array(
+        [max(float(s.score), 0.0) if s.is_hn else 0.0 for s in stories],
+        dtype=np.float32,
+    )
     return (np.log1p(comments) / (np.log1p(points) + 1.0)).reshape(-1, 1)
 
 
@@ -211,6 +225,8 @@ def _meta_comments_count(stories: list[Story], now: float) -> NDArray[np.float32
     comments_count = np.array(
         [
             max(float(s.comment_count if s.comment_count is not None else 0.0), 0.0)
+            if s.is_hn
+            else 0.0
             for s in stories
         ],
         dtype=np.float32,
@@ -219,6 +235,74 @@ def _meta_comments_count(stories: list[Story], now: float) -> NDArray[np.float32
 
 
 METADATA_FEATURES["comments_count"] = _meta_comments_count
+
+
+def _meta_is_hn(stories: list[Story], now: float) -> NDArray[np.float32]:
+    is_hn = np.array([1.0 if s.is_hn else 0.0 for s in stories], dtype=np.float32)
+    return is_hn.reshape(-1, 1)
+
+
+METADATA_FEATURES["is_hn"] = _meta_is_hn
+
+# --- source_trust: per-domain quality from feedback ---
+
+_domain_trust: dict[str, float] | None = None
+
+
+def _load_domain_trust() -> dict[str, float]:
+    global _domain_trust
+    if _domain_trust is not None:
+        return _domain_trust
+    _domain_trust = {}
+    path = _FEEDBACK_STORE_PATH
+    if not path.exists():
+        return _domain_trust
+    data = _json.loads(path.read_text())
+    records = data.get("records", {})
+    counts: dict[str, list[int]] = {}
+    for r in records.values():
+        action = r.get("action")
+        if action not in ("up", "down"):
+            continue
+        url = r.get("url")
+        source = r.get("source", "")
+        if url:
+            domain = _extract_domain(url)
+        elif source == "hn":
+            domain = "hn.text"
+        else:
+            continue
+        if domain is None:
+            continue
+        c = counts.setdefault(domain, [0, 0])
+        if action == "up":
+            c[0] += 1
+        else:
+            c[1] += 1
+    _domain_trust.update(
+        {
+            domain: (ups + 1) / (ups + downs + 2)
+            for domain, (ups, downs) in counts.items()
+        }
+    )
+    return _domain_trust
+
+
+def _meta_source_trust(stories: list[Story], now: float) -> NDArray[np.float32]:
+    trust = _load_domain_trust()
+    vals: list[float] = []
+    for s in stories:
+        if s.url:
+            domain = _extract_domain(s.url)
+        elif s.is_hn:
+            domain = "hn.text"
+        else:
+            domain = None
+        vals.append(trust.get(domain, 0.5) if domain else 0.5)
+    return np.array(vals, dtype=np.float32).reshape(-1, 1)
+
+
+METADATA_FEATURES["source_trust"] = _meta_source_trust
 
 # --- Metadata feature matrix builder ---
 
@@ -250,6 +334,7 @@ def compute_classifier_similarity_features(
     exclude_self_neg: bool = False,
 ) -> dict[str, NDArray[np.float32]]:
     """Compute the first-stage derived similarity features used by the classifier."""
+
     sim_c = (
         cosine_similarity(embs, centroid_ref)
         if centroid_ref.shape[0] > 0

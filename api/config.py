@@ -42,6 +42,8 @@ class ClassifierConfig:
         "is_github",
         "is_pdf",
         "comments_count",
+        "is_hn",
+        "source_trust",
     )
     # Minimum labeled examples on each side required to activate the model path.
     min_positive_examples: int = 5

@@ -25,6 +25,8 @@ features = [
     "log_points", "log_comments", "comment_ratio",
     "title_len", "text_len", "has_url", "is_github", "is_pdf", "comments_count",
     "closest_pos", "closest_neg", "closest_margin",
+    "is_hn",
+    "source_trust",
 ]
 
 [hn_rerank.clustering]

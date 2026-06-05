@@ -15,6 +15,8 @@ import trafilatura
 from bs4 import BeautifulSoup
 from bs4.element import Tag
 
+from urllib.parse import urlparse
+
 from api.cache_utils import atomic_write_json, evict_old_cache_files
 from api.constants import (
     ARTICLE_SNIPPET_LENGTH,
@@ -31,6 +33,25 @@ CONTENT_CACHE_PATH: Path = Path(RSS_CACHE_DIR)
 CONTENT_CACHE_PATH.mkdir(parents=True, exist_ok=True)
 
 ARTICLE_SEM: asyncio.Semaphore = asyncio.Semaphore(EXTERNAL_REQUEST_SEMAPHORE)
+
+SKIP_FETCH_DOMAINS: frozenset[str] = frozenset(
+    {
+        "youtube.com",
+        "www.youtube.com",
+        "m.youtube.com",
+        "youtu.be",
+        "music.youtube.com",
+    }
+)
+
+
+def _skip_fetch_url(url: str) -> bool:
+    """Return True if fetching article text for *url* is pointless."""
+    try:
+        host = urlparse(url).hostname or ""
+        return any(host == d or host.endswith("." + d) for d in SKIP_FETCH_DOMAINS)
+    except Exception:
+        return False
 
 
 def _write_cache_json(path: Path, data: dict[str, object] | Sequence[object]) -> None:
@@ -115,7 +136,7 @@ def _cache_path(prefix: str, key: str) -> Path:
 
 
 async def fetch_full_text(client: httpx.AsyncClient, url: str) -> str:
-    if not url:
+    if not url or _skip_fetch_url(url):
         return ""
     cache_path = _cache_path("article", url)
     cached = _load_cached_text(cache_path, RSS_ARTICLE_CACHE_TTL)

@@ -19,6 +19,15 @@ _TRACKING_QUERY_PARAMS = {
 }
 
 
+def extract_domain(url: str | None) -> str | None:
+    if not url:
+        return None
+    netloc = urlsplit(url).netloc.lower()
+    if netloc.startswith("www."):
+        netloc = netloc[4:]
+    return netloc or None
+
+
 def normalize_url(url: str) -> str:
     if not url:
         return ""
