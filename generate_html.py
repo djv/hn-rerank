@@ -38,7 +38,34 @@ from api.feedback_single_model import (
 )
 from api.models import RankResult, Story, StoryDict, StoryDisplay
 from api.url_utils import normalize_url
-from api.config import AppConfig
+from api.config import AppConfig, ExploreConfig
+from api.constants import EMBEDDING_MODEL_VERSION
+
+# Regen lock — prevents concurrent dashboard generation from
+# feedback regen, timer, and manual runs.
+LOCK_PATH = Path(".cache/generate_html.lock")
+
+
+def _acquire_regen_lock() -> bool:
+    try:
+        fd = os.open(LOCK_PATH, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        with os.fdopen(fd, "w") as f:
+            f.write(str(os.getpid()))
+    except FileExistsError:
+        try:
+            pid = int(LOCK_PATH.read_text().strip())
+            os.kill(pid, 0)
+            return False
+        except (ValueError, ProcessLookupError):
+            pass
+        LOCK_PATH.unlink(missing_ok=True)
+        return _acquire_regen_lock()
+
+    import atexit
+
+    atexit.register(lambda: LOCK_PATH.unlink(missing_ok=True))
+    return True
+
 
 console: Console = Console()
 logger = logging.getLogger(__name__)
@@ -1089,6 +1116,10 @@ async def main() -> None:
         console.print("[red][bold][-] Error:[/bold] username is required.[/red]")
         console.print("    Provide it as an argument or in hn_rerank.toml")
         raise SystemExit(1)
+
+    if not _acquire_regen_lock():
+        console.print("[!] Another generation is already running. Skipping.")
+        raise SystemExit(0)
 
     # Initialize model early
     rerank.init_model()
