@@ -304,6 +304,113 @@ def _meta_source_trust(stories: list[Story], now: float) -> NDArray[np.float32]:
 
 METADATA_FEATURES["source_trust"] = _meta_source_trust
 
+
+# --- Telemetry-derived features ---
+
+def _meta_impression_count(stories: list[Story], now: float) -> NDArray[np.float32]:
+    from api.telemetry_features import load_telemetry_stats
+    story_stats, _ = load_telemetry_stats()
+    normalizer = np.log1p(200.0)
+    vals = [
+        np.log1p(float(story_stats[s.id].impression_count)) / normalizer
+        if s.id in story_stats
+        else 0.0
+        for s in stories
+    ]
+    return np.array(vals, dtype=np.float32).reshape(-1, 1)
+
+
+METADATA_FEATURES["impression_count"] = _meta_impression_count
+
+
+def _meta_click_count(stories: list[Story], now: float) -> NDArray[np.float32]:
+    from api.telemetry_features import load_telemetry_stats
+    story_stats, _ = load_telemetry_stats()
+    normalizer = np.log1p(20.0)
+    vals = [
+        np.log1p(float(story_stats[s.id].click_count)) / normalizer
+        if s.id in story_stats
+        else 0.0
+        for s in stories
+    ]
+    return np.array(vals, dtype=np.float32).reshape(-1, 1)
+
+
+METADATA_FEATURES["click_count"] = _meta_click_count
+
+
+def _meta_click_ratio(stories: list[Story], now: float) -> NDArray[np.float32]:
+    from api.telemetry_features import load_telemetry_stats
+    story_stats, _ = load_telemetry_stats()
+    vals = [
+        float(story_stats[s.id].click_ratio)
+        if s.id in story_stats
+        else 0.0
+        for s in stories
+    ]
+    return np.array(vals, dtype=np.float32).reshape(-1, 1)
+
+
+METADATA_FEATURES["click_ratio"] = _meta_click_ratio
+
+
+def _meta_days_since_last_impression(stories: list[Story], now: float) -> NDArray[np.float32]:
+    from api.telemetry_features import load_telemetry_stats
+    story_stats, _ = load_telemetry_stats()
+    vals = [
+        (30.0 - float(story_stats[s.id].days_since_last_impression)) / 30.0
+        if s.id in story_stats
+        else 0.0
+        for s in stories
+    ]
+    return np.array(vals, dtype=np.float32).reshape(-1, 1)
+
+
+METADATA_FEATURES["days_since_last_impression"] = _meta_days_since_last_impression
+
+
+def _meta_domain_ctr(stories: list[Story], now: float) -> NDArray[np.float32]:
+    from api.telemetry_features import load_telemetry_stats
+    _, domain_stats = load_telemetry_stats()
+    vals: list[float] = []
+    for s in stories:
+        if s.url:
+            domain = _extract_domain(s.url)
+        elif s.is_hn:
+            domain = "hn.text"
+        else:
+            domain = None
+        if domain and domain in domain_stats:
+            vals.append(float(domain_stats[domain].domain_ctr))
+        else:
+            vals.append(0.0)
+    return np.array(vals, dtype=np.float32).reshape(-1, 1)
+
+
+METADATA_FEATURES["domain_ctr"] = _meta_domain_ctr
+
+
+def _meta_domain_impression_count(stories: list[Story], now: float) -> NDArray[np.float32]:
+    from api.telemetry_features import load_telemetry_stats
+    _, domain_stats = load_telemetry_stats()
+    normalizer = np.log1p(500.0)
+    vals: list[float] = []
+    for s in stories:
+        if s.url:
+            domain = _extract_domain(s.url)
+        elif s.is_hn:
+            domain = "hn.text"
+        else:
+            domain = None
+        if domain and domain in domain_stats:
+            vals.append(np.log1p(float(domain_stats[domain].domain_impression_count)) / normalizer)
+        else:
+            vals.append(0.0)
+    return np.array(vals, dtype=np.float32).reshape(-1, 1)
+
+
+METADATA_FEATURES["domain_impression_count"] = _meta_domain_impression_count
+
 # --- Metadata feature matrix builder ---
 
 

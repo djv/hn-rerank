@@ -44,6 +44,12 @@ class ClassifierConfig:
         "comments_count",
         "is_hn",
         "source_trust",
+        "impression_count",
+        "click_count",
+        "click_ratio",
+        "days_since_last_impression",
+        "domain_ctr",
+        "domain_impression_count",
     )
     # Minimum labeled examples on each side required to activate the model path.
     min_positive_examples: int = 5
