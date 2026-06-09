@@ -40,3 +40,13 @@ All persistent services run as **systemd user services**. Never start long-runni
 | Caddy reverse proxy | `/etc/systemd/system/hn-dashboard.service` | `sudo systemctl {start\|stop\|restart\|status} hn-dashboard` |
 
 The feedback server auto-triggers dashboard regeneration on upvote/neutral/down via `api/regen_scheduler.py`. Regen logs to `.cache/regen.log`.
+
+## Engineering philosophy (Harness Engineering)
+
+Derived from OpenAI's "Harness engineering: leveraging Codex in an agent-first world" (Feb 2026):
+
+- **Progressive disclosure** — layered context; pointer-rich, not dump-everything. Directory-level instructions first, deeper pointers on request.
+- **Repository-first artifacts** — plans, decisions, tech debt, progress tracked as versioned files in the repo, not external tools.
+- **Rigid boundaries, flexible internals** — enforce invariants and dependency direction via automated checks (ruff, ty, pytest); let the agent choose *how* inside the boundary.
+- **Autonomous loop** — user describes the goal; agent gathers context, writes code/tests, self-reviews, iterates until all gates pass.
+- **Mechanical enforcement, not micromanagement** — automated gates replace manual prescription of implementation details.
