@@ -156,10 +156,9 @@ class FeedbackHandler(BaseHTTPRequestHandler):
         request_regen()
 
     def _handle_impressions(self) -> None:
-        if not self._authorized():
-            self.send_error(HTTPStatus.UNAUTHORIZED)
-            return
-
+        # No auth check: impressions are append-only telemetry.
+        # sendBeacon (beforeunload flush) cannot send custom headers,
+        # so requiring the token header would silently drop data.
         try:
             content_length = int(self.headers.get("Content-Length", "0"))
             raw_body = self.rfile.read(content_length)

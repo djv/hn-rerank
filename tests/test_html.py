@@ -174,7 +174,7 @@ def test_generate_story_html_shows_external_count_without_discussion_link():
     html = generate_story_html(story)
 
     assert (
-        '<span class="ml-2 text-xs font-medium text-stone-500" title="Comments">💬 31</span>'
+        '<span class="text-[10px] text-stone-400 font-mono shrink-0" title="Comments">💬 31</span>'
         in html
     )
     assert 'title="Comments">💬 31</a>' not in html
@@ -545,7 +545,10 @@ def test_index_template_syncs_server_feedback_without_prompting_on_load():
     assert "'X-HN-RERANK-FEEDBACK-TOKEN': token" in html
     assert "for (const [key, record] of Object.entries(payload.records))" in html
     assert "['up', 'neutral', 'down'].includes(record.action)" in html
-    assert "syncServerFeedback().then(() => setupIntersectionObserverImpressions());" in html
+    assert (
+        "syncServerFeedback().then(() => setupIntersectionObserverImpressions());"
+        in html
+    )
     assert "setupIntersectionObserverImpressions" in html
     assert "IMPRESSIONS_URL" in html
     assert "CONFIG_HASH" in html

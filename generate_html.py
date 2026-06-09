@@ -165,29 +165,129 @@ HTML_TEMPLATE: str = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>HN Rerank | {{ username }}</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-        {% raw %}
-        tailwind.config = {
-            theme: {
-                extend: {
-                    colors: {
-                        hn: '#ff6600',
-                    }
-                }
-            }
+    <style>
+        /* --- Reset & Base --- */
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        body { background: #f5f5f4; color: #292524; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; font-family: ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji"; }
+
+        /* --- Colors --- */
+        :root {
+            --hn: #ff6600;
+            --stone-50: #fafaf9; --stone-100: #f5f5f4; --stone-200: #e7e5e4; --stone-300: #d6d3d1;
+            --stone-400: #a8a29e; --stone-500: #78716c; --stone-600: #57534e; --stone-700: #44403c;
+            --stone-800: #292524; --stone-900: #1c1917;
+            --amber-100: #fef3c7; --amber-200: #fde68a; --amber-700: #b45309; --amber-800: #92400e;
+            --emerald-500: #10b981; --emerald-700: #047857;
         }
-        {% endraw %}
-    </script>
-    <style type="text/tailwindcss">
-        @layer base {
-            body { @apply bg-stone-50 text-stone-800 antialiased; }
+
+        /* --- Layout --- */
+        .flex { display: flex; } .flex-col { flex-direction: column; } .flex-wrap { flex-wrap: wrap; }
+        .grid { display: grid; }
+        .grid-cols-\\[repeat\\(auto-fit\\,minmax\\(280px\\,1fr\\)\\)\\] { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+        .items-center { align-items: center; } .items-end { align-items: flex-end; } .items-start { align-items: flex-start; }
+        .justify-between { justify-content: space-between; }
+        .gap-1 { gap: 0.25rem; } .gap-2 { gap: 0.5rem; } .gap-3 { gap: 0.75rem; } .gap-4 { gap: 1rem; }
+
+        /* --- Spacing --- */
+        .p-2 { padding: 0.5rem; } .p-4 { padding: 1rem; }
+        .px-1\\.5 { padding-left: 0.375rem; padding-right: 0.375rem; }
+        .px-2 { padding-left: 0.5rem; padding-right: 0.5rem; }
+        .px-3 { padding-left: 0.75rem; padding-right: 0.75rem; }
+        .py-0\\.5 { padding-top: 0.125rem; padding-bottom: 0.125rem; }
+        .py-1 { padding-top: 0.25rem; padding-bottom: 0.25rem; }
+        .py-2 { padding-top: 0.5rem; padding-bottom: 0.5rem; }
+        .py-4 { padding-top: 1rem; padding-bottom: 1rem; }
+        .pb-3 { padding-bottom: 0.75rem; }
+        .mb-0\\.5 { margin-bottom: 0.125rem; } .mb-1 { margin-bottom: 0.25rem; } .mb-4 { margin-bottom: 1rem; }
+        .mt-0\\.5 { margin-top: 0.125rem; } .mt-8 { margin-top: 2rem; }
+        .ml-2 { margin-left: 0.5rem; } .ml-auto { margin-left: auto; }
+        .mx-auto { margin-left: auto; margin-right: auto; }
+
+        /* --- Sizing --- */
+        .max-w-5xl { max-width: 64rem; } .max-w-7xl { max-width: 80rem; }
+        .h-6 { height: 1.5rem; } .w-6 { width: 1.5rem; }
+
+        /* --- Position --- */
+        .relative { position: relative; } .absolute { position: absolute; }
+        .inset-0 { inset: 0; }
+        .z-10 { z-index: 10; } .z-20 { z-index: 20; }
+
+        /* --- Typography --- */
+        .text-2xl { font-size: 1.5rem; line-height: 2rem; }
+        .text-sm { font-size: 0.875rem; line-height: 1.25rem; }
+        .text-xs { font-size: 0.75rem; line-height: 1rem; }
+        .text-\\[10px\\] { font-size: 10px; line-height: 1.4; }
+        .font-black { font-weight: 900; } .font-bold { font-weight: 700; } .font-semibold { font-weight: 600; }
+        .font-medium { font-weight: 500; } .font-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+        .italic { font-style: italic; }
+        .leading-snug { line-height: 1.375; } .leading-relaxed { line-height: 1.625; }
+        .tracking-tight { letter-spacing: -0.025em; }
+        .text-center { text-align: center; }
+        .whitespace-pre-line { white-space: pre-line; }
+        .line-clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+        /* --- Text Colors --- */
+        .text-hn { color: var(--hn); }
+        .text-stone-400 { color: var(--stone-400); } .text-stone-500 { color: var(--stone-500); }
+        .text-stone-600 { color: var(--stone-600); } .text-stone-700 { color: var(--stone-700); }
+        .text-stone-900 { color: var(--stone-900); }
+        .text-amber-700 { color: var(--amber-700); }
+        .text-emerald-700 { color: var(--emerald-700); }
+
+        /* --- Backgrounds --- */
+        .bg-white { background: #fff; } .bg-stone-50 { background: var(--stone-50); }
+        .bg-stone-100 { background: var(--stone-100); }
+        .bg-amber-100 { background: var(--amber-100); }
+        .bg-hn\\/10 { background: rgba(255, 102, 0, 0.1); }
+
+        /* --- Borders --- */
+        .border { border: 1px solid var(--stone-200); }
+        .border-b { border-bottom: 1px solid var(--stone-200); }
+        .border-t { border-top: 1px solid var(--stone-200); }
+        .border-stone-100 { border-color: var(--stone-100); } .border-stone-200 { border-color: var(--stone-200); }
+        .border-stone-300 { border-color: var(--stone-300); }
+        .rounded { border-radius: 0.25rem; } .rounded-lg { border-radius: 0.5rem; }
+        .shadow-sm { box-shadow: 0 1px 2px 0 rgba(0,0,0,0.05); }
+        .divide-y > * + * { border-top: 1px solid var(--stone-100); }
+        .divide-stone-100 > * + * { border-top-color: var(--stone-100); }
+
+        /* --- Interactivity --- */
+        .pointer-events-none { pointer-events: none; } .pointer-events-auto { pointer-events: auto; }
+        .transition-colors { transition: color 150ms, background-color 150ms, border-color 150ms; }
+
+        /* --- Hover states --- */
+        .hover\\:underline:hover { text-decoration: underline; }
+        .hover\\:text-hn:hover { color: var(--hn); }
+        .hover\\:text-stone-900:hover { color: var(--stone-900); }
+        .hover\\:text-emerald-700:hover { color: var(--emerald-700); }
+        .hover\\:border-hn:hover { border-color: var(--hn); }
+        .hover\\:border-stone-700:hover { border-color: var(--stone-700); }
+        .hover\\:border-emerald-500:hover { border-color: var(--emerald-500); }
+        .hover\\:bg-stone-50:hover { background: var(--stone-50); }
+
+        /* --- Responsive --- */
+        @media (min-width: 768px) {
+            .md\\:p-4 { padding: 1rem; }
+            .md\\:grid-cols-2 { grid-template-columns: repeat(2, 1fr); }
         }
-        .story-card { @apply bg-white border border-stone-200 rounded-lg p-2.5 shadow-sm transition-all hover:border-hn hover:shadow-md h-full flex flex-col; }
-        .story-card.rss-story { @apply border-amber-200 bg-amber-50/50; }
+
+        /* --- Component classes --- */
+        .story-card {
+            background: #fff; border: 1px solid var(--stone-200); border-radius: 0.5rem;
+            padding: 0.625rem; box-shadow: 0 1px 2px 0 rgba(0,0,0,0.05);
+            transition: all 150ms; height: 100%; display: flex; flex-direction: column;
+        }
+        .story-card:hover { border-color: var(--hn); box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -2px rgba(0,0,0,0.1); }
+        .story-card.rss-story { border-color: var(--amber-200); background: rgba(255, 251, 235, 0.5); }
         .story-card.feedback-removing { opacity: 0; transform: translateY(6px) scale(0.98); pointer-events: none; }
-        .rss-badge { @apply px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 text-[10px] font-bold; }
-        .cluster-chip { @apply px-1.5 py-0.5 bg-stone-50 border border-stone-200 rounded text-[10px] font-medium text-stone-600 hover:border-hn hover:text-hn transition-colors cursor-default whitespace-nowrap; }
+        .rss-badge { padding: 0.125rem 0.375rem; border-radius: 0.25rem; background: var(--amber-100); color: var(--amber-800); font-size: 10px; font-weight: 700; }
+        .cluster-chip {
+            padding: 0.125rem 0.375rem; background: var(--stone-50); border: 1px solid var(--stone-200);
+            border-radius: 0.25rem; font-size: 10px; font-weight: 500; color: var(--stone-600);
+            transition: color 150ms, border-color 150ms; cursor: default; white-space: nowrap;
+        }
+        .cluster-chip:hover { border-color: var(--hn); color: var(--hn); }
+        .cluster-card { background: #fff; border: 1px solid var(--stone-200); border-radius: 0.5rem; box-shadow: 0 1px 2px 0 rgba(0,0,0,0.05); }
     </style>
 </head>
 <body class="p-2 md:p-4 bg-stone-100">
@@ -357,38 +457,10 @@ HTML_TEMPLATE: str = """
                 }
             };
 
-            const sendImpressionsImmediately = async () => {
-                const cardsWithData = Array.from(document.querySelectorAll('[data-rank-index]')).filter(c => c.dataset.storyId);
-                if (!cardsWithData.length) return;
-                const token = localStorage.getItem(TOKEN_KEY);
-                if (!token) return;
-                const records = cardsWithData.map(c => ({
-                    event: 'impression',
-                    feedback_key: c.dataset.feedbackKey,
-                    story_id: Number(c.dataset.storyId),
-                    story_source: c.dataset.storySource,
-                    title: c.dataset.storyTitle,
-                    url: c.dataset.storyUrl || '',
-                    rank_index: Number(c.dataset.rankIndex),
-                    model_score: Number(c.dataset.modelScore),
-                    knn_score: Number(c.dataset.knnScore),
-                    max_sim_score: Number(c.dataset.maxSimScore),
-                    max_cluster_score: Number(c.dataset.maxClusterScore),
-                    acquisition_kind: c.dataset.acquisitionKind || 'exploit',
-                    config_hash: CONFIG_HASH,
-                }));
-                try {
-                    await fetch(IMPRESSIONS_URL, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json', 'X-HN-RERANK-FEEDBACK-TOKEN': token },
-                        body: JSON.stringify({ impressions: records }),
-                    });
-                } catch { /* silent */ }
-            };
-
             const setupIntersectionObserverImpressions = () => {
                 if (!('IntersectionObserver' in window)) {
-                    sendImpressionsImmediately();
+                    // No IntersectionObserver — skip impression tracking entirely.
+                    // Firing all cards would produce contaminated (non-viewport) data.
                     return;
                 }
 
@@ -567,26 +639,7 @@ CLUSTERS_PAGE_TEMPLATE: str = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Interest Clusters | {{ username }}</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-        {% raw %}
-        tailwind.config = {
-            theme: {
-                extend: {
-                    colors: {
-                        hn: '#ff6600',
-                    }
-                }
-            }
-        }
-        {% endraw %}
-    </script>
-    <style type="text/tailwindcss">
-        @layer base {
-            body { @apply bg-stone-50 text-stone-800 antialiased; }
-        }
-        .cluster-card { @apply bg-white border border-stone-200 rounded-lg shadow-sm; }
-    </style>
+    <link rel="stylesheet" href="index.css">
 </head>
 <body class="p-2 md:p-4">
     <div class="max-w-5xl mx-auto">
@@ -993,6 +1046,11 @@ STORY_CARD_TEMPLATE: str = """
         {% endif %}
         <span class="text-[10px] text-stone-400 font-mono">{{ points }} pts</span>
         <span class="text-[10px] text-stone-400 font-mono">{{ time_ago }}</span>
+        {% if hn_url %}
+        <a href="{{ hn_url }}" target="_blank" class="text-[10px] text-stone-400 font-mono hover:text-hn transition-colors pointer-events-auto shrink-0" title="Comments">💬{% if comment_count is not none %} {{ comment_count }}{% endif %}</a>
+        {% elif comment_count is not none %}
+        <span class="text-[10px] text-stone-400 font-mono shrink-0" title="Comments">💬 {{ comment_count }}</span>
+        {% endif %}
         <span class="ml-auto flex items-center gap-1 pointer-events-auto" aria-label="Dashboard feedback">
             <button type="button" class="h-6 w-6 rounded border border-stone-200 bg-white text-xs text-stone-500 hover:border-hn hover:text-hn" title="Upvote for future dashboards" data-feedback-button="up">▲</button>
             <button type="button" class="h-6 w-6 rounded border border-stone-200 bg-white text-xs text-emerald-700 hover:border-emerald-500 hover:text-emerald-700" title="Mark neutral for future dashboards" data-feedback-button="neutral">✓</button>
@@ -1001,12 +1059,7 @@ STORY_CARD_TEMPLATE: str = """
         <span class="text-[10px] text-stone-400 font-mono pointer-events-none" data-feedback-status></span>
     </div>
     <h2 class="text-sm font-semibold text-stone-900 leading-snug mb-1{% if card_url %} relative z-20 pointer-events-none{% endif %}">
-        <a href="{{ url }}" target="_blank" class="hover:text-hn transition-colors pointer-events-auto">{{ title }}</a>
-        {% if hn_url %}
-        <a href="{{ hn_url }}" target="_blank" class="ml-2 text-xs font-medium text-stone-900 hover:text-hn transition-colors pointer-events-auto" title="Comments">💬{% if comment_count is not none %} {{ comment_count }}{% endif %}</a>
-        {% elif comment_count is not none %}
-        <span class="ml-2 text-xs font-medium text-stone-500" title="Comments">💬 {{ comment_count }}</span>
-        {% endif %}
+        <a href="{{ url }}" target="_blank" class="block hover:text-hn transition-colors pointer-events-auto">{{ title }}</a>
     </h2>
     {% if tldr %}
     <div class="text-sm text-stone-600 bg-stone-50 p-2 rounded border border-stone-100 leading-relaxed whitespace-pre-line{% if card_url %} relative z-20 pointer-events-none{% endif %}">{{ tldr }}</div>
@@ -2007,6 +2060,16 @@ async def main() -> None:
             clusters_path = config.output_path.with_name("clusters.html")
             clusters_path.write_text(clusters_page_html)
             print(f"[+] Clusters saved to: {os.path.abspath(clusters_path)}")
+
+        # Write shared CSS for clusters page (index.html inlines its own copy)
+        css_path = config.output_path.with_name("index.css")
+        # Extract the inline <style> block from the rendered index HTML
+        import re as _re
+
+        css_match = _re.search(r"<style>(.*?)</style>", final_html, _re.DOTALL)
+        if css_match:
+            css_path.write_text(css_match.group(1).strip() + "\n")
+            print(f"[+] CSS saved to: {os.path.abspath(css_path)}")
     except OSError as e:
         print(f"[!] Error writing output file: {e}")
         raise SystemExit(1)

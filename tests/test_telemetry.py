@@ -129,3 +129,32 @@ def test_parser_handles_missing_url():
     rec = impression_from_payload(payload)
     assert rec is not None
     assert rec.url is None
+
+def test_click_has_url(patch_db):
+    """Click event payload includes url field and roundtrips through the DB."""
+    rec = ImpressionRecord(
+        timestamp=200.0,
+        feedback_key="http://example.com/article",
+        story_id=789,
+        story_source="rss",
+        title="Click Test",
+        rank_index=3,
+        model_score=0.7,
+        knn_score=0.6,
+        max_sim_score=0.5,
+        max_cluster_score=0.0,
+        acquisition_kind="exploit",
+        config_hash="clickhash",
+        url="http://example.com/article",
+        event="click",
+    )
+    append_impressions([rec])
+
+    conn = connect_db()
+    rows = conn.execute(
+        "SELECT event, url FROM telemetry_events WHERE story_id = 789"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["event"] == "click"
+    assert rows[0]["url"] == "http://example.com/article"
+    conn.close()
