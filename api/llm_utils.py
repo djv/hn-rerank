@@ -796,7 +796,7 @@ async def generate_batch_cluster_names(
         # Final rescue pass: retry missing clusters in small batches.
         missing_list = sorted(missing_overall)
         for rescue_index, cid in enumerate(missing_list, start=1):
-            batch_missing = [cid]
+            batch_missing: list[int] = [cid]
             if time.time() > deadline:
                 debug_records.append(
                     {
@@ -944,19 +944,20 @@ async def generate_batch_cluster_names(
                 batch_results: dict[str, object] | None = None
                 if text and len(batch_missing) == 1:
                     batch_results = _safe_json_loads(text)
-                    if "name" in batch_results:
+                    if batch_results is not None and "name" in batch_results:
                         cid = batch_missing[0]
                         final_name = _finalize_cluster_name(str(batch_results["name"]))
                         final_keywords = str(batch_results.get("keywords", "")).strip()
-                        profile = {"name": final_name, "keywords": final_keywords}
-                        results[cid] = profile
-                        items = to_generate[cid]
-                        story_ids = sorted(
-                            [str(s.get("id", s.get("objectID", ""))) for s, _ in items]
-                        )
-                        cache_key = _cluster_name_cache_key(story_ids, rescue_model)
-                        cache[cache_key] = json.dumps(profile)
-                        returned += 1
+                        if final_name:
+                            profile: dict[str, str] = {"name": final_name, "keywords": final_keywords}
+                            results[cid] = profile
+                            items = to_generate[cid]
+                            story_ids = sorted(
+                                [str(s.get("id", s.get("objectID", ""))) for s, _ in items]
+                            )
+                            cache_key = _cluster_name_cache_key(story_ids, rescue_model)
+                            cache[cache_key] = json.dumps(profile)
+                            returned += 1
 
                 if debug_path is not None:
                     debug_records.append(
