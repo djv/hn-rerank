@@ -28,8 +28,14 @@ _story_stats: dict[int, StoryImpressionStats] | None = None
 _domain_stats: dict[str, DomainImpressionStats] | None = None
 
 
-def _extract_domain(url: str | None, is_hn: bool = False) -> str | None:
-    """Pull domain from a URL string, with fallback for text-only HN posts."""
+def extract_domain_with_fallback(url: str | None, is_hn: bool = False) -> str | None:
+    """Pull domain from a URL string, with fallback for text-only HN posts.
+
+    Accepts None for url (which occurs when SQLite url IS NULL), cleanly
+    falling back to "hn.text" if is_hn is True.
+    """
+    if not url:
+        return "hn.text" if is_hn else None
     from api.url_utils import extract_domain
     domain = extract_domain(url)
     if not domain:
@@ -91,7 +97,7 @@ def fetch_impression_stats() -> tuple[dict[int, StoryImpressionStats], dict[str,
         for row in domain_rows:
             url = row["url"]
             is_hn = row["story_source"] == "hn"
-            domain = _extract_domain(url, is_hn=is_hn)
+            domain = extract_domain_with_fallback(url, is_hn=is_hn)
             if domain:
                 domain_clicks[domain] = domain_clicks.get(domain, 0) + int(row["clicks"] or 0)
                 domain_impressions[domain] = domain_impressions.get(domain, 0) + int(row["impressions"] or 0)
@@ -111,7 +117,12 @@ def fetch_impression_stats() -> tuple[dict[int, StoryImpressionStats], dict[str,
 
 
 def load_telemetry_stats() -> tuple[dict[int, StoryImpressionStats], dict[str, DomainImpressionStats]]:
-    """Lazy thread-safe cache load of telemetry stats for the current run."""
+    """Lazy thread-safe cache load of telemetry stats for the current run.
+    
+    This is called independently by each metadata feature function (e.g., 6 times
+    per rank_stories invocation). The cache ensures we only query SQLite once
+    and makes the independent calls extremely fast dict-lookups.
+    """
     global _story_stats, _domain_stats
     if _story_stats is not None and _domain_stats is not None:
         return _story_stats, _domain_stats

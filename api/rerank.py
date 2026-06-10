@@ -51,7 +51,7 @@ from api.config import (  # noqa: E402
     ClassifierConfig,
 )
 from api.feedback import FEEDBACK_STORE_PATH as _FEEDBACK_STORE_PATH  # noqa: E402
-from api.url_utils import extract_domain as _extract_domain  # noqa: E402
+from api.telemetry_features import extract_domain_with_fallback  # noqa: E402
 
 import json as _json  # noqa: E402
 
@@ -266,12 +266,7 @@ def _load_domain_trust() -> dict[str, float]:
             continue
         url = r.get("url")
         source = r.get("source", "")
-        if url:
-            domain = _extract_domain(url)
-        elif source == "hn":
-            domain = "hn.text"
-        else:
-            continue
+        domain = extract_domain_with_fallback(url, is_hn=(source == "hn"))
         if domain is None:
             continue
         c = counts.setdefault(domain, [0, 0])
@@ -292,12 +287,7 @@ def _meta_source_trust(stories: list[Story], now: float) -> NDArray[np.float32]:
     trust = _load_domain_trust()
     vals: list[float] = []
     for s in stories:
-        if s.url:
-            domain = _extract_domain(s.url)
-        elif s.is_hn:
-            domain = "hn.text"
-        else:
-            domain = None
+        domain = extract_domain_with_fallback(s.url, is_hn=s.is_hn)
         vals.append(trust.get(domain, 0.5) if domain else 0.5)
     return np.array(vals, dtype=np.float32).reshape(-1, 1)
 
@@ -374,12 +364,7 @@ def _meta_domain_ctr(stories: list[Story], now: float) -> NDArray[np.float32]:
     _, domain_stats = load_telemetry_stats()
     vals: list[float] = []
     for s in stories:
-        if s.url:
-            domain = _extract_domain(s.url)
-        elif s.is_hn:
-            domain = "hn.text"
-        else:
-            domain = None
+        domain = extract_domain_with_fallback(s.url, is_hn=s.is_hn)
         if domain and domain in domain_stats:
             vals.append(float(domain_stats[domain].domain_ctr))
         else:
@@ -396,12 +381,7 @@ def _meta_domain_impression_count(stories: list[Story], now: float) -> NDArray[n
     normalizer = np.log1p(500.0)
     vals: list[float] = []
     for s in stories:
-        if s.url:
-            domain = _extract_domain(s.url)
-        elif s.is_hn:
-            domain = "hn.text"
-        else:
-            domain = None
+        domain = extract_domain_with_fallback(s.url, is_hn=s.is_hn)
         if domain and domain in domain_stats:
             vals.append(np.log1p(float(domain_stats[domain].domain_impression_count)) / normalizer)
         else:
