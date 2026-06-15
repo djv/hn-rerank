@@ -1048,6 +1048,76 @@ def _load_tldr_cache() -> dict[str, str]:
     return {}
 
 
+def _build_detailed_tldr_prompt(
+    title: str, text_content: str, comments: list[str]
+) -> str:
+    """Build a simple prompt asking for a thorough summary of article and comments."""
+    context = f"Title: {title}"
+    if text_content:
+        context += f"\n\nArticle text:\n{text_content[:3000]}"
+    if comments:
+        context += "\n\nComments:\n" + "\n".join(f"- {c[:500]}" for c in comments[:10])
+    return f"""
+Summarize the article and the discussion for a knowledgeable reader.
+
+{context}
+
+Write a short 3-4 paragraph summary (under 400 words). Use Markdown formatting:
+headings (###), **bold** for key terms,
+and - for lists where appropriate.
+"""
+
+
+def _extract_tldr_detail_text(raw: str) -> str | None:
+    """Extract detailed TLDR text from LLM response (JSON or plain text)."""
+    text = raw.strip() if raw else ""
+    if not text:
+        return None
+    parsed = _safe_json_loads(text)
+    if parsed:
+        val = parsed.get("summary", "")
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+        if isinstance(val, dict):
+            parts: list[str] = []
+            for v in val.values():
+                if isinstance(v, str):
+                    parts.append(v)
+                elif isinstance(v, dict):
+                    for sub in v.values():
+                        if isinstance(sub, str):
+                            parts.append(sub)
+            if parts:
+                return "\n\n".join(parts)
+    if len(text) > 20:
+        return text
+    return None
+
+
+async def generate_detailed_tldr(
+    title: str,
+    text_content: str,
+    comments: list[str],
+) -> str | None:
+    """Generate a detailed TL;DR for a single story. No caching."""
+    prompt = _build_detailed_tldr_prompt(title, text_content, comments)
+    try:
+        text = await _generate_with_retry(
+            model=LLM_TLDR_MODEL,
+            contents=prompt,
+            config={
+                "temperature": LLM_TEMPERATURE,
+                "max_output_tokens": LLM_TLDR_DETAIL_MAX_TOKENS,
+            },
+        )
+        if not text:
+            return None
+        return _extract_tldr_detail_text(text)
+    except Exception:
+        logger.exception("Detailed TLDR generation failed")
+        return None
+
+
 def _save_tldr_cache(cache: dict[str, str]) -> None:
     """Save TL;DR cache to disk."""
     TLDR_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
