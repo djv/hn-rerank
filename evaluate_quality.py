@@ -529,6 +529,106 @@ class RankingEvaluator:
         self.snapshot_metadata: dict[str, object] = {}
         self.last_diagnostics_summary: dict[str, object] = {}
 
+    def build_dataset_from_feedback(
+        self,
+        feedback_path: Path,
+        snapshot_candidates_path: Path | None = None,
+        holdout: float = 0.20,
+    ) -> bool:
+        """Build an EvaluationDataset from cached feedback records (no network).
+
+        ALL positive records are stored as train_stories; no time-split is
+        performed. Use evaluate_cv() with k-fold CV for a non-saturating
+        ranking evaluation: each fold trains on 80% of ups and ranks the
+        remaining 20% against the snapshot candidate pool.
+
+        Non-positive records (down, neutral) supply training negatives.
+
+        The evaluation candidate pool comes from a cached snapshot (fresh HN
+        stories), NOT from the user's own down/neutral feedback — otherwise
+        the model trivially separates ups from known-downs and MRR saturates.
+        """
+        from api.feedback import load_feedback
+
+        records = load_feedback(feedback_path)
+        if not records:
+            print("No feedback records found.")
+            return False
+
+        ups = [r for r in records.values() if r.action == "up"]
+        if len(ups) < 10:
+            print(f"Need at least 10 upvotes, found {len(ups)}.")
+            return False
+
+        # Use ALL upvotes as train (CV handles the train/test split later)
+        ups.sort(key=lambda r: r.time)
+        # Put ~holdout in test_stories so load_snapshot doesn't reject the file.
+        # evaluate_cv() ignores these and re-splits from all_stories.
+        n_test = max(1, int(len(ups) * holdout))
+        test_records = ups[-n_test:]
+        train_records = ups[:-n_test]
+
+        train_stories = [r.to_story() for r in train_records]
+        test_stories = [r.to_story() for r in test_records]
+
+        print(f"Computing embeddings for {len(train_stories)} train stories...")
+        train_emb = get_embeddings([s.text_content for s in train_stories])
+
+        # Negatives from non-up feedback (training signal only)
+        non_ups = [r for r in records.values() if r.action != "up"]
+        neg_stories = [r.to_story() for r in non_ups]
+        neg_ids = {s.id for s in neg_stories}
+
+        neg_emb: NDArray[np.float32] | None = None
+        if neg_stories:
+            neg_emb = get_embeddings([s.text_content for s in neg_stories])
+            print(f"Loaded {len(neg_stories)} negative stories with embeddings")
+
+        # Evaluation candidates: snapshot stories (fresh HN pool), excluding
+        # any ID that appears in neg_stories or train_stories (CV asserts no
+        # leakage, and a trained-on story in the ranked pool is unfair).
+        exclude_ids: set[int] = neg_ids | {s.id for s in train_stories}
+        candidates: list[Story] = []
+        if snapshot_candidates_path and snapshot_candidates_path.exists():
+            snap = json.loads(snapshot_candidates_path.read_text())
+            seen_ids: set[int] = set()
+            for sd in snap.get("candidates", []):
+                s = Story.from_dict(cast("StoryDict", sd))
+                if s.id not in exclude_ids and s.id not in seen_ids:
+                    candidates.append(s)
+                    seen_ids.add(s.id)
+
+        if not candidates:
+            print("No snapshot candidates available, falling back to neg_stories.")
+            candidates = list(neg_stories)
+
+        self.dataset = EvaluationDataset(
+            train_stories=train_stories,
+            test_stories=test_stories,
+            neg_stories=neg_stories,
+            candidates=candidates,
+            train_embeddings=train_emb,
+            neg_embeddings=neg_emb,
+            test_ids=set(),
+        )
+        self.snapshot_metadata = {
+            "source": "feedback",
+            "holdout": holdout,
+            "feedback_path": str(feedback_path),
+            "snapshot_candidates_path": (
+                str(snapshot_candidates_path) if snapshot_candidates_path else None
+            ),
+            "n_up": len(ups),
+            "n_non_up": len(non_ups),
+            "n_candidates": len(candidates),
+        }
+
+        print(
+            f"Train: {len(train_stories)}, Test: {len(test_stories)}, "
+            f"Candidates: {len(candidates)}, Neg: {len(neg_stories)}"
+        )
+        return True
+
     async def load_data(
         self,
         holdout: float = 0.2,
