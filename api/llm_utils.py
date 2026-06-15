@@ -44,6 +44,7 @@ from api.constants import (
     LLM_MIN_REQUEST_INTERVAL,
     LLM_TEMPERATURE,
     LLM_TLDR_BATCH_SIZE,
+    LLM_TLDR_DETAIL_MAX_TOKENS,
     LLM_TLDR_MAX_TOKENS,
     LLM_TLDR_MODEL,
     LLM_PROVIDER,
@@ -126,9 +127,6 @@ class LLMRetryableError(RuntimeError):
         self.cooldown = cooldown
         self.is_rate_limit = is_rate_limit
         self.is_capacity = is_capacity
-
-
-_LLM_LIMITER: AsyncLimiter = AsyncLimiter(1, max(1.0, float(LLM_MIN_REQUEST_INTERVAL)))
 
 
 def _parse_retry_after(value: str) -> float | None:
@@ -355,6 +353,7 @@ async def _generate_with_retry(
         pool=LLM_HTTP_POOL_TIMEOUT,
     )
 
+    _limiter = AsyncLimiter(1, max(1.0, float(LLM_MIN_REQUEST_INTERVAL)))
     async with httpx.AsyncClient(timeout=timeout) as client:
         try:
             async for attempt in AsyncRetrying(
@@ -365,7 +364,7 @@ async def _generate_with_retry(
             ):
                 with attempt:
                     try:
-                        async with _LLM_LIMITER:
+                        async with _limiter:
                             resp = await client.post(
                                 base_url,
                                 headers={
