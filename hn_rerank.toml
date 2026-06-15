@@ -30,6 +30,10 @@ features = [
     "days_since_last_impression",
     "domain_ctr",
     "domain_impression_count",
+    "local_density",
+    "story_age",
+    "cluster_size",
+    "domain_recency",
 ]
 
 [hn_rerank.clustering]

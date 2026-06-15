@@ -37,7 +37,7 @@ from api.feedback_single_model import (
     train_single_model_from_embeddings,
 )
 from api.models import RankResult, Story, StoryDict, StoryDisplay
-from api.url_utils import normalize_url
+from api.url_utils import normalize_url, extract_domain
 from api.config import AppConfig, ExploreConfig
 from api.constants import EMBEDDING_MODEL_VERSION
 
@@ -88,7 +88,6 @@ def compute_config_hash(config: AppConfig) -> str:
         "explore_slots": config.explore.slots,
         "explore_min_quality": config.explore.min_quality,
         "explore_top_reserve": config.explore.top_reserve,
-        "external_min_model_score": config.ranking.external_min_model_score,
     }
     return hashlib.sha256(json.dumps(relevant, sort_keys=True).encode()).hexdigest()[
         :12
@@ -1059,16 +1058,11 @@ def select_ranked_results(
     cluster_names: dict[int, str],
     cand_cluster_map: dict[int, int],
     count: int,
-    *,
-    external_min_model_score: float = 0.0,
 ) -> list[RankResult]:
     """Select a ranked subset with a small fixed external quota and diversity.
 
     The quota compensates for HN's site-score blend so external stories are not
     crowded out purely by HN points. It also ensures source diversity for external items.
-
-    External candidates below *external_min_model_score* are filtered out first,
-    preventing weak items from displacing stronger HN content.
     """
     _ = (cluster_labels, cluster_names, cand_cluster_map)
     if not ranked:
@@ -1077,12 +1071,7 @@ def select_ranked_results(
     def is_external_result(res: RankResult) -> bool:
         return cands[res.index].is_external
 
-    # Pre-filter external candidates by minimum quality threshold
-    external_candidates = [
-        r
-        for r in ranked
-        if is_external_result(r) and r.model_score >= external_min_model_score
-    ]
+    external_candidates = [r for r in ranked if is_external_result(r)]
     hn_candidates = [r for r in ranked if not is_external_result(r)]
 
     desired_external = round(count * 0.2) + 5
@@ -1963,18 +1952,44 @@ async def main() -> None:
             config.single_model,
         )
 
-        ranked: list[RankResult] = rerank.rank_stories(
-            cands,
-            single_model,
-            p_emb,
-            n_emb,
-            config=config,
-            progress_callback=rank_cb,
-            positive_stories=pos_stories,
-            negative_stories=neg_stories,
-            cluster_names=cluster_names,
-            cluster_keywords=cluster_keywords,
-        )
+        # Populate per-vote story age cache for the story_age feature
+        _story_age_at_vote = {
+            rec.id: (rec.updated_at - rec.time) / 86400.0
+            for rec in feedback_records.values()
+            if rec.time > 0 and rec.updated_at > rec.time
+        }
+        rerank.set_story_age_at_vote_map(_story_age_at_vote)
+
+        # Populate per-domain recency cache for the domain_recency feature
+        _now_epoch = time.time()
+        _domain_recency: dict[str, float] = {}
+        for rec in feedback_records.values():
+            if rec.updated_at <= 0:
+                continue
+            domain = extract_domain(rec.url)
+            if not domain:
+                continue
+            days = (_now_epoch - rec.updated_at) / 86400.0
+            if domain not in _domain_recency or days < _domain_recency[domain]:
+                _domain_recency[domain] = max(days, 0.0)
+        rerank.set_domain_recency_map(_domain_recency)
+
+        try:
+            ranked: list[RankResult] = rerank.rank_stories(
+                cands,
+                single_model,
+                p_emb,
+                n_emb,
+                config=config,
+                progress_callback=rank_cb,
+                positive_stories=pos_stories,
+                negative_stories=neg_stories,
+                cluster_names=cluster_names,
+                cluster_keywords=cluster_keywords,
+            )
+        finally:
+            rerank.clear_story_age_at_vote_map()
+            rerank.clear_domain_recency_map()
         progress.update(
             r_task, completed=100, description="[green][+] Reranking complete."
         )
@@ -2038,7 +2053,6 @@ async def main() -> None:
             cluster_names,
             cand_cluster_map,
             config.count,
-            external_min_model_score=config.ranking.external_min_model_score,
         )
         update_prep("select", 1, 1, "[*] Selecting final stories...")
         selected_results = await filter_top_ranked_hn_dupes(

@@ -580,3 +580,101 @@ def test_clustering_stability_with_outlier(seed, n_base_samples):
 
     # We expect high agreement (e.g., > 75%) for a single outlier
     assert agreement > 0.75, f"Clustering was too unstable! Agreement: {agreement:.2%}"
+
+
+# =============================================================================
+# More property-based invariants
+# =============================================================================
+
+
+@st.composite
+def random_embeddings(draw, min_n: int = 10, max_n: int = 40):
+    """Generate a random batch of L2-normalized embeddings with small dims."""
+    n = draw(st.integers(min_value=min_n, max_value=max_n))
+    dim = draw(st.sampled_from([8, 16, 32, 64, 128]))
+    raw = draw(
+        arrays(
+            dtype=np.float32,
+            shape=(n, dim),
+            elements=st.floats(-1.0, 1.0, allow_nan=False, allow_infinity=False),
+        )
+    )
+    # Filter out degenerate all-zero rows that would produce NaN after norm
+    norms = np.linalg.norm(raw, axis=1, keepdims=True)
+    assume(np.all(norms > 1e-8))
+    return raw / np.maximum(norms, 1e-9)
+
+
+# ---- 1. Centroid validity ----
+@settings(deadline=None, max_examples=15)
+@given(emb=random_embeddings())
+def test_clustering_centroid_validity(emb):
+    """All centroids are finite, shape matches unique labels, each norm ≤ 1."""
+    centroids, labels = cluster_interests_with_labels(emb)
+    assert len(centroids) == len(set(labels))
+    assert np.all(np.isfinite(centroids))
+    norms = np.linalg.norm(centroids, axis=1)
+    assert (norms <= 1.0 + 1e-5).all(), f"centroid norms: {norms}"
+
+
+# ---- 2. Identical vectors produce single cluster ----
+@settings(deadline=None, max_examples=10)
+@given(
+    n=st.integers(min_value=2, max_value=20),
+    dim=st.sampled_from([4, 8, 32]),
+    seed=st.integers(min_value=0, max_value=2**32 - 1),
+)
+def test_clustering_identical_vectors_single_cluster(
+    n: int, dim: int, seed: int
+) -> None:
+    """If all vectors are identical, they all map to the same cluster."""
+    rng = np.random.default_rng(seed)
+    vec = rng.normal(size=dim).astype(np.float32)
+    vec = vec / (np.linalg.norm(vec) + 1e-9)
+    embeddings = np.tile(vec, (n, 1))
+    centroids, labels = cluster_interests_with_labels(embeddings)
+    assert len(np.unique(labels)) == 1
+    assert len(centroids) == 1
+    assert np.allclose(centroids[0], vec, atol=1e-5)
+
+
+# ---- 3. Respects max_cluster_size ----
+def test_clustering_respects_max_cluster_size():
+    """Each cluster size is within configured limit when data is structured."""
+    rng = np.random.default_rng(42)
+    blob1 = rng.normal(loc=[1.0, 0.0], scale=0.1, size=(25, 2)).astype(np.float32)
+    blob2 = rng.normal(loc=[-1.0, 0.0], scale=0.1, size=(5, 2)).astype(np.float32)
+    blob3 = rng.normal(loc=[0.0, 1.0], scale=0.1, size=(5, 2)).astype(np.float32)
+    embeddings = np.vstack([blob1, blob2, blob3])
+    config = ClusteringConfig(max_cluster_size=10, max_clusters=10)
+    _, labels = cluster_interests_with_labels(embeddings, config=config)
+    unique, counts = np.unique(labels, return_counts=True)
+    assert counts.max() <= config.max_cluster_size, (
+        f"cluster size {counts.max()} > max_cluster_size={config.max_cluster_size}"
+    )
+
+
+# ---- 4. Valid label output ----
+@settings(deadline=None, max_examples=15)
+@given(emb=random_embeddings())
+def test_clustering_returns_valid_labels(emb):
+    """Labels are non-negative ints; unique count matches centroid count."""
+    centroids, labels = cluster_interests_with_labels(emb)
+    assert len(labels) == len(emb)
+    assert np.issubdtype(labels.dtype, np.integer)
+    assert (labels >= 0).all()
+    n_unique = len(set(labels.tolist()))
+    assert len(centroids) == n_unique
+    # Labels are consecutive from 0
+    assert sorted(set(labels.tolist())) == list(range(n_unique))
+
+
+# ---- 5. Determinism ----
+@settings(deadline=None, max_examples=10)
+@given(emb=random_embeddings())
+def test_clustering_deterministic_with_fixed_seed(emb):
+    """Two calls with the same input produce identical labels and centroids."""
+    centroids1, labels1 = cluster_interests_with_labels(emb.copy())
+    centroids2, labels2 = cluster_interests_with_labels(emb.copy())
+    assert np.array_equal(labels1, labels2), "labels differ between runs"
+    assert np.allclose(centroids1, centroids2, atol=1e-6), "centroids differ"

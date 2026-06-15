@@ -81,6 +81,54 @@ SIMILARITY_FEATURES: frozenset[str] = frozenset(
 MetadataFeatureFn = Callable[[list[Story], float], NDArray[np.float32]]
 METADATA_FEATURES: dict[str, MetadataFeatureFn] = {}
 
+# Module-global caches for metadata feature functions.
+# These are populated by rank_stories and read by the individual _meta_* functions.
+# Safe in the current single-threaded architecture; would need refactoring for concurrency.
+_local_density_cache: NDArray[np.float32] | None = None
+
+# Per-vote story age cache: {story_id: age_days} populated from FeedbackRecord.
+# Set in main() before rank_stories; cleared after rank_stories returns.
+_story_age_at_vote_map: dict[int, float] = {}
+
+# Cluster size cache: [n_candidates] array of cluster sizes, populated in rank_stories.
+# Story at index i belongs to a cluster of size _cluster_size_cache[i].
+_cluster_size_cache: NDArray[np.int32] | None = None
+
+# Per-domain recency cache: {domain: days_since_last_vote} populated from FeedbackRecord.
+# Set in main() before rank_stories; cleared after rank_stories returns.
+_domain_recency_map: dict[str, float] = {}
+
+
+def set_story_age_at_vote_map(values: dict[int, float]) -> None:
+    global _story_age_at_vote_map
+    _story_age_at_vote_map = dict(values)
+
+
+def clear_story_age_at_vote_map() -> None:
+    global _story_age_at_vote_map
+    _story_age_at_vote_map = {}
+
+
+def set_cluster_size_cache(values: NDArray[np.int32]) -> None:
+    global _cluster_size_cache
+    _cluster_size_cache = values
+
+
+def clear_cluster_size_cache() -> None:
+    global _cluster_size_cache
+    _cluster_size_cache = None
+
+
+def set_domain_recency_map(values: dict[str, float]) -> None:
+    global _domain_recency_map
+    _domain_recency_map = dict(values)
+
+
+def clear_domain_recency_map() -> None:
+    global _domain_recency_map
+    _domain_recency_map = {}
+
+
 logger = logging.getLogger(__name__)
 
 RankProgressPhase = Literal[
@@ -289,8 +337,10 @@ METADATA_FEATURES["source_trust"] = _meta_source_trust
 
 # --- Telemetry-derived features ---
 
+
 def _meta_impression_count(stories: list[Story], now: float) -> NDArray[np.float32]:
     from api.telemetry_features import load_telemetry_stats
+
     story_stats, _ = load_telemetry_stats()
     normalizer = np.log1p(200.0)
     vals = [
@@ -307,6 +357,7 @@ METADATA_FEATURES["impression_count"] = _meta_impression_count
 
 def _meta_click_count(stories: list[Story], now: float) -> NDArray[np.float32]:
     from api.telemetry_features import load_telemetry_stats
+
     story_stats, _ = load_telemetry_stats()
     normalizer = np.log1p(20.0)
     vals = [
@@ -323,11 +374,10 @@ METADATA_FEATURES["click_count"] = _meta_click_count
 
 def _meta_click_ratio(stories: list[Story], now: float) -> NDArray[np.float32]:
     from api.telemetry_features import load_telemetry_stats
+
     story_stats, _ = load_telemetry_stats()
     vals = [
-        float(story_stats[s.id].click_ratio)
-        if s.id in story_stats
-        else 0.0
+        float(story_stats[s.id].click_ratio) if s.id in story_stats else 0.0
         for s in stories
     ]
     return np.array(vals, dtype=np.float32).reshape(-1, 1)
@@ -336,8 +386,11 @@ def _meta_click_ratio(stories: list[Story], now: float) -> NDArray[np.float32]:
 METADATA_FEATURES["click_ratio"] = _meta_click_ratio
 
 
-def _meta_days_since_last_impression(stories: list[Story], now: float) -> NDArray[np.float32]:
+def _meta_days_since_last_impression(
+    stories: list[Story], now: float
+) -> NDArray[np.float32]:
     from api.telemetry_features import load_telemetry_stats
+
     story_stats, _ = load_telemetry_stats()
     vals = [
         (30.0 - float(story_stats[s.id].days_since_last_impression)) / 30.0
@@ -353,6 +406,7 @@ METADATA_FEATURES["days_since_last_impression"] = _meta_days_since_last_impressi
 
 def _meta_domain_ctr(stories: list[Story], now: float) -> NDArray[np.float32]:
     from api.telemetry_features import load_telemetry_stats
+
     _, domain_stats = load_telemetry_stats()
     vals: list[float] = []
     for s in stories:
@@ -367,21 +421,114 @@ def _meta_domain_ctr(stories: list[Story], now: float) -> NDArray[np.float32]:
 METADATA_FEATURES["domain_ctr"] = _meta_domain_ctr
 
 
-def _meta_domain_impression_count(stories: list[Story], now: float) -> NDArray[np.float32]:
+def _meta_domain_impression_count(
+    stories: list[Story], now: float
+) -> NDArray[np.float32]:
     from api.telemetry_features import load_telemetry_stats
+
     _, domain_stats = load_telemetry_stats()
     normalizer = np.log1p(500.0)
     vals: list[float] = []
     for s in stories:
         domain = extract_domain_with_fallback(s.url, is_hn=s.is_hn)
         if domain and domain in domain_stats:
-            vals.append(np.log1p(float(domain_stats[domain].domain_impression_count)) / normalizer)
+            vals.append(
+                np.log1p(float(domain_stats[domain].domain_impression_count))
+                / normalizer
+            )
         else:
             vals.append(0.0)
     return np.array(vals, dtype=np.float32).reshape(-1, 1)
 
 
 METADATA_FEATURES["domain_impression_count"] = _meta_domain_impression_count
+
+
+def _meta_local_density(stories: list[Story], now: float) -> NDArray[np.float32]:
+    """Mean pairwise cosine similarity within the candidate pool.
+
+    High = crowded topic (many similar candidates).
+    Low = niche story (sparse region of embedding space).
+    Independent of feedback history — works for cold start.
+    """
+    if _local_density_cache is not None and len(stories) <= len(_local_density_cache):
+        size = min(len(stories), len(_local_density_cache))
+        return _local_density_cache[:size].reshape(-1, 1).astype(np.float32)
+    return np.zeros((len(stories), 1), dtype=np.float32)
+
+
+METADATA_FEATURES["local_density"] = _meta_local_density
+
+
+def _meta_story_age(stories: list[Story], now: float) -> NDArray[np.float32]:
+    """log1p(story age in days) at the moment of decision.
+
+    For training samples (story_id in _story_age_at_vote_map): use vote-time age.
+    For inference candidates (cache miss): use current age (now - s.time).
+    Story.time == 0 returns 0.0 (missing data sentinel).
+    Clock skew (age < 0) clamped to 0.
+    """
+    vals: list[float] = []
+    for s in stories:
+        if s.id in _story_age_at_vote_map:
+            age_days = _story_age_at_vote_map[s.id]
+        elif s.time > 0:
+            age_days = (now - s.time) / 86400.0
+        else:
+            vals.append(0.0)
+            continue
+        if age_days < 0:
+            age_days = 0.0
+        vals.append(float(np.log1p(age_days)))
+    return np.array(vals, dtype=np.float32).reshape(-1, 1)
+
+
+METADATA_FEATURES["story_age"] = _meta_story_age
+
+
+def _meta_cluster_size(stories: list[Story], now: float) -> NDArray[np.float32]:
+    """log1p(cluster_size) — how many candidates in the same cluster.
+
+    High = topic saturation (many similar stories).
+    Low = niche/novel story (its topic appears rarely in the pool).
+    Uses _cluster_size_cache populated in rank_stories.
+    Cache miss returns 0.0 (log1p(0) ≈ 0).
+    """
+    if _cluster_size_cache is not None and len(stories) <= len(_cluster_size_cache):
+        size = min(len(stories), len(_cluster_size_cache))
+        vals = np.log1p(_cluster_size_cache[:size].astype(np.float64)).astype(
+            np.float32
+        )
+        return vals.reshape(-1, 1)
+    return np.zeros((len(stories), 1), dtype=np.float32)
+
+
+METADATA_FEATURES["cluster_size"] = _meta_cluster_size
+
+
+def _meta_domain_recency(stories: list[Story], now: float) -> NDArray[np.float32]:
+    """log1p(days since last user vote on this domain).
+
+    Uses _domain_recency_map populated from FeedbackRecord.
+    Stories from domains never voted on get 365-day sentinel.
+    HN discussions (no domain) get the same sentinel.
+    """
+    from api.url_utils import extract_domain
+
+    _SENTINEL_DAYS = 365.0
+    vals: list[float] = []
+    for s in stories:
+        domain = extract_domain(s.url)
+        if domain and domain in _domain_recency_map:
+            days = _domain_recency_map[domain]
+        else:
+            days = _SENTINEL_DAYS
+        vals.append(float(np.log1p(max(days, 0.0))))
+    return np.array(vals, dtype=np.float32).reshape(-1, 1)
+
+
+METADATA_FEATURES["domain_recency"] = _meta_domain_recency
+
 
 # --- Metadata feature matrix builder ---
 
@@ -1134,6 +1281,10 @@ def rank_stories(
     """
     Rank candidate stories with the feedback-trained single model.
     """
+    global _local_density_cache, _cluster_size_cache
+    _local_density_cache = None
+    _cluster_size_cache = None
+
     if not stories:
         return []
     from api.ordinal_model import (
@@ -1234,6 +1385,33 @@ def rank_stories(
     if len(centroids) > 0:
         cluster_sim = cosine_similarity(centroids, cand_emb)
         cluster_max_scores = np.max(cluster_sim, axis=0).astype(np.float32)
+
+    # Compute local density cache (mean pairwise cosine sim within candidate pool)
+    if len(cand_emb) > 1:
+        pair_sim = cosine_similarity(cand_emb, cand_emb)
+        pair_sim.flat[:: len(pair_sim) + 1] = 0.0  # zero out diagonal (self)
+        _local_density_cache = (pair_sim.sum(axis=1) / (len(cand_emb) - 1)).astype(
+            np.float32
+        )
+    elif len(cand_emb) == 1:
+        _local_density_cache = np.zeros(1, dtype=np.float32)
+    else:
+        _local_density_cache = np.zeros(0, dtype=np.float32)
+
+    # Compute cluster size cache (how many candidates in each cluster)
+    if len(cand_emb) >= 2 * config.clustering.min_samples_per_cluster:
+        _, cand_labels = cluster_interests_with_labels(
+            cand_emb, config=config.clustering
+        )
+        unique_lbl, counts = np.unique(cand_labels, return_counts=True)
+        lbl_to_count = dict(zip(unique_lbl, counts))
+        _cluster_size_cache = np.array(
+            [lbl_to_count[lbl] for lbl in cand_labels], dtype=np.int32
+        )
+    elif len(cand_emb) == 1:
+        _cluster_size_cache = np.array([1], dtype=np.int32)
+    else:
+        _cluster_size_cache = np.array([], dtype=np.int32)
 
     cand_derived = compute_classifier_similarity_features(
         cand_emb,

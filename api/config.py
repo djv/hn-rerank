@@ -48,6 +48,10 @@ class ClassifierConfig:
         "days_since_last_impression",
         "domain_ctr",
         "domain_impression_count",
+        "local_density",
+        "story_age",
+        "cluster_size",
+        "domain_recency",
     )
     # Minimum labeled examples on each side required to activate the model path.
     min_positive_examples: int = 5
