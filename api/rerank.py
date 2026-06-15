@@ -191,14 +191,6 @@ def _meta_text_len(stories: list[Story], now: float) -> NDArray[np.float32]:
 METADATA_FEATURES["text_len"] = _meta_text_len
 
 
-def _meta_has_url(stories: list[Story], now: float) -> NDArray[np.float32]:
-    has_url = np.array([1.0 if s.url else 0.0 for s in stories], dtype=np.float32)
-    return has_url.reshape(-1, 1)
-
-
-METADATA_FEATURES["has_url"] = _meta_has_url
-
-
 def _meta_is_github(stories: list[Story], now: float) -> NDArray[np.float32]:
     is_github = np.array(
         [1.0 if s.url and "github.com" in s.url.lower() else 0.0 for s in stories],

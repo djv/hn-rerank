@@ -7,9 +7,6 @@ no_rss = false
 no_tldr = false
 debug_scores = true
 
-[hn_rerank.ranking]
-external_min_model_score = 0.40
-
 [hn_rerank.llm]
 provider = "mistral"
 
@@ -23,7 +20,7 @@ k_feat = 12
 features = [
     "centroid", "pos_knn", "neg_knn",
     "log_points", "log_comments", "comment_ratio",
-    "title_len", "text_len", "has_url", "is_github", "is_pdf", "comments_count",
+    "title_len", "text_len", "is_github", "is_pdf", "comments_count",
     "closest_pos", "closest_neg", "closest_margin",
     "is_hn",
     "source_trust",

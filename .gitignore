@@ -21,6 +21,7 @@ stderr.log
 # Models (Large Files)
 bge_model/
 onnx_model/
+onnx_model_*/
 mxbai_model/
 
 # Temp files

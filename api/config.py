@@ -14,7 +14,6 @@ class RankingConfig:
     """Weights and limits for the ranking engine."""
 
     max_results: int = 500
-    external_min_model_score: float = 0.52
 
 
 @dataclass(frozen=True)
@@ -38,7 +37,6 @@ class ClassifierConfig:
         "closest_margin",
         "title_len",
         "text_len",
-        "has_url",
         "is_github",
         "is_pdf",
         "comments_count",

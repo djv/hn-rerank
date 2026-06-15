@@ -83,7 +83,6 @@ RSS_EXTRA_FEEDS = [
     "https://pudding.cool/feed.xml",
     "https://nautil.us/feed/",
     "https://progressforum.org/feed.xml",
-    "https://stratechery.com/feed/",
     "https://www.stephendiehl.com/posts.rss",
     "https://www.citationneeded.news/rss/",
     "https://scottaaronson.blog/?feed=rss2",
