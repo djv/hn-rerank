@@ -20,6 +20,7 @@ StorySource = Literal[
     "reddit_programming",
     "reddit_compsci",
     "digg",
+    "haskell_discourse",
 ]
 
 

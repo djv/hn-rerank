@@ -113,6 +113,12 @@ SOURCE_SPECS: tuple[ExternalSourceSpec, ...] = (
         curated=True,
         parser="digg_ai",
     ),
+    ExternalSourceSpec(
+        source="haskell_discourse",
+        badge_label="Haskell Discourse",
+        domains=("discourse.haskell.org",),
+        curated=True,
+    ),
 )
 
 SOURCE_BADGE_LABELS = {spec.source: spec.badge_label for spec in SOURCE_SPECS}

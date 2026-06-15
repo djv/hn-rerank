@@ -98,6 +98,8 @@ RSS_EXTRA_FEEDS = [
     "https://ludic.mataroa.blog/rss/",
     "https://rednafi.com/index.xml",
     "https://taylor.town/feed.xml",
+    "https://discourse.haskell.org/latest.rss",
+    "https://discourse.haskell.org/top.rss",
 ]  # Additional feeds not in OPML
 RSS_MAX_FEEDS = 0  # 0 = no max feed limit
 RSS_PER_FEED_LIMIT = 70
