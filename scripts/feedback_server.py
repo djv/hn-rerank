@@ -27,6 +27,7 @@ from api.impressions import (
     append_impressions,
     impression_from_payload,
 )
+from api.llm_utils import generate_detailed_tldr
 from api.regen_scheduler import request_regen
 
 DEFAULT_HOST = "127.0.0.1"
@@ -120,6 +121,8 @@ class FeedbackHandler(BaseHTTPRequestHandler):
             self._handle_feedback()
         elif self.path == "/api/impressions":
             self._handle_impressions()
+        elif self.path == "/api/tldr-detail":
+            self._handle_tldr_detail()
         else:
             self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -178,6 +181,43 @@ class FeedbackHandler(BaseHTTPRequestHandler):
 
         append_impressions(records)
         self._send_json({"ok": True, "count": len(records)})
+
+    def _handle_tldr_detail(self) -> None:
+        if not self._authorized():
+            self.send_error(HTTPStatus.UNAUTHORIZED)
+            return
+
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+            raw_body = self.rfile.read(content_length)
+            data = json.loads(raw_body.decode("utf-8"))
+            story_title = data.get("story_title", "")
+            text_content = data.get("text_content", "")
+            comments = data.get("comments", [])
+            if not story_title:
+                self._send_json(
+                    {"ok": False, "error": "story_title required"},
+                    HTTPStatus.BAD_REQUEST,
+                )
+                return
+        except Exception as exc:
+            self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        result = asyncio.run(
+            generate_detailed_tldr(
+                title=story_title,
+                text_content=text_content,
+                comments=comments,
+            )
+        )
+        if result:
+            self._send_json({"ok": True, "tldr": result})
+        else:
+            self._send_json(
+                {"ok": False, "error": "Failed to generate analysis"},
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
 
     def log_message(self, format: str, *args: object) -> None:
         return

@@ -288,6 +288,82 @@ HTML_TEMPLATE: str = """
         }
         .cluster-chip:hover { border-color: var(--hn); color: var(--hn); }
         .cluster-card { background: #fff; border: 1px solid var(--stone-200); border-radius: 0.5rem; box-shadow: 0 1px 2px 0 rgba(0,0,0,0.05); }
+        .tldr-detail-btn {
+            font-size: 11px; color: var(--stone-400); background: none; border: none;
+            cursor: pointer; padding: 2px 6px; border-radius: 4px; transition: color 150ms;
+            opacity: 0; font-family: inherit;
+        }
+        .story-card:hover .tldr-detail-btn { opacity: 1; }
+        .tldr-detail-btn:hover { color: var(--hn); background: rgba(255,102,0,0.06); }
+        .tldr-dialog[open] {
+            display: flex; flex-direction: column;
+        }
+        .tldr-dialog {
+            width: 90vw; height: 100vh; border: 1px solid var(--stone-200);
+            border-radius: 12px; padding: 0; max-width: none; max-height: none;
+            overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,0.2);
+        }
+        .tldr-dialog::backdrop { background: rgba(0,0,0,0.5); }
+        .tldr-dialog-header {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 1rem 1.25rem; border-bottom: 1px solid var(--stone-200);
+            flex-shrink: 0; gap: 1rem;
+        }
+        .tldr-dialog-header h2 {
+            font-size: 1rem; font-weight: 600; color: var(--stone-900);
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .tldr-dialog-header-right {
+            display: flex; align-items: center; gap: 0.75rem; flex-shrink: 0;
+        }
+        .tldr-dialog-link {
+            font-size: 0.75rem; color: var(--hn); text-decoration: none;
+            white-space: nowrap;
+        }
+        .tldr-dialog-link:hover { text-decoration: underline; }
+        .tldr-dialog-close {
+            font-size: 1.5rem; line-height: 1; color: var(--stone-400);
+            background: none; border: none; cursor: pointer; padding: 0 4px;
+            transition: color 150ms;
+        }
+        .tldr-dialog-close:hover { color: var(--stone-900); }
+        .tldr-dialog-body {
+            flex: 1; overflow-y: auto; padding: 1.25rem; outline: none;
+        }
+        .tldr-dialog-loading {
+            display: flex; flex-direction: column; align-items: center;
+            justify-content: center; gap: 0.75rem; height: 100%;
+            color: var(--stone-400);
+        }
+        .tldr-spinner {
+            width: 28px; height: 28px; border: 3px solid var(--stone-200);
+            border-top-color: var(--hn); border-radius: 50%;
+            animation: tldr-spin 0.7s linear infinite;
+        }
+        @keyframes tldr-spin { to { transform: rotate(360deg); } }
+        .tldr-dialog-content {
+            font-size: 1rem; line-height: 1.75; color: var(--stone-700);
+            max-width: none;
+        }
+        .tldr-dialog-content h4 {
+            font-size: 0.95rem; font-weight: 600; color: var(--stone-900);
+            margin-top: 1rem; margin-bottom: 0.4rem;
+        }
+        .tldr-dialog-content h4:first-child { margin-top: 0; }
+        .tldr-dialog-content p { margin-bottom: 0.6rem; }
+        .tldr-dialog-content ul, .tldr-dialog-content ol {
+            margin: 0 0 0.6rem 1.25rem;
+        }
+        .tldr-dialog-content li { margin-bottom: 0.2rem; }
+        .tldr-dialog-content strong { color: var(--stone-900); font-weight: 600; }
+        .tldr-dialog-content em { color: var(--stone-600); }
+        .tldr-dialog-error {
+            color: #dc2626; font-size: 0.875rem; padding: 0.75rem;
+            background: #fef2f2; border-radius: 6px; display: none;
+        }
+        .tldr-dialog-error.visible { display: block; }
+        .tldr-dialog-loading.hidden { display: none; }
+        .tldr-dialog-content.hidden { display: none; }
     </style>
 </head>
 <body class="p-2 md:p-4 bg-stone-100">
@@ -319,6 +395,23 @@ HTML_TEMPLATE: str = """
             HN Rerank &bull; Local Semantic Analysis
         </footer>
     </div>
+    <dialog id="tldr-detail-dialog" class="tldr-dialog">
+        <div class="tldr-dialog-header">
+            <h2 data-tldr-dialog-title></h2>
+            <div class="tldr-dialog-header-right">
+                <a data-tldr-dialog-url href="#" target="_blank" class="tldr-dialog-link">Open story →</a>
+                <button data-tldr-dialog-close class="tldr-dialog-close" aria-label="Close">&times;</button>
+            </div>
+        </div>
+        <div class="tldr-dialog-body" tabindex="-1">
+            <div data-tldr-dialog-loading class="tldr-dialog-loading">
+                <div class="tldr-spinner"></div>
+                <p>Generating detailed analysis...</p>
+            </div>
+            <div data-tldr-dialog-content class="tldr-dialog-content"></div>
+            <div data-tldr-dialog-error class="tldr-dialog-error"></div>
+        </div>
+    </dialog>
     <script>
         (() => {
             const grid = document.getElementById('stories-grid');
@@ -625,6 +718,122 @@ HTML_TEMPLATE: str = """
                     if (e.target.closest('[data-feedback-status]')) return;
                     logClick(card);
                 });
+            }
+
+            // ---- Detailed TLDR dialog ----
+            const TLDR_DETAIL_URL = window.HN_RERANK_TLDR_DETAIL_URL || '/api/tldr-detail';
+
+            const _renderMarkdown = (text) => {
+                const escape = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                const lines = text.split('\\n');
+                const out = [];
+                let inList = false, listType = null;
+                const closeList = () => {
+                    if (inList) { out.push(`</${listType}>`); inList = false; listType = null; }
+                };
+                for (const raw of lines) {
+                    const line = escape(raw.trim());
+                    if (!line) { closeList(); continue; }
+                    const h = line.match(/^#{2,4}\\s+(.+)$/);
+                    if (h) { closeList(); out.push(`<h4>${h[1]}</h4>`); continue; }
+                    const ol = line.match(/^(\\d+)\\.\\s+(.+)$/);
+                    if (ol) {
+                        if (!inList || listType !== 'ol') { closeList(); out.push('<ol>'); inList = true; listType = 'ol'; }
+                        out.push(`<li>${ol[2]}</li>`); continue;
+                    }
+                    const ul = line.match(/^-\\s+(.+)$/);
+                    if (ul) {
+                        if (!inList || listType !== 'ul') { closeList(); out.push('<ul>'); inList = true; listType = 'ul'; }
+                        out.push(`<li>${ul[1]}</li>`); continue;
+                    }
+                    closeList(); out.push(`<p>${line}</p>`);
+                }
+                closeList();
+                return out.join('\\n').replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>').replace(/\\*([^*]+)\\*/g, '<em>$1</em>');
+            };
+
+            const dialog = document.getElementById('tldr-detail-dialog');
+            if (dialog) {
+                const titleEl = dialog.querySelector('[data-tldr-dialog-title]');
+                const urlEl = dialog.querySelector('[data-tldr-dialog-url]');
+                const loadingEl = dialog.querySelector('[data-tldr-dialog-loading]');
+                const contentEl = dialog.querySelector('[data-tldr-dialog-content]');
+                const errorEl = dialog.querySelector('[data-tldr-dialog-error]');
+                const closeBtn = dialog.querySelector('[data-tldr-dialog-close]');
+
+                const resetDialog = () => {
+                    loadingEl.classList.remove('hidden');
+                    contentEl.classList.add('hidden');
+                    contentEl.textContent = '';
+                    errorEl.classList.remove('visible');
+                    errorEl.textContent = '';
+                };
+
+                const showError = (msg) => {
+                    loadingEl.classList.add('hidden');
+                    contentEl.classList.add('hidden');
+                    errorEl.textContent = msg;
+                    errorEl.classList.add('visible');
+                };
+
+                document.addEventListener('click', (e) => {
+                    const btn = e.target.closest('[data-tldr-detail]');
+                    if (!btn) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+
+                    const card = btn.closest('.story-card');
+                    if (!card) return;
+
+                    const storyId = Number(card.dataset.storyId);
+                    const storyTitle = card.dataset.storyTitle || '';
+                    const textContent = card.dataset.storyTextContent || '';
+                    const storyUrl = card.dataset.storyUrl || '';
+                    const discussionUrl = card.dataset.storyDiscussionUrl || '';
+
+                    resetDialog();
+                    titleEl.textContent = storyTitle;
+                    urlEl.href = discussionUrl || storyUrl || '#';
+                    urlEl.textContent = discussionUrl ? 'Open discussion →' : 'Open story →';
+                    dialog.showModal();
+                    dialog.querySelector('.tldr-dialog-body').focus({ preventScroll: true });
+
+                    const token = localStorage.getItem(TOKEN_KEY);
+                    if (!token) {
+                        showError('Feedback token not set. Click the login button.');
+                        return;
+                    }
+
+                    fetch(TLDR_DETAIL_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'X-HN-RERANK-FEEDBACK-TOKEN': token },
+                        body: JSON.stringify({
+                            story_id: storyId,
+                            story_title: storyTitle,
+                            text_content: textContent,
+                            comments: [],
+                        }),
+                    })
+                        .then((r) => r.json())
+                        .then((data) => {
+                            if (data.ok && data.tldr) {
+                                loadingEl.classList.add('hidden');
+                                contentEl.innerHTML = _renderMarkdown(data.tldr);
+                                contentEl.classList.remove('hidden');
+                            } else {
+                                showError(data.error || 'Failed to generate analysis');
+                            }
+                        })
+                        .catch(() => {
+                            showError('Request failed. Check your connection.');
+                        });
+                });
+
+                closeBtn.addEventListener('click', () => dialog.close());
+                dialog.addEventListener('click', (e) => {
+                    if (e.target === dialog) dialog.close();
+                });
+                dialog.addEventListener('close', resetDialog);
             }
         })();
     </script>
@@ -1064,6 +1273,9 @@ STORY_CARD_TEMPLATE: str = """
     {% if tldr %}
     <div class="text-sm text-stone-600 bg-stone-50 p-2 rounded border border-stone-100 leading-relaxed whitespace-pre-line{% if card_url %} relative z-20 pointer-events-none{% endif %}">{{ tldr }}</div>
     {% endif %}
+    <div class="mt-1 flex justify-end{% if card_url %} relative z-20 pointer-events-none{% endif %}">
+        <button type="button" class="tldr-detail-btn pointer-events-auto" data-tldr-detail>🔍 Detailed analysis</button>
+    </div>
 </div>
 """
 
