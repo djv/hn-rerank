@@ -124,7 +124,7 @@ async def refresh_hn_story_metadata(
             try:
                 resp = await client.get(
                     f"https://hacker-news.firebaseio.com/v0/item/{story.id}.json"
-                )
+            )
                 if resp.status_code == 200:
                     payload = resp.json()
                     if isinstance(payload, dict):
@@ -150,7 +150,7 @@ async def refresh_hn_story_metadata(
                                     "Failed to persist metadata cache for %s: %s",
                                     story.id,
                                     persist_exc,
-                                )
+                            )
             except Exception as exc:
                 logging.debug("Failed to refresh HN metadata for %s: %s", story.id, exc)
             if progress_callback:
@@ -666,7 +666,7 @@ HTML_TEMPLATE: str = """
                                 card,
                                 mirrorFailed ? 'Saved locally; HN sync failed' : 'Saved',
                                 Boolean(mirrorFailed),
-                            );
+                        );
                             if (nextAction !== 'clear') {
                                 rememberActedKey(card.dataset.feedbackKey);
                                 removeCard(card);
@@ -1504,7 +1504,7 @@ async def main() -> None:
             clustering=replace(
                 config.clustering,
                 max_clusters=args.clusters,
-            ),
+        ),
         )
     if args.open_index_archive or args.bigquery_archive:
         config = replace(
@@ -1571,7 +1571,7 @@ async def main() -> None:
                 progress.stop()
                 console.print(
                     "[yellow][!] Not logged in. Upvotes require authentication.[/yellow]"
-                )
+            )
                 pw: str = getpass.getpass(f"Enter password for {config.username}: ")
                 success: bool
                 msg: str
@@ -1589,16 +1589,16 @@ async def main() -> None:
                 feedback_negative_stories,
                 feedback_hn_ids,
                 feedback_urls,
-            ) = split_feedback_records(feedback_records)
+        ) = split_feedback_records(feedback_records)
             progress.update(p_task, description="[*] Fetching signal details...")
 
             # Helper for progress-aware batch fetch
             async def fetch_with_progress(
                 ids: list[int], label: str, weight_share: float
-            ) -> list[Story]:
+        ) -> list[Story]:
                 progress.update(
                     p_task, description=f"[*] Fetching {label} ({len(ids)} items)..."
-                )
+            )
 
                 if not ids:
                     progress.update(overall_task, advance=weight_share)
@@ -1629,7 +1629,7 @@ async def main() -> None:
                 feedback_negative_stories,
                 signal_limit=args.signals,
                 use_hidden_signal=args.use_hidden_signal,
-            )
+        )
 
             # Split profile weight between positive and negative fetches
             pos_weight = PROGRESS_WEIGHTS["profile"] * 0.7
@@ -1639,21 +1639,21 @@ async def main() -> None:
 
             pos_stories: list[Story] = await fetch_with_progress(
                 pos_ids, "Positive signals", pos_weight
-            )
+        )
             pos_story_ids = {story.id for story in pos_stories if story.source == "hn"}
             pos_stories.extend(
                 story
                 for story in feedback_positive_stories
                 if story.source != "hn" or story.id not in pos_story_ids
-            )
+        )
             hn_fetched = len(pos_story_ids)
             hn_requested = len(pos_ids)
             feedback_added = len(pos_stories) - hn_fetched
             sorted_id_hash = hashlib.sha256(
                 ",".join(
                     str(s.id) for s in sorted(pos_stories, key=lambda x: x.id)
-                ).encode()
-            ).hexdigest()[:16]
+            ).encode()
+        ).hexdigest()[:16]
             logger.info(
                 "pos_stories: %d/%d HN fetched, %d feedback added, total %d, id_hash=%s",
                 hn_fetched,
@@ -1661,12 +1661,12 @@ async def main() -> None:
                 feedback_added,
                 len(pos_stories),
                 sorted_id_hash,
-            )
+        )
             neg_stories: list[Story] = []
             if neg_ids:
                 neg_stories = await fetch_with_progress(
                     neg_ids, "Negative signals", neg_weight
-                )
+            )
             elif neg_weight > 0:
                 progress.update(overall_task, advance=neg_weight)
             neg_story_ids = {story.id for story in neg_stories if story.source == "hn"}
@@ -1674,11 +1674,11 @@ async def main() -> None:
                 story
                 for story in feedback_negative_stories
                 if story.source != "hn" or story.id not in neg_story_ids
-            )
+        )
 
             progress.update(
                 p_task, completed=100, description="[green][+] Profile built."
-            )
+        )
 
         # 2. Embedding
         e_task: TaskID = progress.add_task("[*] Embedding preferences...", total=100)
@@ -1701,7 +1701,7 @@ async def main() -> None:
                 [s.text_content for s in pos_stories],
                 is_query=True,
                 progress_callback=emb_cb,
-            )
+        )
             if pos_stories
             else None
         )
@@ -1715,7 +1715,7 @@ async def main() -> None:
                 [s.text_content for s in neg_stories],
                 is_query=True,
                 progress_callback=emb_cb,
-            )
+        )
             if neg_stories
             else None
         )
@@ -1725,7 +1725,7 @@ async def main() -> None:
         if pos_stories:
             ce_task: TaskID = progress.add_task(
                 "[*] Embedding cluster content...", total=100
-            )
+        )
             last_ce_completed = 0
 
             def cluster_emb_cb(curr: int, total: int) -> None:
@@ -1740,7 +1740,7 @@ async def main() -> None:
             cluster_emb = rerank.get_embeddings(
                 [s.text_content for s in pos_stories],
                 progress_callback=cluster_emb_cb,
-            )
+        )
             progress.update(ce_task, description="[green][+] Cluster content embedded.")
         else:
             progress.update(overall_task, advance=PROGRESS_WEIGHTS["emb_clust"])
@@ -1754,25 +1754,25 @@ async def main() -> None:
         if cluster_source is not None and len(cluster_source) > 0:
             cl_task: TaskID = progress.add_task(
                 "[cyan]Clustering interests...", total=1
-            )
+        )
             cluster_centroids, cluster_labels = rerank.cluster_interests_with_labels(
                 cluster_source,
                 config=config.clustering,
-            )
+        )
             progress.update(
                 cl_task, completed=1, description="[green][+] Interests clustered."
-            )
+        )
             progress.update(overall_task, advance=PROGRESS_WEIGHTS["cluster"])
 
             # Build cluster names (LLM calls)
             clusters_for_naming: dict[int, list[tuple[StoryDict, float]]] = defaultdict(
                 list
-            )
+        )
             for i, label in enumerate(cluster_labels):
                 story = pos_stories[i]
                 clusters_for_naming[int(label)].append(
                     (story.to_dict(), float(story.score))
-                )
+            )
 
             singleton_clusters = {
                 cid for cid, items in clusters_for_naming.items() if len(items) == 1
@@ -1787,7 +1787,7 @@ async def main() -> None:
             n_clusters = len(clusters_for_naming)
             name_task: TaskID = progress.add_task(
                 "[cyan]Naming clusters...", total=n_clusters
-            )
+        )
             last_n_completed = 0
 
             def name_cb(curr: int, total: int) -> None:
@@ -1807,7 +1807,7 @@ async def main() -> None:
                     name_task,
                     completed=n_clusters,
                     description="[yellow][!] Using generic cluster names.",
-                )
+            )
                 progress.update(overall_task, advance=PROGRESS_WEIGHTS["naming"])
             else:
                 try:
@@ -1815,13 +1815,13 @@ async def main() -> None:
                     if config.debug_clusters:
                         debug_path = config.output_path.with_name(
                             "cluster_name_debug.json"
-                        )
+                    )
                         debug_path.parent.mkdir(parents=True, exist_ok=True)
                     cluster_profiles = await llm_utils.generate_batch_cluster_names(
                         clusters_for_naming,
                         progress_callback=name_cb,
                         debug_path=debug_path,
-                    )
+                )
                     for cid, profile in cluster_profiles.items():
                         cluster_names[cid] = profile["name"]
                         cluster_keywords[cid] = profile["keywords"]
@@ -1832,7 +1832,7 @@ async def main() -> None:
                     provider_name = config.llm.provider.capitalize()
                     console.print(
                         f"[red][bold][-] {provider_name} naming failed:[/bold] {exc}[/red]"
-                    )
+                )
                     raise
         else:
             progress.update(overall_task, advance=PROGRESS_WEIGHTS["cluster"])
@@ -1864,7 +1864,7 @@ async def main() -> None:
                 phase_fraction = min(max(event["current"] / total, 0.0), 1.0)
                 candidate_phase_completed[phase] = (
                     candidate_phase_weights[phase] * phase_fraction
-                )
+            )
                 phase_index = candidate_phase_order.index(phase)
                 for prior_phase in candidate_phase_order[:phase_index]:
                     candidate_phase_completed[prior_phase] = candidate_phase_weights[
@@ -1878,7 +1878,7 @@ async def main() -> None:
                 progress.update(
                     overall_task,
                     advance=(delta / 100.0) * PROGRESS_WEIGHTS["candidates"],
-                )
+            )
                 last_c_completed = completed
 
         # Exclude everything we've already interacted with
@@ -1932,7 +1932,7 @@ async def main() -> None:
                 progress.update(
                     overall_task,
                     advance=(delta / 100.0) * PROGRESS_WEIGHTS["rank"],
-                )
+            )
                 last_r_completed = completed
 
         feedback_labels = build_single_model_feedback_labels(feedback_records).labels
@@ -1948,44 +1948,21 @@ async def main() -> None:
             config.single_model,
         )
 
-        # Populate per-vote story age cache for the story_age feature
-        _story_age_at_vote = {
-            rec.id: (rec.updated_at - rec.time) / 86400.0
-            for rec in feedback_records.values()
-            if rec.time > 0 and rec.updated_at > rec.time
-        }
-        rerank.set_story_age_at_vote_map(_story_age_at_vote)
+        # Populate per-vote story age cache for the story_age feature (Now done automatically inside rank_stories/train)
+        # Populate per-domain recency cache for the domain_recency feature (Now done automatically inside rank_stories/train)
 
-        # Populate per-domain recency cache for the domain_recency feature
-        _now_epoch = time.time()
-        _domain_recency: dict[str, float] = {}
-        for rec in feedback_records.values():
-            if rec.updated_at <= 0:
-                continue
-            domain = extract_domain(rec.url)
-            if not domain:
-                continue
-            days = (_now_epoch - rec.updated_at) / 86400.0
-            if domain not in _domain_recency or days < _domain_recency[domain]:
-                _domain_recency[domain] = max(days, 0.0)
-        rerank.set_domain_recency_map(_domain_recency)
-
-        try:
-            ranked: list[RankResult] = rerank.rank_stories(
-                cands,
-                single_model,
-                p_emb,
-                n_emb,
-                config=config,
-                progress_callback=rank_cb,
-                positive_stories=pos_stories,
-                negative_stories=neg_stories,
-                cluster_names=cluster_names,
-                cluster_keywords=cluster_keywords,
-            )
-        finally:
-            rerank.clear_story_age_at_vote_map()
-            rerank.clear_domain_recency_map()
+        ranked: list[RankResult] = rerank.rank_stories(
+            cands,
+            single_model,
+            p_emb,
+            n_emb,
+            config=config,
+            progress_callback=rank_cb,
+            positive_stories=pos_stories,
+            negative_stories=neg_stories,
+            cluster_names=cluster_names,
+            cluster_keywords=cluster_keywords,
+        )
         progress.update(
             r_task, completed=100, description="[green][+] Reranking complete."
         )
@@ -2025,7 +2002,7 @@ async def main() -> None:
                 progress.update(
                     overall_task,
                     advance=(delta / 100.0) * PROGRESS_WEIGHTS["prepare"],
-                )
+            )
                 last_prep_completed = completed
 
         # Pre-build StoryDisplay items (without TL;DRs yet)
@@ -2038,7 +2015,7 @@ async def main() -> None:
                 curr,
                 total,
                 "[*] Assigning story clusters...",
-            ),
+        ),
         )
         update_prep("cluster_map", 1, 1, "[*] Assigning story clusters...")
 
@@ -2061,7 +2038,7 @@ async def main() -> None:
                 curr,
                 total,
                 "[*] Checking duplicate HN submissions...",
-            ),
+        ),
         )
         update_prep("dupes", 1, 1, "[*] Checking duplicate HN submissions...")
 
@@ -2076,7 +2053,7 @@ async def main() -> None:
                 curr,
                 total,
                 "[*] Refreshing HN comment counts...",
-            ),
+        ),
         )
         update_prep("metadata", 1, 1, "[*] Refreshing HN comment counts...")
 
@@ -2102,10 +2079,10 @@ async def main() -> None:
                 cluster_labels,
                 cand_cluster_map,
                 config.semantic.match_threshold,
-            )
+        )
             cluster_name = resolve_cluster_name(
                 cluster_names, cid, allow_empty_fallback=s.is_external
-            )
+        )
             discussion_url = s.discussion_url
             if discussion_url is None and s.is_hn and s.id > 0:
                 discussion_url = f"https://news.ycombinator.com/item?id={s.id}"
@@ -2134,9 +2111,9 @@ async def main() -> None:
                     source=s.source,
                     story_id=s.id,
                     url=s.url,
-                ),
+            ),
                 acquisition_kind=result.acquisition_kind,
-            )
+        )
 
         for rank_index, result in enumerate(selected_results):
             sd = make_story_display_local(result)
@@ -2148,7 +2125,7 @@ async def main() -> None:
                 rank_index + 1,
                 len(selected_results),
                 "[*] Building story cards...",
-            )
+        )
         update_prep("cards", 1, 1, "[green][+] Final story cards prepared.")
 
         # 6. TL;DR Generation
@@ -2156,7 +2133,7 @@ async def main() -> None:
         if not config.no_tldr and stories_data:
             llm_task: TaskID = progress.add_task(
                 "[cyan]Generating TL;DRs...", total=len(stories_data)
-            )
+        )
             last_t_completed = 0
 
             def tldr_cb(curr: int, total: int) -> None:
@@ -2172,14 +2149,14 @@ async def main() -> None:
             tldrs = await llm_utils.generate_batch_tldrs(
                 stories_for_tldr,
                 progress_callback=tldr_cb,
-            )
+        )
             for sd in stories_data:
                 sd.tldr = tldrs.get(sd.id, "")
             progress.update(
                 llm_task,
                 completed=len(stories_data),
                 description="[green][+] LLM content generated.",
-            )
+        )
         else:
             for sd in stories_data:
                 sd.tldr = ""
@@ -2210,7 +2187,7 @@ async def main() -> None:
                     "max_cluster_score": result.max_cluster_score,
                     "max_sim_score": result.max_sim_score,
                 }
-            )
+        )
         debug_path.write_text(json.dumps(debug_rows, indent=2))
         print(f"[+] Score breakdown saved to: {os.path.abspath(debug_path)}")
 
@@ -2229,7 +2206,7 @@ async def main() -> None:
                     "max_cluster_score": result.max_cluster_score,
                     "max_sim_score": result.max_sim_score,
                 }
-            )
+        )
         full_debug_path.write_text(json.dumps(full_debug_rows, indent=2))
         print(f"[+] Full score breakdown saved to: {os.path.abspath(full_debug_path)}")
 
@@ -2263,15 +2240,15 @@ async def main() -> None:
                     title=story.title or "Untitled",
                     points=story.score,
                     time_ago=get_relative_time(story.time),
-                )
+            )
             cluster_cards.append(
                 _CLUSTER_CARD_TEMPLATE.render(
                     cluster_name=resolve_cluster_name(cluster_names, cid),
                     keywords=cluster_keywords.get(cid, ""),
                     count=len(items),
                     stories_html=Markup(stories_in_cluster),
-                )
             )
+        )
 
         clusters_page_html = _CLUSTERS_TEMPLATE.render(
             username=config.username,

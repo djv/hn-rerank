@@ -20,6 +20,7 @@ import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any
 
 # Ensure repo root is on sys.path (for module imports when run from any directory)
 _repo_root = Path(__file__).resolve().parent.parent
@@ -48,6 +49,8 @@ class AblationResult:
     classifier_used: bool
     elapsed_seconds: float
     n_folds: int = 0
+    nonhn_score_stddev: float = 0.0
+    nonhn_at_0_5_fraction: float = 0.0
 
 
 _DEFAULT_K = [5, 30]
@@ -59,7 +62,43 @@ _METRIC_KEYS = [
     "hit@30",
     "mean_rank",
     "median_rank",
+    "nonhn_score_stddev",
+    "nonhn_at_0_5_fraction",
 ]
+
+
+def _parse_override_args(
+    raw: list[str] | None,
+) -> dict[str, str] | None:
+    if not raw:
+        return None
+    parsed: dict[str, str] = {}
+    for item in raw:
+        if "=" not in item:
+            continue
+        k, v = item.split("=", 1)
+        parsed[k.strip()] = v.strip()
+    return parsed or None
+
+
+def _convert_override_value(key: str, value: str, config_obj: object) -> Any:
+    """Convert a CLI string value to the correct type based on field annotation."""
+    field_type = type(getattr(config_obj, key))
+    if field_type is float:
+        return float(value)
+    elif field_type is int:
+        return int(value)
+    elif field_type is bool:
+        return value.lower() in ("true", "1", "yes")
+    elif field_type is str:
+        return value
+    # Fallback: try numeric conversion for union types (e.g. str | float)
+    try:
+        if "." in value:
+            return float(value)
+        return int(value)
+    except (ValueError, TypeError):
+        return value
 
 
 def run_one(
@@ -67,6 +106,9 @@ def run_one(
     features: list[str],
     name: str,
     n_folds: int = 0,
+    model_type: str | None = None,
+    raw_embedding_features: bool | None = None,
+    overrides: dict[str, str] | None = None,
 ) -> AblationResult:
     """Train and evaluate with the given feature set.
 
@@ -75,9 +117,24 @@ def run_one(
     from dataclasses import replace
 
     config = AppConfig.load()
+    classifier_updates: dict[str, Any] = {"features": tuple(features)}
+    if raw_embedding_features is not None:
+        classifier_updates["raw_embedding_features"] = raw_embedding_features
     config = replace(
-        config, classifier=replace(config.classifier, features=tuple(features))
+        config,
+        classifier=replace(config.classifier, **classifier_updates),
     )
+    single_model_updates: dict[str, Any] = {}
+    if model_type is not None:
+        single_model_updates["model_type"] = model_type
+    if overrides:
+        for k, v in overrides.items():
+            single_model_updates[k] = _convert_override_value(k, v, config.single_model)
+    if single_model_updates:
+        config = replace(
+            config,
+            single_model=replace(config.single_model, **single_model_updates),
+        )
 
     start = time.time()
     if n_folds > 0:
@@ -105,6 +162,8 @@ def run_one(
         classifier_used=True,
         elapsed_seconds=elapsed,
         n_folds=n_folds,
+        nonhn_score_stddev=metrics.get("nonhn_score_stddev", 0.0),
+        nonhn_at_0_5_fraction=metrics.get("nonhn_at_0.5_fraction", 0.0),
     )
 
 
@@ -154,6 +213,23 @@ def main() -> None:
         default=0,
         help="Use k-fold cross-validation (n_folds) instead of single time-split.",
     )
+    parser.add_argument(
+        "--model-type",
+        default=None,
+        help="Override model type: logistic, random_forest, gradient_boosting, svm, mlp.",
+    )
+    parser.add_argument(
+        "--raw-embedding-features",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable or disable raw embedding features.",
+    )
+    parser.add_argument(
+        "--override",
+        nargs="*",
+        default=None,
+        help="Key=value overrides for SingleModelConfig (e.g. mlp_activation=logistic).",
+    )
     args = parser.parse_args()
 
     # Load snapshot
@@ -169,38 +245,10 @@ def main() -> None:
     baseline_config = AppConfig.load()
     baseline_features = list(baseline_config.classifier.features)
 
-    # Optionally load feedback for story_age + domain_recency caches
-    import api.rerank as rerank_mod
-    from api.feedback import load_feedback
-    from api.url_utils import extract_domain
+    # Note: Evaluator now populates metadata features dynamically per fold
+    # to avoid target leakage, so we do not preload feedback files globally.
 
-    feedback_age_map: dict[int, float] | None = None
-    domain_recency_map: dict[str, float] | None = None
-    if args.feedback:
-        if not args.feedback.exists():
-            raise SystemExit(f"Feedback file not found: {args.feedback}")
-        records = load_feedback(args.feedback)
-        now_epoch = time.time()
-        feedback_age_map = {
-            rec.id: (rec.updated_at - rec.time) / 86400.0
-            for rec in records.values()
-            if rec.time > 0 and rec.updated_at > rec.time
-        }
-        domain_recency_map = {}
-        for rec in records.values():
-            if rec.updated_at <= 0:
-                continue
-            domain = extract_domain(rec.url)
-            if not domain:
-                continue
-            days = (now_epoch - rec.updated_at) / 86400.0
-            if domain not in domain_recency_map or days < domain_recency_map[domain]:
-                domain_recency_map[domain] = max(days, 0.0)
-        print(
-            f"Loaded {len(feedback_age_map)} vote-age records, "
-            f"{len(domain_recency_map)} domain recency records from {args.feedback}\n"
-        )
-
+    # Build feature sets = evaluator.dataset
     dataset = evaluator.dataset
     assert dataset is not None, (
         "evaluator.dataset should be populated after load_snapshot"
@@ -251,21 +299,24 @@ def main() -> None:
     print(f"Running {len(sets)} evaluations...\n")
     for i, (name, feats) in enumerate(sets, 1):
         print(f"  [{i}/{len(sets)}] {name}...", end=" ", flush=True)
-        if feedback_age_map is not None:
-            rerank_mod.set_story_age_at_vote_map(feedback_age_map)
-        else:
-            rerank_mod.clear_story_age_at_vote_map()
-        if domain_recency_map is not None:
-            rerank_mod.set_domain_recency_map(domain_recency_map)
-        else:
-            rerank_mod.clear_domain_recency_map()
-        result = run_one(evaluator, feats, name, n_folds=args.cv)
-        rerank_mod.clear_story_age_at_vote_map()
-        rerank_mod.clear_domain_recency_map()
+        result = run_one(
+            evaluator,
+            feats,
+            name,
+            n_folds=args.cv,
+            model_type=args.model_type,
+            raw_embedding_features=(
+                args.raw_embedding_features
+                if args.raw_embedding_features is not None
+                else None
+            ),
+            overrides=_parse_override_args(args.override),
+        )
         results.append(result)
         print(
             f"MRR={result.mrr:.3f} NDCG@30={result.ndcg_at_30:.3f} "
-            f"hit@30={result.hit_at_30:.3f} mean_rank={result.mean_rank:.1f}"
+            f"hit@30={result.hit_at_30:.3f} mean_rank={result.mean_rank:.1f} "
+            f"nonhn_0.5={result.nonhn_at_0_5_fraction:.2f}"
         )
 
     # Print comparison table

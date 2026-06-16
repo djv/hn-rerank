@@ -534,6 +534,7 @@ class RankingEvaluator:
         feedback_path: Path,
         snapshot_candidates_path: Path | None = None,
         holdout: float = 0.20,
+        max_test: int = 50,
     ) -> bool:
         """Build an EvaluationDataset from cached feedback records (no network).
 
@@ -555,16 +556,14 @@ class RankingEvaluator:
             print("No feedback records found.")
             return False
 
-        ups = [r for r in records.values() if r.action == "up"]
+        ups = [r for r in records.values() if r.action == "up" and r.time > 0]
         if len(ups) < 10:
             print(f"Need at least 10 upvotes, found {len(ups)}.")
             return False
 
         # Use ALL upvotes as train (CV handles the train/test split later)
         ups.sort(key=lambda r: r.time)
-        # Put ~holdout in test_stories so load_snapshot doesn't reject the file.
-        # evaluate_cv() ignores these and re-splits from all_stories.
-        n_test = max(1, int(len(ups) * holdout))
+        n_test = min(max(1, int(len(ups) * holdout)), max_test)
         test_records = ups[-n_test:]
         train_records = ups[:-n_test]
 
@@ -607,6 +606,7 @@ class RankingEvaluator:
         for ts in test_stories:
             if ts.id not in candidate_ids:
                 candidates.append(ts)
+                candidate_ids.add(ts.id)
 
         self.dataset = EvaluationDataset(
             train_stories=train_stories,
@@ -921,7 +921,25 @@ class RankingEvaluator:
             if final_list_count is not None
             else [dataset.candidates[r.index].id for r in results]
         )
-        return _compute_metrics(ranked_ids, dataset.test_ids, k_metrics)
+        metrics = _compute_metrics(ranked_ids, dataset.test_ids, k_metrics)
+        # Plateau metrics
+        hn_scores = []
+        nonhn_scores = []
+        for r in results:
+            story = dataset.candidates[r.index]
+            if story.is_hn:
+                hn_scores.append(r.model_score)
+            else:
+                nonhn_scores.append(r.model_score)
+        if nonhn_scores:
+            metrics["nonhn_score_stddev"] = float(np.std(nonhn_scores, ddof=0))
+            metrics["nonhn_at_0.5_fraction"] = sum(
+                1 for s in nonhn_scores if 0.499 <= s <= 0.501
+            ) / len(nonhn_scores)
+        else:
+            metrics["nonhn_score_stddev"] = 0.0
+            metrics["nonhn_at_0.5_fraction"] = 0.0
+        return metrics
 
     def evaluate_cv(
         self,
@@ -935,8 +953,13 @@ class RankingEvaluator:
         diagnostics_summary: dict[str, object] | None = None,
         cluster_keywords: dict[int, str] | None = None,
         seed: int = 0,
+        max_test: int = 50,
     ) -> dict[str, float]:
-        """Run k-fold cross-validation and return averaged metrics."""
+        """Run k-fold cross-validation and return averaged metrics.
+
+        The full set of upvote stories is divided into N folds using a deterministic
+        permutation. Each fold trains on N-1 folds and tests on the held-out fold.
+        """
         from concurrent.futures import ThreadPoolExecutor
 
         if self.dataset is None:
@@ -953,23 +976,32 @@ class RankingEvaluator:
 
         # Shuffle indices for random folds (deterministic before threads)
         indices = np.random.default_rng(seed).permutation(n)
-        fold_size = n // n_folds
+        fold_size = max(1, n // n_folds)
 
         def _run_fold(
             fold: int,
         ) -> tuple[dict[str, float], dict[str, object] | None]:
             test_start = fold * fold_size
             test_end = test_start + fold_size if fold < n_folds - 1 else n
+            if test_start >= n:
+                return _empty_fold_metrics(k_metrics)
+
             test_idx = set(indices[test_start:test_end])
             train_idx = [i for i in range(n) if i not in test_idx]
+
+            if len(train_idx) < 2:
+                return _empty_fold_metrics(k_metrics)
 
             train_emb = all_emb[train_idx]
             test_ids = {all_stories[i].id for i in test_idx}
 
-            candidate_ids = {c.id for c in dataset.candidates}
-            fold_candidates = list(dataset.candidates)
+            train_ids_set = {all_stories[i].id for i in train_idx}
+            fold_candidates = [
+                c for c in dataset.candidates if c.id not in train_ids_set
+            ]
+            fold_cand_ids = {c.id for c in fold_candidates}
             for i in test_idx:
-                if all_stories[i].id not in candidate_ids:
+                if all_stories[i].id not in fold_cand_ids:
                     fold_candidates.append(all_stories[i])
 
             rank_diagnostics: dict[str, object] | None = (
@@ -1037,7 +1069,41 @@ class RankingEvaluator:
             else:
                 ranked_ids = [fold_candidates[r.index].id for r in results]
 
-            return _compute_metrics(ranked_ids, test_ids, k_metrics), rank_diagnostics
+            # Plateau metrics: track model score spread for non-HN stories
+            hn_scores = []
+            nonhn_scores = []
+            for r in results:
+                story = fold_candidates[r.index]
+                if story.is_hn:
+                    hn_scores.append(r.model_score)
+                else:
+                    nonhn_scores.append(r.model_score)
+            fold_metrics = _compute_metrics(ranked_ids, test_ids, k_metrics)
+            if nonhn_scores:
+                fold_metrics["nonhn_score_stddev"] = float(np.std(nonhn_scores, ddof=0))
+                fold_metrics["nonhn_at_0.5_fraction"] = sum(
+                    1 for s in nonhn_scores if 0.499 <= s <= 0.501
+                ) / len(nonhn_scores)
+            else:
+                fold_metrics["nonhn_score_stddev"] = 0.0
+                fold_metrics["nonhn_at_0.5_fraction"] = 0.0
+            return fold_metrics, rank_diagnostics
+
+        def _empty_fold_metrics(k_metrics: list[int]) -> tuple[dict[str, float], None]:
+            m: dict[str, float] = {}
+            for k in k_metrics:
+                m[f"ndcg@{k}"] = 0.0
+                m[f"recall@{k}"] = 0.0
+                m[f"precision@{k}"] = 0.0
+                m[f"map@{k}"] = 0.0
+                m[f"hit@{k}"] = 0.0
+            m["mrr"] = 0.0
+            m["mean_rank"] = float(n)
+            m["median_rank"] = float(n)
+            m["nonhn_score_stddev"] = 0.0
+            m["nonhn_at_0.5_fraction"] = 0.0
+            return m, None
+
 
         # Run folds (parallel or serial)
         if parallel and n_folds > 1:
