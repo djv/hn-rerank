@@ -161,19 +161,41 @@ feature does not saturate — the score distribution has room to spread.
   hypothesis. Single features work well; the 26-feature combination is
   broken. This is the right tool for *model quality* assessment.
 
-**Actionable insight:** The model needs either (a) score-domain tie-breaking
-(e.g., add `pos_knn` as a small epsilon in the ordinal model to spread ties)
-or (b) a reduction to ~5-10 features to avoid over-saturating the SVM.
+**Actionable insight:** The SVM saturation is fixed by switching to MLP
+(64→32 hidden layers). MLP's non-linear representation spreads probability
+scores naturally — no tie-breaking or feature reduction needed.
+
+### Run D — Time-split classifier comparison (543 train, 590 candidates)
+
+Last run: `uv run scripts/feature_ablation.py tests/snapshots/baseline_full.json --feedback .cache/user_feedback/dashboard_feedback.json --no-drop-one --no-single-features --baseline TYPE`
+
+Time-split (80/20) on the full feedback snapshot. Train on older 80% of
+upvotes, test on newest 20%. Candidates from legacy snapshot + injected
+test stories. This is the most production-representative eval: the model
+must rank future user interactions among a fresh candidate pool.
+
+| Classifier | NDCG@30 | mean_rank | P@5 |
+|-----------|---------|-----------|-----|
+| **MLP** | **0.814** | 197.4 | 1.000 |
+| SVM (RBF) | 0.777 | 232.6 | 1.000 |
+| Random Forest | 0.723 | **189.3** | 1.000 |
+| Gradient Boost | 0.629 | 205.5 | 1.000 |
+| Logistic | 0.604 | 200.5 | 0.800 |
+
+**Run D takeaways:** All classifiers achieve hit@30=1.000 (trivially, with
+134 test stories among 590 candidates). NDCG@30 is the discriminating metric.
+MLP leads by 4.8% over SVM. All tree/linear alternatives underperform.
+
+The current `hn_rerank.toml` uses `model_type = "mlp"` (switched 2026-06-15).
 
 ### Snapshot protocol
 
 - `tests/snapshots/baseline.json` (48 train / 12 test / 780 candidates) — the
   legacy small eval. Time-split 80/20 of an older feedback snapshot.
-- `tests/snapshots/baseline_full.json` (543 train / 135 test / 510 candidates) —
-  regenerated from all cached feedback. Train/test time-split stored but
-  ignored when `--cv` is set (CV re-splits internally). Candidate pool = the
-  legacy snapshot's candidates minus any IDs that overlap with neg_stories
-  or train_stories (leak avoidance for `evaluate_cv`'s assertion).
+- `tests/snapshots/baseline_full.json` (543 train / 135 test / 591 candidates) —
+  regenerated from all cached feedback. `test_ids` populated and test stories
+  injected into candidates (see `build_dataset_from_feedback` in
+  `evaluate_quality.py`). CV re-splits internally from all_stories.
 - Regen the full snapshot: `uv run scripts/regen_full_snapshot.py` (no network).
 
 ### Operational notes
@@ -182,6 +204,8 @@ or (b) a reduction to ~5-10 features to avoid over-saturating the SVM.
 - Use `--cv 5` for the full-feedback eval (Run B protocol).
 - Use `--cv 5 --single-features --no-drop-one` for single-feature quality assessment (Run C protocol).
 - Drop `--cv` for the legacy small eval (Run A protocol).
+- Without `--cv`, uses the stored time-split (Run D protocol — most realistic).
+- `feature_ablation.py:run_one()` now reads `model_type` from `hn_rerank.toml` (`AppConfig.load()`), not the hardcoded default. Changes in TOML are reflected in ablation runs.
 - Both runs include the `cluster_size` and `domain_recency` features.
 
 ## Repo notes
