@@ -61,7 +61,7 @@ class CandidateProgress(TypedDict):
 CandidateProgressCallback = Callable[[CandidateProgress], None]
 
 ALGOLIA_BASE: str = "https://hn.algolia.com/api/v1"
-HN_LIVE_WINDOW_DAYS: int = 4
+HN_LIVE_WINDOW_DAYS: int = 7
 HN_BIGQUERY_ARCHIVE_STORY_CACHE_TTL: int = CANDIDATE_CACHE_TTL_LONG
 OPEN_INDEX_HN_DATASET = "hf://datasets/open-index/hacker-news"
 SEM: asyncio.Semaphore = asyncio.Semaphore(EXTERNAL_REQUEST_SEMAPHORE)
@@ -184,6 +184,11 @@ def _load_cached_story(
     except Exception as e:
         logger.debug(f"Failed to load story cache {cache_file}: {e}")
         return None
+
+
+def load_story_by_id(sid: int, *, allow_stale: bool = True) -> Story | None:
+    """Public wrapper for story cache lookup. Used by feedback server."""
+    return _load_cached_story(sid, ttl=STORY_CACHE_TTL, allow_stale=allow_stale)
 
 
 def _extract_comments_recursive(
@@ -564,7 +569,7 @@ def load_cached_archive_stories(
                     ttl=HN_BIGQUERY_ARCHIVE_STORY_CACHE_TTL,
                     allow_stale=allow_stale,
                 )
-                if story and start_ts <= story.time < end_ts:
+                if story and start_ts <= story.time <= end_ts:
                     # Standard filters
                     if story.score <= ALGOLIA_MIN_POINTS:
                         continue
@@ -689,7 +694,7 @@ async def get_best_stories(
             win_target = math.ceil(live_budget * (duration / total_duration))
             if is_live:
                 win_target = max(win_target, limit // 4)
-            win_target = max(win_target, 50)
+            win_target = max(win_target, 100)
             win_target = min(win_target, remaining_budget)
 
             key_suffix = f"{ts_start}" if is_live else f"{ts_start}-{ts_end}"

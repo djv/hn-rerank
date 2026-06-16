@@ -948,11 +948,17 @@ async def generate_batch_cluster_names(
                         final_name = _finalize_cluster_name(str(batch_results["name"]))
                         final_keywords = str(batch_results.get("keywords", "")).strip()
                         if final_name:
-                            profile: dict[str, str] = {"name": final_name, "keywords": final_keywords}
+                            profile: dict[str, str] = {
+                                "name": final_name,
+                                "keywords": final_keywords,
+                            }
                             results[cid] = profile
                             items = to_generate[cid]
                             story_ids = sorted(
-                                [str(s.get("id", s.get("objectID", ""))) for s, _ in items]
+                                [
+                                    str(s.get("id", s.get("objectID", "")))
+                                    for s, _ in items
+                                ]
                             )
                             cache_key = _cluster_name_cache_key(story_ids, rescue_model)
                             cache[cache_key] = json.dumps(profile)
@@ -1054,7 +1060,7 @@ def _build_detailed_tldr_prompt(
     """Build a simple prompt asking for a thorough summary of article and comments."""
     context = f"Title: {title}"
     if text_content:
-        context += f"\n\nArticle text:\n{text_content[:3000]}"
+        context += f"\n\nArticle text:\n{text_content[:12000]}"
     if comments:
         context += "\n\nComments:\n" + "\n".join(f"- {c[:500]}" for c in comments[:10])
     return f"""

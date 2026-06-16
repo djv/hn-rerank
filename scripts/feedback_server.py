@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -15,6 +16,7 @@ from bs4 import BeautifulSoup
 from bs4.element import Tag
 
 from api.client import HNClient
+from api.fetching import load_story_by_id
 from api.feedback import (
     FEEDBACK_STORE_PATH,
     FeedbackMirrorStatus,
@@ -29,6 +31,8 @@ from api.impressions import (
 )
 from api.llm_utils import generate_detailed_tldr
 from api.regen_scheduler import request_regen
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
@@ -191,12 +195,11 @@ class FeedbackHandler(BaseHTTPRequestHandler):
             content_length = int(self.headers.get("Content-Length", "0"))
             raw_body = self.rfile.read(content_length)
             data = json.loads(raw_body.decode("utf-8"))
+            story_id = data.get("story_id")
             story_title = data.get("story_title", "")
-            text_content = data.get("text_content", "")
-            comments = data.get("comments", [])
-            if not story_title:
+            if not story_id:
                 self._send_json(
-                    {"ok": False, "error": "story_title required"},
+                    {"ok": False, "error": "story_id required"},
                     HTTPStatus.BAD_REQUEST,
                 )
                 return
@@ -204,20 +207,33 @@ class FeedbackHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
 
-        result = asyncio.run(
-            generate_detailed_tldr(
-                title=story_title,
-                text_content=text_content,
-                comments=comments,
+        # Primary: load full story from cache
+        story = load_story_by_id(story_id)
+        if story is not None:
+            logger.info(
+                "Story %d: cache hit, %d chars", story_id, len(story.text_content)
             )
+            result = asyncio.run(
+                generate_detailed_tldr(
+                    title=story.title or story_title,
+                    text_content=story.text_content,
+                    comments=list(story.comments),
+                )
+            )
+            if result:
+                self._send_json({"ok": True, "tldr": result})
+            else:
+                self._send_json(
+                    {"ok": False, "error": "Failed to generate analysis"},
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+            return
+
+        logger.info("Story %d: cache miss", story_id)
+        self._send_json(
+            {"ok": False, "error": "Story not found in cache"},
+            HTTPStatus.NOT_FOUND,
         )
-        if result:
-            self._send_json({"ok": True, "tldr": result})
-        else:
-            self._send_json(
-                {"ok": False, "error": "Failed to generate analysis"},
-                HTTPStatus.INTERNAL_SERVER_ERROR,
-            )
 
     def log_message(self, format: str, *args: object) -> None:
         return
