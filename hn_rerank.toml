@@ -17,18 +17,15 @@ knn_neighbors = 5
 
 [hn_rerank.classifier]
 k_feat = 12
-raw_embedding_features = false
+raw_embedding_features = true
 features = [
     "centroid", "pos_knn", "neg_knn", "pos_neg_ratio",
-    "log_points", "log_comments", "comment_ratio",
-    "title_len", "text_len", "is_github", "is_pdf", "comments_count",
+    "title_len", "text_len", "is_github", "is_pdf",
     "closest_pos", "closest_neg", "closest_margin",
     "is_hn",
     "source_trust",
     "local_density",
-    "story_age",
     "cluster_size",
-    "domain_recency",
     "embedding_magnitude",
 ]
 
@@ -53,11 +50,13 @@ slots = 7
 min_positive_labels = 10
 min_negative_labels = 10
 balance_training_labels = true
-model_type = "mlp"
+model_type = "svm"
 svm_kernel = "rbf"
-svm_c = 1.0
+svm_c = 0.3
 svm_gamma = "scale"
-# Switched to MLP (64->32) 2026-06-15 - avoids score saturation.
-# 22f CV ablation: NDCG@30 MLP=0.187, hit@30=0.800 (SVM saturates at 0.475 NDCG).
-# MLP's non-linear hidden layer spreads probability scores, no tie-breaking needed.
-# See AGENTS.md for full eval results.
+mlp_activation = "relu"
+mlp_alpha = 0.0001
+# Switched to SVM RBF 2026-06-16 from MLP (64->32).
+# 4×4 ablation winner: 16f+raw-svm-rbf, NDCG@30=0.737 (+29.5% vs 22f-mlp-relu 0.569).
+# SVM RBF with 16 metadata + 384 raw embedding features handles score distribution
+# without plateau. Raw embeddings now enabled. See AGENTS.md for full 4×4 matrix.
