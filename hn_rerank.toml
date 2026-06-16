@@ -19,7 +19,7 @@ knn_neighbors = 5
 k_feat = 12
 raw_embedding_features = false
 features = [
-    "centroid", "pos_knn", "neg_knn",
+    "centroid", "pos_knn", "neg_knn", "pos_neg_ratio",
     "log_points", "log_comments", "comment_ratio",
     "title_len", "text_len", "is_github", "is_pdf", "comments_count",
     "closest_pos", "closest_neg", "closest_margin",
@@ -29,6 +29,7 @@ features = [
     "story_age",
     "cluster_size",
     "domain_recency",
+    "embedding_magnitude",
 ]
 
 [hn_rerank.clustering]
