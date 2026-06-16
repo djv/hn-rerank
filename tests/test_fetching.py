@@ -602,7 +602,7 @@ async def test_get_best_stories_merges_algolia_live_and_open_index_archive(
     assert [story.id for story in stories] == [1, 2]
     assert "archive story text" in stories[1].text_content
     assert captured["end_ts"] > captured["start_ts"]
-    assert 5 * 86400 < captured["end_ts"] - captured["start_ts"] < 7 * 86400
+    assert 2 * 86400 < captured["end_ts"] - captured["start_ts"] < 4 * 86400
     assert captured["candidate_limit"] == 7
 
 
