@@ -83,52 +83,66 @@ SIMILARITY_FEATURES: frozenset[str] = frozenset(
 MetadataFeatureFn = Callable[[list[Story], float], NDArray[np.float32]]
 METADATA_FEATURES: dict[str, MetadataFeatureFn] = {}
 
-# Module-global caches for metadata feature functions.
-# These are populated by rank_stories and read by the individual _meta_* functions.
-# Safe in the current single-threaded architecture; would need refactoring for concurrency.
-_local_density_cache: NDArray[np.float32] | None = None
-
-# Per-vote story age cache: {story_id: age_days} populated from FeedbackRecord.
-# Set in main() before rank_stories; cleared after rank_stories returns.
-_story_age_at_vote_map: dict[int, float] = {}
-
-# Cluster size cache: [n_candidates] array of cluster sizes, populated in rank_stories.
-# Story at index i belongs to a cluster of size _cluster_size_cache[i].
-_cluster_size_cache: NDArray[np.int32] | None = None
-
-# Per-domain recency cache: {domain: days_since_last_vote} populated from FeedbackRecord.
-# Set in main() before rank_stories; cleared after rank_stories returns.
-_domain_recency_map: dict[str, float] = {}
+# Thread-local caches for metadata feature functions.
+# Each rank_stories call has its own local_density and cluster_size arrays,
+# eliminating races in parallel CV (_local_density_cache, _cluster_size_cache).
+class _RankCache(threading.local):
+    def __init__(self) -> None:
+        self.local_density: NDArray[np.float32] | None = None
+        self.cluster_size: NDArray[np.int32] | None = None
+        self.domain_trust: dict[str, float] = {}
+        self.story_age_at_vote_map: dict[int, float] = {}
+        self.domain_recency_map: dict[str, float] = {}
 
 
-def set_story_age_at_vote_map(values: dict[int, float]) -> None:
-    global _story_age_at_vote_map
-    _story_age_at_vote_map = dict(values)
+_rank_cache = _RankCache()
+
+def _populate_rank_cache_metadata(
+    positive_stories: list[Story] | None,
+    negative_stories: list[Story] | None,
+    now: float
+) -> None:
+    _rank_cache.domain_trust.clear()
+    _rank_cache.story_age_at_vote_map.clear()
+    _rank_cache.domain_recency_map.clear()
+
+    counts: dict[str, list[int]] = {}
+    
+    if positive_stories:
+        for s in positive_stories:
+            if s.id and s.feedback_updated_at > 0 and s.time > 0 and s.feedback_updated_at > s.time:
+                _rank_cache.story_age_at_vote_map[s.id] = (s.feedback_updated_at - s.time) / 86400.0
+            domain = extract_domain_with_fallback(s.url, is_hn=s.is_hn)
+            if domain:
+                c = counts.setdefault(domain, [0, 0])
+                c[0] += 1
+                if s.feedback_updated_at > 0:
+                    days = (now - s.feedback_updated_at) / 86400.0
+                    if domain not in _rank_cache.domain_recency_map or days < _rank_cache.domain_recency_map[domain]:
+                        _rank_cache.domain_recency_map[domain] = max(days, 0.0)
+
+    if negative_stories:
+        for s in negative_stories:
+            if s.id and s.feedback_updated_at > 0 and s.time > 0 and s.feedback_updated_at > s.time:
+                _rank_cache.story_age_at_vote_map[s.id] = (s.feedback_updated_at - s.time) / 86400.0
+            domain = extract_domain_with_fallback(s.url, is_hn=s.is_hn)
+            if domain:
+                c = counts.setdefault(domain, [0, 0])
+                c[1] += 1
+                if s.feedback_updated_at > 0:
+                    days = (now - s.feedback_updated_at) / 86400.0
+                    if domain not in _rank_cache.domain_recency_map or days < _rank_cache.domain_recency_map[domain]:
+                        _rank_cache.domain_recency_map[domain] = max(days, 0.0)
+
+    _rank_cache.domain_trust.update(
+        {
+            domain: (ups + 1) / (ups + downs + 2)
+            for domain, (ups, downs) in counts.items()
+        }
+    )
 
 
-def clear_story_age_at_vote_map() -> None:
-    global _story_age_at_vote_map
-    _story_age_at_vote_map = {}
 
-
-def set_cluster_size_cache(values: NDArray[np.int32]) -> None:
-    global _cluster_size_cache
-    _cluster_size_cache = values
-
-
-def clear_cluster_size_cache() -> None:
-    global _cluster_size_cache
-    _cluster_size_cache = None
-
-
-def set_domain_recency_map(values: dict[str, float]) -> None:
-    global _domain_recency_map
-    _domain_recency_map = dict(values)
-
-
-def clear_domain_recency_map() -> None:
-    global _domain_recency_map
-    _domain_recency_map = {}
 
 
 logger = logging.getLogger(__name__)
@@ -288,45 +302,8 @@ METADATA_FEATURES["is_hn"] = _meta_is_hn
 
 # --- source_trust: per-domain quality from feedback ---
 
-_domain_trust: dict[str, float] | None = None
-
-
-def _load_domain_trust() -> dict[str, float]:
-    global _domain_trust
-    if _domain_trust is not None:
-        return _domain_trust
-    _domain_trust = {}
-    path = _FEEDBACK_STORE_PATH
-    if not path.exists():
-        return _domain_trust
-    data = _json.loads(path.read_text())
-    records = data.get("records", {})
-    counts: dict[str, list[int]] = {}
-    for r in records.values():
-        action = r.get("action")
-        if action not in ("up", "down"):
-            continue
-        url = r.get("url")
-        source = r.get("source", "")
-        domain = extract_domain_with_fallback(url, is_hn=(source == "hn"))
-        if domain is None:
-            continue
-        c = counts.setdefault(domain, [0, 0])
-        if action == "up":
-            c[0] += 1
-        else:
-            c[1] += 1
-    _domain_trust.update(
-        {
-            domain: (ups + 1) / (ups + downs + 2)
-            for domain, (ups, downs) in counts.items()
-        }
-    )
-    return _domain_trust
-
-
 def _meta_source_trust(stories: list[Story], now: float) -> NDArray[np.float32]:
-    trust = _load_domain_trust()
+    trust = getattr(_rank_cache, "domain_trust", {})
     vals: list[float] = []
     for s in stories:
         domain = extract_domain_with_fallback(s.url, is_hn=s.is_hn)
@@ -453,9 +430,10 @@ def _meta_local_density(stories: list[Story], now: float) -> NDArray[np.float32]
     Low = niche story (sparse region of embedding space).
     Independent of feedback history — works for cold start.
     """
-    if _local_density_cache is not None and len(stories) <= len(_local_density_cache):
-        size = min(len(stories), len(_local_density_cache))
-        return _local_density_cache[:size].reshape(-1, 1).astype(np.float32)
+    cache = _rank_cache.local_density
+    if cache is not None and len(stories) <= len(cache):
+        size = min(len(stories), len(cache))
+        return cache[:size].reshape(-1, 1).astype(np.float32)
     return np.zeros((len(stories), 1), dtype=np.float32)
 
 
@@ -471,9 +449,10 @@ def _meta_story_age(stories: list[Story], now: float) -> NDArray[np.float32]:
     Clock skew (age < 0) clamped to 0.
     """
     vals: list[float] = []
+    age_map = getattr(_rank_cache, "story_age_at_vote_map", {})
     for s in stories:
-        if s.id in _story_age_at_vote_map:
-            age_days = _story_age_at_vote_map[s.id]
+        if s.id in age_map:
+            age_days = age_map[s.id]
         elif s.time > 0:
             age_days = (now - s.time) / 86400.0
         else:
@@ -493,14 +472,13 @@ def _meta_cluster_size(stories: list[Story], now: float) -> NDArray[np.float32]:
 
     High = topic saturation (many similar stories).
     Low = niche/novel story (its topic appears rarely in the pool).
-    Uses _cluster_size_cache populated in rank_stories.
+    Uses _rank_cache.cluster_size populated in rank_stories.
     Cache miss returns 0.0 (log1p(0) ≈ 0).
     """
-    if _cluster_size_cache is not None and len(stories) <= len(_cluster_size_cache):
-        size = min(len(stories), len(_cluster_size_cache))
-        vals = np.log1p(_cluster_size_cache[:size].astype(np.float64)).astype(
-            np.float32
-        )
+    cache = _rank_cache.cluster_size
+    if cache is not None and len(stories) <= len(cache):
+        size = min(len(stories), len(cache))
+        vals = np.log1p(cache[:size].astype(np.float64)).astype(np.float32)
         return vals.reshape(-1, 1)
     return np.zeros((len(stories), 1), dtype=np.float32)
 
@@ -519,10 +497,11 @@ def _meta_domain_recency(stories: list[Story], now: float) -> NDArray[np.float32
 
     _SENTINEL_DAYS = 365.0
     vals: list[float] = []
+    recency_map = getattr(_rank_cache, "domain_recency_map", {})
     for s in stories:
         domain = extract_domain(s.url)
-        if domain and domain in _domain_recency_map:
-            days = _domain_recency_map[domain]
+        if domain and domain in recency_map:
+            days = recency_map[domain]
         else:
             days = _SENTINEL_DAYS
         vals.append(float(np.log1p(max(days, 0.0))))
@@ -1292,9 +1271,10 @@ def rank_stories(
     """
     Rank candidate stories with the feedback-trained single model.
     """
-    global _local_density_cache, _cluster_size_cache
-    _local_density_cache = None
-    _cluster_size_cache = None
+    _rank_cache.local_density = None
+    _rank_cache.cluster_size = None
+    now = time.time()
+    _populate_rank_cache_metadata(positive_stories, negative_stories, now)
 
     if not stories:
         return []
@@ -1401,13 +1381,13 @@ def rank_stories(
     if len(cand_emb) > 1:
         pair_sim = cosine_similarity(cand_emb, cand_emb)
         pair_sim.flat[:: len(pair_sim) + 1] = 0.0  # zero out diagonal (self)
-        _local_density_cache = (pair_sim.sum(axis=1) / (len(cand_emb) - 1)).astype(
+        _rank_cache.local_density = (pair_sim.sum(axis=1) / (len(cand_emb) - 1)).astype(
             np.float32
         )
     elif len(cand_emb) == 1:
-        _local_density_cache = np.zeros(1, dtype=np.float32)
+        _rank_cache.local_density = np.zeros(1, dtype=np.float32)
     else:
-        _local_density_cache = np.zeros(0, dtype=np.float32)
+        _rank_cache.local_density = np.zeros(0, dtype=np.float32)
 
     # Compute cluster size cache (how many candidates in each cluster)
     if len(cand_emb) >= 2 * config.clustering.min_samples_per_cluster:
@@ -1416,13 +1396,13 @@ def rank_stories(
         )
         unique_lbl, counts = np.unique(cand_labels, return_counts=True)
         lbl_to_count = dict(zip(unique_lbl, counts))
-        _cluster_size_cache = np.array(
+        _rank_cache.cluster_size = np.array(
             [lbl_to_count[lbl] for lbl in cand_labels], dtype=np.int32
         )
     elif len(cand_emb) == 1:
-        _cluster_size_cache = np.array([1], dtype=np.int32)
+        _rank_cache.cluster_size = np.array([1], dtype=np.int32)
     else:
-        _cluster_size_cache = np.array([], dtype=np.int32)
+        _rank_cache.cluster_size = np.array([], dtype=np.int32)
 
     cand_derived = compute_classifier_similarity_features(
         cand_emb,
@@ -1564,7 +1544,9 @@ def rank_stories(
     probs = np.stack([downvote, neutral, upvote], axis=1) + 1e-12
     entropy_per_cand = -np.sum(probs * np.log2(probs), axis=1) / np.log2(3)
 
-    ranked_indices = np.argsort(-model_scores, kind="stable")
+    # Deterministic tie-breaking: sort by model_score desc, story_id asc
+    story_ids = np.array([s.id for s in stories], dtype=np.int64)
+    ranked_indices = np.lexsort((story_ids, -model_scores))
 
     report_progress("finalize", 0, 1, "Finalizing ranked stories")
     results = [
