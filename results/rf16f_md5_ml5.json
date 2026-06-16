@@ -1,0 +1,38 @@
+[
+  {
+    "name": "rf16f_md5_ml5",
+    "features": [
+      "centroid",
+      "pos_knn",
+      "neg_knn",
+      "pos_neg_ratio",
+      "title_len",
+      "text_len",
+      "is_github",
+      "is_pdf",
+      "closest_pos",
+      "closest_neg",
+      "closest_margin",
+      "is_hn",
+      "source_trust",
+      "local_density",
+      "cluster_size",
+      "embedding_magnitude"
+    ],
+    "mrr": 0.7222222222222222,
+    "precision_at_5": 0.4000000000000001,
+    "recall_at_5": 0.04,
+    "ndcg_at_30": 0.4278252005945897,
+    "hit_at_30": 1.0,
+    "mean_rank": 166.42000000000002,
+    "median_rank": 110.0,
+    "n_train": 639,
+    "n_test": 50,
+    "n_candidates": 481,
+    "classifier_used": true,
+    "elapsed_seconds": 12.776572227478027,
+    "n_folds": 3,
+    "nonhn_score_stddev": 0.12100477297677342,
+    "nonhn_at_0_5_fraction": 0.0
+  }
+]

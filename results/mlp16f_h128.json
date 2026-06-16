@@ -1,0 +1,38 @@
+[
+  {
+    "name": "mlp16f_h128",
+    "features": [
+      "centroid",
+      "pos_knn",
+      "neg_knn",
+      "pos_neg_ratio",
+      "title_len",
+      "text_len",
+      "is_github",
+      "is_pdf",
+      "closest_pos",
+      "closest_neg",
+      "closest_margin",
+      "is_hn",
+      "source_trust",
+      "local_density",
+      "cluster_size",
+      "embedding_magnitude"
+    ],
+    "mrr": 0.611111111111111,
+    "precision_at_5": 0.6000000000000001,
+    "recall_at_5": 0.060408163265306125,
+    "ndcg_at_30": 0.46686178450505333,
+    "hit_at_30": 1.0,
+    "mean_rank": 121.56666666666668,
+    "median_rank": 78.0,
+    "n_train": 639,
+    "n_test": 50,
+    "n_candidates": 481,
+    "classifier_used": true,
+    "elapsed_seconds": 12.180061340332031,
+    "n_folds": 3,
+    "nonhn_score_stddev": 0.34997110605465015,
+    "nonhn_at_0_5_fraction": 0.0
+  }
+]

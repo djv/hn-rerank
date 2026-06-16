@@ -1,0 +1,27 @@
+[
+  {
+    "name": "svm_5feat_raw",
+    "features": [
+      "source_trust",
+      "closest_pos",
+      "closest_margin",
+      "centroid",
+      "pos_neg_ratio"
+    ],
+    "mrr": 1.0,
+    "precision_at_5": 1.0,
+    "recall_at_5": 0.1,
+    "ndcg_at_30": 0.8224235354168519,
+    "hit_at_30": 1.0,
+    "mean_rank": 59.14,
+    "median_rank": 37.0,
+    "n_train": 639,
+    "n_test": 50,
+    "n_candidates": 481,
+    "classifier_used": true,
+    "elapsed_seconds": 5.171837568283081,
+    "n_folds": 0,
+    "nonhn_score_stddev": 0.3447236903797482,
+    "nonhn_at_0_5_fraction": 0.0
+  }
+]

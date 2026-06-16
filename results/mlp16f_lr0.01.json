@@ -1,0 +1,38 @@
+[
+  {
+    "name": "mlp16f_lr0.01",
+    "features": [
+      "centroid",
+      "pos_knn",
+      "neg_knn",
+      "pos_neg_ratio",
+      "title_len",
+      "text_len",
+      "is_github",
+      "is_pdf",
+      "closest_pos",
+      "closest_neg",
+      "closest_margin",
+      "is_hn",
+      "source_trust",
+      "local_density",
+      "cluster_size",
+      "embedding_magnitude"
+    ],
+    "mrr": 0.7777777777777778,
+    "precision_at_5": 0.39999999999999997,
+    "recall_at_5": 0.04013605442176871,
+    "ndcg_at_30": 0.3931392862502941,
+    "hit_at_30": 1.0,
+    "mean_rank": 137.6,
+    "median_rank": 102.33333333333333,
+    "n_train": 639,
+    "n_test": 50,
+    "n_candidates": 481,
+    "classifier_used": true,
+    "elapsed_seconds": 10.31607723236084,
+    "n_folds": 3,
+    "nonhn_score_stddev": 0.45387997907087446,
+    "nonhn_at_0_5_fraction": 0.0
+  }
+]
