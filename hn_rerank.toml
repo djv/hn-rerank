@@ -53,11 +53,11 @@ slots = 7
 min_positive_labels = 10
 min_negative_labels = 10
 balance_training_labels = true
-model_type = "svm"
+model_type = "mlp"
 svm_kernel = "rbf"
 svm_c = 1.0
 svm_gamma = "scale"
-# MiniLM + SVM RBF C=1.0 g=scale winner: NDCG@10 0.773 (300cand) / 0.817 (1300cand)
-# Grid sweep 2026-05-31 across C∈{0.3,1,3,10,30}, γ∈{scale,auto,0.001,0.003,0.01,0.03}
-# Best: C=1.0 g=scale/auto. C=3.0 baseline gave 0.675 at 1300cand.
-# See docs/evals/embedding_context_candidate_sweep.md
+# Switched to MLP (64->32) 2026-06-15 - avoids score saturation.
+# 22f CV ablation: NDCG@30 MLP=0.187, hit@30=0.800 (SVM saturates at 0.475 NDCG).
+# MLP's non-linear hidden layer spreads probability scores, no tie-breaking needed.
+# See AGENTS.md for full eval results.
