@@ -72,10 +72,12 @@ def run_one(
 
     When n_folds > 0, use k-fold CV (non-saturating for large training sets).
     """
-    from api.config import ClassifierConfig
+    from dataclasses import replace
 
-    classifier_cfg = ClassifierConfig(features=tuple(features))
-    config = AppConfig(classifier=classifier_cfg)
+    config = AppConfig.load()
+    config = replace(
+        config, classifier=replace(config.classifier, features=tuple(features))
+    )
 
     start = time.time()
     if n_folds > 0:

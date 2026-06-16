@@ -602,6 +602,12 @@ class RankingEvaluator:
             print("No snapshot candidates available, falling back to neg_stories.")
             candidates = list(neg_stories)
 
+        # Inject test stories into candidates for time-split evaluation
+        candidate_ids = {c.id for c in candidates}
+        for ts in test_stories:
+            if ts.id not in candidate_ids:
+                candidates.append(ts)
+
         self.dataset = EvaluationDataset(
             train_stories=train_stories,
             test_stories=test_stories,
@@ -609,7 +615,7 @@ class RankingEvaluator:
             candidates=candidates,
             train_embeddings=train_emb,
             neg_embeddings=neg_emb,
-            test_ids=set(),
+            test_ids={s.id for s in test_stories},
         )
         self.snapshot_metadata = {
             "source": "feedback",

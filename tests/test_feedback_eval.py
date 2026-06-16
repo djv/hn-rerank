@@ -77,12 +77,14 @@ def test_build_dataset_from_feedback(feedback_file: Path) -> None:
     assert ds is not None
     assert len(ds.test_stories) == 22
     assert len(ds.train_stories) == 88
-    # No snapshot provided → fallback: candidates = neg_stories
-    assert len(ds.candidates) == 70
+    # No snapshot provided → fallback: candidates = neg_stories + injected test stories
+    assert len(ds.candidates) == 92  # 70 neg + 22 test stories
+    assert len(ds.test_ids) == 22
     assert len(ds.neg_stories) == 70
     train_ids = {s.id for s in ds.train_stories}
     test_ids = {s.id for s in ds.test_stories}
     assert train_ids.isdisjoint(test_ids)
+    assert ds.test_ids == test_ids
     neg_ids = {s.id for s in ds.neg_stories}
     assert neg_ids.isdisjoint(train_ids)
     assert ds.train_embeddings.shape[0] == 88
@@ -121,7 +123,8 @@ def test_build_dataset_from_feedback_with_snapshot_candidates(
     assert ok
     ds = ev.dataset
     assert ds is not None
-    assert len(ds.candidates) == 2
+    assert len(ds.candidates) == 24  # 2 snapshot + 22 test stories
+    assert len(ds.test_ids) == 22
     assert len(ds.neg_stories) == 70
 
 
