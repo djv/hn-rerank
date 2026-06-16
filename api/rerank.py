@@ -63,10 +63,12 @@ SIMILARITY_FEATURES: frozenset[str] = frozenset(
         "centroid",
         "pos_knn",
         "neg_knn",
+        "pos_neg_ratio",
         "closest_pos",
         "closest_neg",
         "closest_margin",
         "closest_centroid",
+        "embedding_magnitude",
         "knn_pos_n1",
         "knn_pos_n3",
         "knn_pos_n5",
@@ -630,14 +632,23 @@ def compute_classifier_similarity_features(
 
     f_closest_margin = f_closest_pos - f_closest_neg
 
+    # New: ratio of pos_knn to total similarity, in [0, 1]
+    f_pos_neg_ratio = f_knn_pos / (f_knn_pos + f_knn_neg + 1e-6)
+
+    # New: embedding L2 norm normalized to mean training norm
+    embs_norms = np.linalg.norm(embs, axis=1)
+    f_embedding_magnitude = embs_norms / (embs_norms.mean() + 1e-6)
+
     return {
         "centroid": f_centroid_max,
         "pos_knn": f_knn_pos,
         "neg_knn": f_knn_neg,
+        "pos_neg_ratio": f_pos_neg_ratio,
         "closest_pos": f_closest_pos,
         "closest_neg": f_closest_neg,
         "closest_margin": f_closest_margin,
         "closest_centroid": f_centroid_max,
+        "embedding_magnitude": f_embedding_magnitude,
         "knn_pos_n1": knn_p1,
         "knn_pos_n3": knn_p3,
         "knn_pos_n5": knn_p5,
