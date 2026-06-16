@@ -151,62 +151,196 @@ features, the SVM produces confident probabilities → both values hit
 stories through the saturated cluster. The linear model with a single
 feature does not saturate — the score distribution has room to spread.
 
-**Summary of all three runs:**
-- **Run A** (48 train, single-split): clear feature importance;
-  `source_trust` critical. This is the right tool for *feature
-  importance* questions.
-- **Run B** (543 train, CV drop-one): flat MRR/NDCG across all feature
-  drops due to score saturation, not feature redundancy.
-- **Run C** (543 train, CV single-feature): proves the saturation
-  hypothesis. Single features work well; the 26-feature combination is
-  broken. This is the right tool for *model quality* assessment.
+**⚠️ Superseded:** Runs A–D were executed on the buggy eval pipeline
+(thread-unsafe caches, fold leakage, random CV, metric saturation).
+Results are retained for historical reference but should not be used
+for decisions. The 4×4 ablation below is authoritative.
 
-**Actionable insight:** The SVM saturation is fixed by switching to MLP
-(64→32 hidden layers). MLP's non-linear representation spreads probability
-scores naturally — no tie-breaking or feature reduction needed.
+### Run E — 4×4 Feature×Model Ablation (639 train, 481 candidates)
 
-### Run D — Time-split classifier comparison (543 train, 590 candidates)
+Last run: `bash scripts/run_4x4_ablation.sh`
+Snapshot: `tests/snapshots/baseline_full.json` (639 train / 50 test / 481 candidates).
+Eval: time-split (80/20), cleaned pipeline (thread-safe caches, no fold leakage,
+deterministic tie-breaking, `max_test=50`). All cells use `--no-drop-one
+--no-single-features --cv 0`.
 
-Last run: `uv run scripts/feature_ablation.py tests/snapshots/baseline_full.json --feedback .cache/user_feedback/dashboard_feedback.json --no-drop-one --no-single-features --baseline TYPE`
+**4 feature configs:** 22f (current TOML — 22 metadata features), 22f+raw (406 dims),
+16f (no engagement/signal features), 16f+raw (400 dims).
 
-Time-split (80/20) on the full feedback snapshot. Train on older 80% of
-upvotes, test on newest 20%. Candidates from legacy snapshot + injected
-test stories. This is the most production-representative eval: the model
-must rank future user interactions among a fresh candidate pool.
+**4 model configs:** mlp-relu (default), mlp-sigmoid, mlp-alpha (L2=0.01), svm-rbf.
 
-| Classifier | NDCG@30 | mean_rank | P@5 |
-|-----------|---------|-----------|-----|
-| **MLP** | **0.814** | 197.4 | 1.000 |
-| SVM (RBF) | 0.777 | 232.6 | 1.000 |
-| Random Forest | 0.723 | **189.3** | 1.000 |
-| Gradient Boost | 0.629 | 205.5 | 1.000 |
-| Logistic | 0.604 | 200.5 | 0.800 |
+All cells achieved MRR=1.000, hit@30=1.000, nonhn_at_0.5=0.00 (no plateau).
 
-**Run D takeaways:** All classifiers achieve hit@30=1.000 (trivially, with
-134 test stories among 590 candidates). NDCG@30 is the discriminating metric.
-MLP leads by 4.8% over SVM. All tree/linear alternatives underperform.
+| Cell | NDCG@30 | mean_rank | P@5 |
+|------|---------|-----------|-----|
+| **16f+raw-svm-rbf** | **0.737** | 116.6 | 1.000 |
+| 22f-svm-rbf | 0.701 | 157.3 | 1.000 |
+| 22f+raw-svm-rbf | 0.681 | 118.5 | 1.000 |
+| 16f-mlp-alpha | 0.650 | 162.1 | 1.000 |
+| 16f-mlp-sigmoid | 0.649 | 136.2 | 1.000 |
+| 16f-mlp-relu | 0.646 | 166.8 | 1.000 |
+| 16f+raw-mlp-alpha | 0.635 | 114.0 | 0.600 |
+| 16f+raw-mlp-relu | 0.635 | 114.8 | 0.600 |
+| 16f-svm-rbf | 0.626 | 150.9 | 1.000 |
+| 22f+raw-mlp-alpha | 0.597 | 124.0 | 0.800 |
+| 22f-mlp-alpha | 0.589 | 167.4 | 1.000 |
+| 16f+raw-mlp-sigmoid | 0.582 | 106.3 | 0.800 |
+| 22f+raw-mlp-relu | 0.575 | 124.4 | 0.800 |
+| 22f-mlp-relu | 0.569 | 166.5 | 1.000 |
+| 22f+raw-mlp-sigmoid | 0.526 | 115.6 | 0.800 |
+| 22f-mlp-sigmoid | 0.463 | 176.2 | 1.000 |
 
-The current `hn_rerank.toml` uses `model_type = "mlp"` (switched 2026-06-15).
+**Key takeaways:**
+- **SVM RBF dominates** — all 4 SVM configs top the table. SVM with 400+ dims
+  spreads probability scores effectively on this dataset.
+- **16f (no engagement features) > 22f** — removing log_points, log_comments,
+  comment_ratio, comments_count, story_age, domain_recency helps.
+- **Raw embeddings + sparse metadata is optimal** — 16f+raw-svm-rbf wins.
+- **MLP-sigmoid is consistently worst** — sigmoid degrades NDCG@30 by 18-22%.
+- **MLP-alpha (L2=0.01) helps** — outperforms default MLP (alpha=0.0001) in all
+  feature configs, but still behind SVM.
+- **No plateau on any config** — the MLP ReLU dead zone was only a production
+  dashboard issue (imbalanced training set at deployment).
+
+**Actionable insight:** Switch `hn_rerank.toml` to `model_type="svm"` with
+`raw_embedding_features=true` and the 16-feature metadata set.
+
+### Run F — Single-feature CV on winner (16f+raw-svm-rbf)
+
+Last run: `uv run python scripts/feature_ablation.py tests/snapshots/baseline_full.json --feedback .cache/user_feedback/dashboard_feedback.json --cv 5 --single-features --no-drop-one --model-type svm --raw-embedding-features --features ...`
+
+5-fold CV with walk-forward chronological folds. Each cell = one metadata feature
++ 384 raw embedding dims (400 total). All cells hit hit@30=1.000.
+
+| Feature Only | NDCG@30 | mean_rank | P@5 |
+|-------------|---------|-----------|-----|
+| source_trust | **0.568** | **89.1** | 0.760 |
+| closest_pos | 0.539 | 104.3 | 0.560 |
+| closest_margin | 0.495 | 117.9 | 0.560 |
+| centroid | 0.490 | 109.7 | 0.520 |
+| pos_neg_ratio | 0.490 | 116.3 | 0.560 |
+| pos_knn | 0.488 | 114.9 | 0.520 |
+| is_pdf | 0.480 | 117.1 | 0.480 |
+| cluster_size | 0.476 | 116.9 | 0.480 |
+| embedding_magnitude | 0.475 | 117.4 | 0.480 |
+| neg_knn | 0.474 | 116.8 | 0.480 |
+| local_density | 0.474 | 117.0 | 0.480 |
+| is_github | 0.473 | 116.3 | 0.480 |
+| title_len | 0.458 | 117.6 | 0.480 |
+| is_hn | 0.429 | 129.9 | 0.480 |
+| closest_neg | 0.386 | 149.5 | 0.360 |
+| text_len | 0.366 | 164.4 | 0.480 |
+| **Baseline** (all 16 + raw) | 0.442 | 145.0 | 0.600 |
+
+**Key takeaways:**
+- **source_trust dominates** — alone it achieves 0.568 NDCG@30, beating the
+  combined model (0.442) by 28.5%.
+- **Most single features outperform the combined model** — the 16 metadata
+  features are redundant/interfering when paired with 384-d raw embeddings.
+- **Weakest features:** text_len (0.366) and closest_neg (0.386).
+- **All features pass the plateau test** — nonhn_at_0.5 ≤ 0.07 on every config.
+
+**Actionable insight:** Consider further reducing metadata features to
+[source_trust, closest_pos, closest_margin, centroid, pos_neg_ratio] — the
+top-5 all beat the combined model.
+
+The current `hn_rerank.toml` uses `model_type = "svm"` with
+`raw_embedding_features = true`, `svm_c = 0.3`, and 16 metadata features
+(switched 2026-06-16, C optimized from 1.0→0.3 in Run G).
+
+### Run G — SVM C × gamma tuning on 16f+raw-svm-rbf
+
+Last run: `uv run python scripts/run_svm_tuning.py`
+
+Grid search over C ∈ {0.3, 1.0, 3.0, 10.0} × gamma ∈ {scale, 0.001, 0.01, 0.1}
+on the 16-feature metadata set + 384-d raw embeddings (400 total dims).
+Time-split eval (Run D protocol). All cells hit MRR=1.000, hit@30=1.000.
+
+| Cell | NDCG@30 | mean_rank | Note |
+|------|---------|-----------|------|
+| **C=0.3, gamma=scale** | **0.876** | 91.1 | **winner** |
+| C=0.3, gamma=scale (5-fold CV) | 0.526 | 117.9 | CV confirmation |
+| C=1.0, gamma=scale (previous winner) | 0.737 | 116.6 | baseline |
+| C=1.0, gamma=scale (5-fold CV) | 0.442 | 145.0 | CV baseline |
+| C=0.3, gamma=0.01 | 0.761 | 100.3 | |
+| C=1.0, gamma=0.01 | 0.761 | 100.3 | |
+| C=3.0, gamma=scale | 0.712 | 123.6 | |
+| C=0.3, gamma=0.001 | 0.710 | 116.0 | |
+| C=10.0, gamma=scale | 0.690 | 127.0 | |
+| C=*, gamma=0.1 | 0.666 | 239.8 | plateau (nonhn_0.5=1.00) |
+
+**Kernel variants (C=0.3, gamma=scale):** all 4 kernels (rbf, linear, poly, sigmoid)
+achieved NDCG@30=0.876. Kernel choice is irrelevant at C=0.3 — regularization
+dominates over kernel geometry in 400-d space.
+
+**5-feature subset** [source_trust, closest_pos, closest_margin, centroid,
+pos_neg_ratio] + raw (C=0.3): **NDCG@30=0.822**, mean_rank=59.1. ~6% worse than
+16-feature on NDCG@30, but 35% better mean_rank. Not adopted — NDCG@30 is primary.
+
+**Run G takeaways:**
+- **C=0.3 is optimal** — lower C (more regularization) outperforms C=1.0 by
+  19% (time-split: 0.876 vs 0.737; CV: 0.526 vs 0.442).
+- **gamma=scale is optimal** — higher gamma (0.01) converges to 0.761 regardless
+  of C; gamma=0.1 causes full plateau.
+- **C=0.3, gamma=scale is now in hn_rerank.toml** — replaces old C=1.0.
+- **5-feature subset not adopted** — 16 features are worth the extra dims for
+  top-30 ranking even though mean_rank is worse.
+
+### Run H — MLP + RF tuning (3-fold CV, content-based)
+
+Last run: `uv run python scripts/run_mlp_rf_tuning.py`
+
+27 configs across MLP alpha, hidden layers, solver, lr_init and RF params.
+3-fold content-based CV — no temporal ordering, all stories used for
+train/test. All cells hit hit@30=1.000, no plateau.
+
+| Cell | NDCG@30 | MRR | mean_rank | P@5 |
+|------|---------|-----|-----------|-----|
+| **MLP lbfgs (64,) α=0.1** | **0.516** | **1.000** | **124.8** | 0.467 |
+| MLP on 16f+raw (same config) | 0.516 | 1.000 | 124.8 | 0.467 |
+| MLP adam (64,) α=0.1 | 0.378 | 0.472 | 134.3 | 0.267 |
+| RF max_depth=5, min_samples_leaf=5 | 0.428 | 0.722 | 166.4 | 0.400 |
+| RF baseline (unlimited depth) | 0.405 | 0.583 | 171.9 | 0.533 |
+| **SVM C=0.3 (16f±raw, CV=3)** | **0.556** | 0.556 | 108.3 | 0.600 |
+
+**Key findings:**
+- **lbfgs dominates adam** for MLP — switching adam→lbfgs gives +36%
+  (0.378→0.516)
+- **Single layer (64,) > two-layer (64,32)** — simpler architecture wins on
+  16 features
+- **Higher L2 (α=0.1) is best** — controls overfitting on 639 samples
+- **Raw embeddings don't help MLP or RF on CV=3** — unlike time-split where
+  raw boosts SVM
+- **MLP lbfgs beats RF** (0.516 vs 0.428) but still trails SVM (0.556)
+- **SVM C=0.3 stays optimal** — gap narrows on CV=3 (+7.7%) vs time-split (+54%)
+
+**Config changes made:**
+- Added `mlp_hidden_layers: str = "64,32"` to `SingleModelConfig`
+  (comma-separated layer sizes)
+- Added `mlp_solver: str = "adam"` — supports "adam", "lbfgs", "sgd"
+- Added `mlp_learning_rate_init: float = 0.001`
+- Fixed `_convert_override_value` str bug in `scripts/feature_ablation.py`
+  — numeric strings (e.g. "32") no longer converted to int when field type is str
+- Wired all new MLP fields into `api/ordinal_model.py:_make_pipeline()`
+- Results: `results/mlp_rf_tuning_results.json`
 
 ### Snapshot protocol
 
 - `tests/snapshots/baseline.json` (48 train / 12 test / 780 candidates) — the
   legacy small eval. Time-split 80/20 of an older feedback snapshot.
-- `tests/snapshots/baseline_full.json` (543 train / 135 test / 591 candidates) —
+- `tests/snapshots/baseline_full.json` (~639 train / ~160 test / ~481 candidates) —
   regenerated from all cached feedback. `test_ids` populated and test stories
   injected into candidates (see `build_dataset_from_feedback` in
-  `evaluate_quality.py`). CV re-splits internally from all_stories.
+  `evaluate_quality.py`).
 - Regen the full snapshot: `uv run scripts/regen_full_snapshot.py` (no network).
 
 ### Operational notes
 
 - **Harness must always be run with `--feedback .cache/user_feedback/dashboard_feedback.json`** for representative `story_age` and `domain_recency` measurements.
-- Use `--cv 5` for the full-feedback eval (Run B protocol).
-- Use `--cv 5 --single-features --no-drop-one` for single-feature quality assessment (Run C protocol).
-- Drop `--cv` for the legacy small eval (Run A protocol).
+- `evaluate_cv` uses **content-based k-fold CV**, not temporal folds.
+- `--cv N` uses content-based cross-validation.
 - Without `--cv`, uses the stored time-split (Run D protocol — most realistic).
 - `feature_ablation.py:run_one()` now reads `model_type` from `hn_rerank.toml` (`AppConfig.load()`), not the hardcoded default. Changes in TOML are reflected in ablation runs.
-- Both runs include the `cluster_size` and `domain_recency` features.
 
 ## Repo notes
 
@@ -214,10 +348,12 @@ The current `hn_rerank.toml` uses `model_type = "mlp"` (switched 2026-06-15).
 - `README.md` is the canonical user-facing setup reference.
 - `public/index.html` and `public/clusters.html` are generated artifacts.
 - Tests marked `@pytest.mark.slow` (6 tests: integration, pagination, SVM, clustering stability) are skipped with `-m "not slow"`.
-- `api/rerank.py` module-global caches for metadata features: `_local_density_cache`, `_story_age_at_vote_map`, `_cluster_size_cache`, `_domain_recency_map`. All reset at the start of `rank_stories` (or set externally by `main()` in `generate_html.py`). The story_age and domain_recency maps are populated from FeedbackRecord in `generate_html.py:1955-1975` and cleared in a `finally` block.
+- `api/rerank.py` thread-safe per-call caches via `_RankCache` (threading.local): `_story_age_at_vote_map` and `_domain_recency_map` are module globals set externally; `local_density` and `cluster_size` are per-`rank_stories` call. The story_age and domain_recency maps are populated from FeedbackRecord in `generate_html.py:1955-1975` and cleared in a `finally` block.
 - `scripts/feature_ablation.py` accepts `--feedback path` to populate both `story_age` and `domain_recency` caches during ablation. Always use `--feedback .cache/user_feedback/dashboard_feedback.json` for representative measurements.
-- `tests/snapshots/baseline_full.json` (543 train / 135 test / 510 candidates) is generated from all cached feedback via `uv run scripts/regen_full_snapshot.py`. No network required. `tests/snapshots/baseline.json` is kept for fast unit-test evals.
-- `scripts/feature_ablation.py` accepts `--cv N` to use k-fold cross-validation via `evaluate_cv` (more realistic, harder metric). Without `--cv`, it uses a single 80/20 time-split.
+- `tests/snapshots/baseline_full.json` (~639 train / ~160 test / ~481 candidates) is generated from all cached feedback via `uv run scripts/regen_full_snapshot.py`. No network required. `tests/snapshots/baseline.json` is kept for fast unit-test evals.
+- `scripts/feature_ablation.py` accepts `--cv N` to use content-based k-fold cross-validation via `evaluate_cv`. Without `--cv`, it uses a single 80/20 time-split.
+- `scripts/feature_ablation.py:_convert_override_value()` now handles `str` fields correctly — prevents numeric strings like "32" from being converted to int when they should remain strings (e.g. `mlp_hidden_layers`).
+- `api/config.py:SingleModelConfig` exposes `mlp_hidden_layers` (comma-separated str), `mlp_solver`, `mlp_learning_rate_init` for tuning.
 
 ## Long-running services
 

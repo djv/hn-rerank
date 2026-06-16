@@ -1,3 +1,9 @@
+> **SUPERSEDED** — this document describes the pre-4×4-ablation evaluation
+> pipeline (26 features, score saturation artifact, buggy fold randomization).
+> The numbers, analysis, and recommendations are replaced by Runs E–G in
+> `AGENTS.md` and the current pipeline described in `docs/evaluation.md`.
+> Kept for historical reference only; do not use for decisions.
+
 # Full-Feedback Eval Protocol
 
 ## Purpose

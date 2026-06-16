@@ -1,3 +1,9 @@
+> **SUPERSEDED** — this document describes an old embedding model comparison
+> (MiniLM vs Jina, context lengths, RF/GB classifiers) that predates the
+> current SVM + raw embeddings pipeline. The recommendations (e.g.
+> `svm_c=1.0`) are replaced by Run G in `AGENTS.md`. Kept for historical
+> reference only; do not use for decisions.
+
 # Embedding Model / Context Length / Candidate Count Sweep
 
 ## Setup
