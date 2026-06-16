@@ -20,19 +20,19 @@
       "embedding_magnitude"
     ],
     "mrr": 1.0,
-    "precision_at_5": 0.4666666666666666,
-    "recall_at_5": 0.04693877551020408,
-    "ndcg_at_30": 0.4573204701372398,
+    "precision_at_5": 0.8666666666666667,
+    "recall_at_5": 0.018859839820538512,
+    "ndcg_at_30": 0.633033727673484,
     "hit_at_30": 1.0,
-    "mean_rank": 135.12666666666667,
-    "median_rank": 100.83333333333333,
+    "mean_rank": 283.9834023327473,
+    "median_rank": 265.0,
     "n_train": 639,
     "n_test": 50,
     "n_candidates": 481,
     "classifier_used": true,
-    "elapsed_seconds": 18.144267559051514,
+    "elapsed_seconds": 13.21245002746582,
     "n_folds": 3,
-    "nonhn_score_stddev": 0.3823113634197211,
+    "nonhn_score_stddev": 0.10684805187214076,
     "nonhn_at_0_5_fraction": 0.0
   }
 ]

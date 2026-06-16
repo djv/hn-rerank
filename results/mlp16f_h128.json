@@ -19,20 +19,20 @@
       "cluster_size",
       "embedding_magnitude"
     ],
-    "mrr": 0.611111111111111,
-    "precision_at_5": 0.6000000000000001,
-    "recall_at_5": 0.060408163265306125,
-    "ndcg_at_30": 0.46686178450505333,
+    "mrr": 1.0,
+    "precision_at_5": 0.8666666666666667,
+    "recall_at_5": 0.018859839820538512,
+    "ndcg_at_30": 0.7818211941779349,
     "hit_at_30": 1.0,
-    "mean_rank": 121.56666666666668,
-    "median_rank": 78.0,
+    "mean_rank": 276.8213198737216,
+    "median_rank": 255.0,
     "n_train": 639,
     "n_test": 50,
     "n_candidates": 481,
     "classifier_used": true,
-    "elapsed_seconds": 12.180061340332031,
+    "elapsed_seconds": 13.96995997428894,
     "n_folds": 3,
-    "nonhn_score_stddev": 0.34997110605465015,
+    "nonhn_score_stddev": 0.12496339509756166,
     "nonhn_at_0_5_fraction": 0.0
   }
 ]
