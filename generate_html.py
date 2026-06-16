@@ -2214,6 +2214,25 @@ async def main() -> None:
         debug_path.write_text(json.dumps(debug_rows, indent=2))
         print(f"[+] Score breakdown saved to: {os.path.abspath(debug_path)}")
 
+        # Save all scored candidates (not just top 40) for diagnostics
+        full_debug_path = config.output_path.with_name("scores_full.json")
+        full_debug_rows: list[dict[str, object]] = []
+        for result in ranked:
+            story = cands[result.index]
+            full_debug_rows.append(
+                {
+                    "id": story.id,
+                    "source": story.source,
+                    "title": story.title,
+                    "model_score": result.model_score,
+                    "knn_score": result.knn_score,
+                    "max_cluster_score": result.max_cluster_score,
+                    "max_sim_score": result.max_sim_score,
+                }
+            )
+        full_debug_path.write_text(json.dumps(full_debug_rows, indent=2))
+        print(f"[+] Full score breakdown saved to: {os.path.abspath(full_debug_path)}")
+
     print("[*] Generating HTML...")
 
     # Generate full cluster cards for clusters.html
