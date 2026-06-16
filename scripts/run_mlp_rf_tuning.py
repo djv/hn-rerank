@@ -63,6 +63,8 @@ def run_mlp(label, features, overrides=None, raw=False):
     base = MLP_BASE + ["--model-type", "mlp"]
     if raw:
         base += ["--raw-embedding-features"]
+    else:
+        base += ["--no-raw-embedding-features"]
     return run_eval(label, features, base, overrides)
 
 
@@ -70,6 +72,8 @@ def run_rf(label, features, overrides=None, raw=False):
     base = MLP_BASE + ["--model-type", "random_forest"]
     if raw:
         base += ["--raw-embedding-features"]
+    else:
+        base += ["--no-raw-embedding-features"]
     return run_eval(label, features, base, overrides)
 
 

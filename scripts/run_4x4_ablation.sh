@@ -4,7 +4,7 @@ set -euo pipefail
 SNAPSHOT="tests/snapshots/baseline_full.json"
 FEEDBACK=".cache/user_feedback/dashboard_feedback.json"
 OUTDIR="results"
-RUN_D_ARGS="--no-drop-one --no-single-features --cv 0"
+RUN_D_ARGS="--no-drop-one --no-single-features --cv 3"
 
 mkdir -p "$OUTDIR"
 
@@ -62,6 +62,8 @@ run_eval() {
 
     if [ "$raw" = "true" ]; then
         CMD="$CMD --raw-embedding-features"
+    else
+        CMD="$CMD --no-raw-embedding-features"
     fi
 
     if [ -n "$overrides" ]; then

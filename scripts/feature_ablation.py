@@ -91,13 +91,20 @@ def _convert_override_value(key: str, value: str, config_obj: object) -> Any:
     elif field_type is bool:
         return value.lower() in ("true", "1", "yes")
     elif field_type is str:
+        # Special case: svm_gamma is typed str | float but defaults to str
+        if key == "svm_gamma":
+            try:
+                return float(value)
+            except ValueError:
+                pass
         return value
-    # Fallback: try numeric conversion for union types (e.g. str | float)
+    
+    # Fallback: try numeric conversion for union types
     try:
         if "." in value:
             return float(value)
         return int(value)
-    except (ValueError, TypeError):
+    except ValueError:
         return value
 
 
