@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal, NotRequired, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict, cast
 
 from api.external_sources import source_badge_label as _source_badge_label
 
@@ -41,6 +41,7 @@ class StoryDict(TypedDict):
     text_content: str
     source: StorySource
     comment_count: NotRequired[int | None]
+    feedback_updated_at: NotRequired[float]
 
 
 class StoryForTldr(TypedDict):
@@ -90,6 +91,7 @@ class Story:
     text_content: str = ""
     source: StorySource = "hn"
     comment_count: int | None = None
+    feedback_updated_at: float = 0.0
 
     @classmethod
     def from_dict(cls, d: StoryDict) -> Story:
@@ -101,10 +103,11 @@ class Story:
             score=int(d.get("score", 0)),
             time=int(d.get("time", 0)),
             discussion_url=d.get("discussion_url"),
-            comments=list(d.get("comments", [])),
+            comments=d.get("comments", []),
             text_content=str(d.get("text_content", "")),
-            source=d.get("source", "hn"),
+            source=cast("StorySource", d.get("source", "hn")),
             comment_count=d.get("comment_count"),
+            feedback_updated_at=d.get("feedback_updated_at", 0.0),
         )
 
     def to_dict(self) -> StoryDict:
@@ -120,6 +123,7 @@ class Story:
             "text_content": self.text_content,
             "source": self.source,
             "comment_count": self.comment_count,
+            "feedback_updated_at": self.feedback_updated_at,
         }
 
     @property

@@ -129,6 +129,7 @@ class FeedbackRecord:
             text_content=text_content,
             source=self.source,
             comment_count=self.comment_count,
+            feedback_updated_at=self.updated_at,
         )
 
 
