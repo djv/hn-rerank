@@ -17,6 +17,7 @@ knn_neighbors = 5
 
 [hn_rerank.classifier]
 k_feat = 12
+raw_embedding_features = false
 features = [
     "centroid", "pos_knn", "neg_knn",
     "log_points", "log_comments", "comment_ratio",
