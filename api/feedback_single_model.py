@@ -25,6 +25,7 @@ from api.rerank import (
     compute_classifier_similarity_features,
     get_embeddings,
     stack_similarity_features,
+    _populate_rank_cache_metadata,
     SIMILARITY_FEATURES,
     METADATA_FEATURES,
 )
@@ -98,6 +99,8 @@ def build_single_model_feature_batch(
     config: AppConfig,
     *,
     now: float | None = None,
+    exclude_self_pos: bool = False,
+    exclude_self_neg: bool = False,
 ) -> SingleModelFeatureBatch:
     if len(stories) != len(story_embeddings):
         raise ValueError("story count does not match embedding rows")
@@ -123,6 +126,8 @@ def build_single_model_feature_batch(
         negative_embeddings,
         centroids,
         config.classifier,
+        exclude_self_pos=exclude_self_pos,
+        exclude_self_neg=exclude_self_neg,
     )
     derived_rows = stack_similarity_features(derived, config.classifier)
     metadata_rows = _classifier_metadata_features(
@@ -163,6 +168,11 @@ def build_single_model_training_matrix(
     now: float | None = None,
 ) -> tuple[SingleModelFeatureBatch, NDArray[np.int64]]:
     stories = [item.story for item in labels]
+    positive_stories = [item.story for item in labels if item.label == UPVOTE_LABEL]
+    negative_stories = [item.story for item in labels if item.label == DOWNVOTE_LABEL]
+    eval_now = now if now is not None else time.time()
+    _populate_rank_cache_metadata(positive_stories, negative_stories, eval_now)
+
     story_embeddings = get_embeddings([story.text_content for story in stories])
     batch = build_single_model_feature_batch(
         stories,
@@ -171,6 +181,8 @@ def build_single_model_training_matrix(
         negative_embeddings,
         config,
         now=now,
+        exclude_self_pos=True,
+        exclude_self_neg=True,
     )
     y = np.asarray([item.label for item in labels], dtype=np.int64)
     return batch, y
@@ -207,6 +219,11 @@ def train_single_model_from_embeddings(
     now: float | None = None,
 ) -> tuple[OrdinalThresholdModel, SingleModelFeatureBatch]:
     stories = [item.story for item in labels]
+    positive_stories = [item.story for item in labels if item.label == UPVOTE_LABEL]
+    negative_stories = [item.story for item in labels if item.label == DOWNVOTE_LABEL]
+    eval_now = now if now is not None else time.time()
+    _populate_rank_cache_metadata(positive_stories, negative_stories, eval_now)
+
     batch = build_single_model_feature_batch(
         stories,
         story_embeddings,
@@ -214,6 +231,8 @@ def train_single_model_from_embeddings(
         negative_embeddings,
         config,
         now=now,
+        exclude_self_pos=True,
+        exclude_self_neg=True,
     )
     y = np.asarray([item.label for item in labels], dtype=np.int64)
     model = train_model_from_matrix(batch.rows, y, training_config)
