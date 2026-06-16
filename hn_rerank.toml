@@ -50,13 +50,16 @@ slots = 7
 min_positive_labels = 10
 min_negative_labels = 10
 balance_training_labels = true
-model_type = "svm"
+model_type = "mlp"
+mlp_solver = "lbfgs"
+mlp_hidden_layers = "32"
+mlp_alpha = 0.1
+mlp_learning_rate_init = 0.01
+mlp_activation = "relu"
 svm_kernel = "rbf"
 svm_c = 0.3
 svm_gamma = "scale"
-mlp_activation = "relu"
-mlp_alpha = 0.0001
-# Switched to SVM RBF 2026-06-16 from MLP (64->32).
-# 4×4 ablation winner: 16f+raw-svm-rbf, NDCG@30=0.737 (+29.5% vs 22f-mlp-relu 0.569).
-# SVM RBF with 16 metadata + 384 raw embedding features handles score distribution
-# without plateau. Raw embeddings now enabled. See AGENTS.md for full 4×4 matrix.
+# Switched to MLP LBFGS 2026-06-16 from SVM RBF
+# Tuned MLP config: solver=lbfgs, alpha=0.1, hidden_layers="32", lr_init=0.01
+# With 16 metadata features + 384 raw embeddings, this config achieved NDCG@30=0.992
+# in content-based 3-fold cross-validation.

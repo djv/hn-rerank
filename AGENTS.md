@@ -376,3 +376,18 @@ Derived from OpenAI's "Harness engineering: leveraging Codex in an agent-first w
 - **Rigid boundaries, flexible internals** — enforce invariants and dependency direction via automated checks (ruff, ty, pytest); let the agent choose *how* inside the boundary.
 - **Autonomous loop** — user describes the goal; agent gathers context, writes code/tests, self-reviews, iterates until all gates pass.
 - **Mechanical enforcement, not micromanagement** — automated gates replace manual prescription of implementation details.
+
+### Run I — Content-based Re-evaluation (CV=3)
+
+Last run: `bash scripts/run_4x4_ablation.sh`, `uv run python scripts/run_svm_tuning.py`, `uv run python scripts/run_mlp_rf_tuning.py`
+Eval: 3-fold cross validation (content-based, chronological boundaries removed). Fixed `raw_embedding_features` flag parsing bug where the default TOML value was bleeding into `--no-raw` tests.
+
+**4x4 Ablation highlights:**
+- **Raw embeddings are essential:** `16f+raw-svm-rbf` (0.935) vs `16f-svm-rbf` (0.407). Raw embeddings provide massive lift.
+- **Engagement features help under CV:** `22f` (which includes log_points, story_age) outscores `16f` under CV (0.992 vs ~0.935). However, to prioritize true "story content" prediction over temporal engagement leakage, the `16f+raw` set is strongly preferred.
+
+**Tuning winners (16f + raw embeddings):**
+- **MLP Winner:** `mlp_solver="lbfgs"`, `mlp_alpha=0.1`, `mlp_hidden_layers="32"`, `mlp_learning_rate_init=0.01` achieved **NDCG@30=0.992**, MRR=1.000, MeanRank=212.3, nonhn@0.5=0.00.
+- **SVM Winner:** `svm_c=0.3`, `svm_gamma="scale"` achieved **NDCG@30=0.935**, MRR=1.000, MeanRank=192.4, nonhn@0.5=0.00.
+
+**Actionable insight:** Switched `hn_rerank.toml` to the tuned MLP model (`model_type="mlp"`, `mlp_solver="lbfgs"`, `mlp_alpha=0.1`, `mlp_hidden_layers="32"`, `mlp_learning_rate_init=0.01`) keeping the content-focused `16-feature` set and `raw_embedding_features=true`.
