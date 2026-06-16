@@ -1066,6 +1066,12 @@ def _build_detailed_tldr_prompt(
     return f"""
 Summarize the article and the discussion for a knowledgeable reader.
 
+RULES:
+- Use ONLY information from the article text and comments below.
+- Do not add facts, names, statistics, pricing, or external context.
+- If a comment expresses an opinion, label it as an opinion.
+- If the source is silent on a point, say so rather than filling in.
+
 {context}
 
 Write a short 3-4 paragraph summary (under 400 words). Use Markdown formatting:
