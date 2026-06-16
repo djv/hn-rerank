@@ -1,8 +1,9 @@
 import pytest
 
 from api.llm_utils import (
-    _coerce_tldr_value,
+    _build_detailed_tldr_prompt,
     _build_tldr_prompt,
+    _coerce_tldr_value,
     _finalize_cluster_name,
     _is_provider_capacity_error,
     _load_tldr_cache,
@@ -126,3 +127,12 @@ def test_build_tldr_prompt_requires_flat_json_strings():
     assert "Core claim or finding" in prompt
     assert "Key mechanism or method" in prompt
     assert "Tension, trade-off, or takeaway" in prompt
+
+
+def test_build_detailed_tldr_prompt_has_grounding_rules():
+    prompt = _build_detailed_tldr_prompt("Test", "Body", ["Comment"])
+    assert "Use ONLY information from the article text" in prompt
+    assert "Do not add facts, names, statistics, pricing" in prompt
+    assert "If a comment expresses an opinion, label it as an opinion" in prompt
+    assert "If the source is silent on a point, say so rather than filling in" in prompt
+    assert "Summarize the article and the discussion" in prompt

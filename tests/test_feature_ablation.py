@@ -152,7 +152,6 @@ def _ablate(
 
     classifier_cfg = ClassifierConfig(features=tuple(features))
     config = AppConfig(classifier=classifier_cfg)
-    rerank_mod.clear_story_age_at_vote_map()
 
     start = time.time()
     metrics = evaluator.evaluate(config=config)
