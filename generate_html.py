@@ -1885,12 +1885,11 @@ async def main() -> None:
                 last_c_completed = completed
 
         # Exclude everything we've already interacted with
-        exclude_ids: set[int] = data["favorites"] | data["upvoted"] | data["hidden"]
+        exclude_ids: set[int] = data["favorites"] | data["hidden"]
         exclude_ids |= feedback_hn_ids
         exclude_urls: set[str] = set()
         exclude_urls |= data.get("hidden_urls", set())
         exclude_urls |= data.get("favorites_urls", set())
-        exclude_urls |= data.get("upvoted_urls", set())
         exclude_urls |= feedback_urls
 
         cands: list[Story] = await get_best_stories(
