@@ -809,8 +809,6 @@ HTML_TEMPLATE: str = """
                         body: JSON.stringify({
                             story_id: storyId,
                             story_title: storyTitle,
-                            text_content: textContent,
-                            comments: [],
                         }),
                     })
                         .then((r) => r.json())
@@ -1225,7 +1223,7 @@ def select_explore_slots(
 
 
 STORY_CARD_TEMPLATE: str = """
-<div class="story-card group relative{% if is_external %} rss-story{% endif %}" data-rank-index="{{ rank_index }}" data-story-time="{{ story_time }}" data-story-id="{{ story_id }}" data-story-source="{{ story_source }}" data-story-title="{{ title }}" data-story-url="{{ story_url or '' }}" data-story-discussion-url="{{ hn_url or '' }}" data-story-text-content="{{ text_content }}" data-story-score="{{ story_score }}" data-story-comment-count="{{ story_comment_count if story_comment_count is not none else '' }}" data-feedback-key="{{ feedback_key }}" data-feedback-action="{{ feedback_action or '' }}" data-acquisition-kind="{{ acquisition_kind }}" data-model-score="{{ model_score }}" data-knn-score="{{ knn_score }}" data-max-sim-score="{{ max_sim_score }}" data-max-cluster-score="{{ max_cluster_score }}">
+<div class="story-card group relative{% if is_external %} rss-story{% endif %}" data-rank-index="{{ rank_index }}" data-story-time="{{ story_time }}" data-story-id="{{ story_id }}" data-story-source="{{ story_source }}" data-story-title="{{ title }}" data-story-url="{{ story_url or '' }}" data-story-discussion-url="{{ hn_url or '' }}" data-story-score="{{ story_score }}" data-story-comment-count="{{ story_comment_count if story_comment_count is not none else '' }}" data-feedback-key="{{ feedback_key }}" data-feedback-action="{{ feedback_action or '' }}" data-acquisition-kind="{{ acquisition_kind }}" data-model-score="{{ model_score }}" data-knn-score="{{ knn_score }}" data-max-sim-score="{{ max_sim_score }}" data-max-cluster-score="{{ max_cluster_score }}">
     {% if card_url %}
     <a href="{{ card_url }}" target="_blank" class="absolute inset-0 z-10 rounded-lg" aria-label="{{ card_aria_label }}"></a>
     {% endif %}
@@ -1300,7 +1298,6 @@ def generate_story_html(story: StoryDisplay) -> str:
         story_id=story.id,
         story_source=story.source,
         story_url=story.url,
-        text_content=story.text_content[:2000],
         story_score=story.points,
         story_comment_count=story.comment_count,
         feedback_key=feedback_key(story.source, story.id, story.url),
