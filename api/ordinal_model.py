@@ -277,9 +277,14 @@ def _make_pipeline(config: SingleModelConfig) -> Pipeline:
             random_state=0,
         )
     elif mtype == "mlp":
+        hl = tuple(int(x.strip()) for x in config.mlp_hidden_layers.split(","))
         clf = MLPClassifier(
-            hidden_layer_sizes=(64, 32),
+            hidden_layer_sizes=hl,
             max_iter=1000,
+            activation=config.mlp_activation,
+            alpha=config.mlp_alpha,
+            solver=config.mlp_solver,
+            learning_rate_init=config.mlp_learning_rate_init,
             random_state=0,
         )
     else:

@@ -124,6 +124,11 @@ class SingleModelConfig:
     rf_min_samples_leaf: int = 2
     rf_min_samples_split: int = 2
     rf_max_features: str = "sqrt"  # "sqrt", "log2", or a float fraction
+    mlp_activation: str = "relu"  # MLP activation: "relu" or "logistic" (sigmoid)
+    mlp_alpha: float = 0.0001  # MLP L2 regularization strength
+    mlp_hidden_layers: str = "64,32"  # comma-separated layer sizes, e.g. "128,64,32"
+    mlp_solver: str = "adam"  # MLP solver: "adam", "lbfgs", or "sgd"
+    mlp_learning_rate_init: float = 0.001  # Initial learning rate for adam/sgd
 
 
 @dataclass(frozen=True)
