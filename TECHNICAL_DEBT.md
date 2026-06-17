@@ -2,22 +2,6 @@
 
 ## High Priority
 
-### 1. Split Configuration Model
-
-The project currently has two config paths:
-- `generate_html.py` parses top-level runtime values from `[hn_rerank]`
-- `api/constants.py` separately loads nested tuned parameters from `[hn_rerank.<section>]`
-
-Impact:
-- documentation drift is easy
-- runtime precedence is hard to explain
-- tuning and production execution do not share a single typed config object
-
-Target:
-- load config once
-- validate it once
-- pass an explicit config object through the pipeline
-
 ### 2. Global Patching in Evaluation and Promotion
 
 The tuning/promotion path still patches `api.rerank` module globals during evaluation.
@@ -112,7 +96,6 @@ Target:
 ### 9. Typed Pipeline and Policy Objects
 
 The clean target is a pipeline with explicit domain policies and adapters:
-- a single typed `AppConfig` loaded once
 - explicit `RunRequest`, `RunState`, and `RunArtifacts` objects
 - selection, clustering, and cache freshness rules represented as testable policy objects
 - side effects isolated behind source, model, cache, renderer, and verification adapters
