@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal, NotRequired, TypedDict, cast
+from typing import Literal, NotRequired, TypedDict, cast
 
 from api.external_sources import source_badge_label as _source_badge_label
 

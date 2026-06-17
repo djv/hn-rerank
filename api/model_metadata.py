@@ -49,20 +49,14 @@ class EmbeddingModelSpec:
         return json.dumps(asdict(self), indent=2, sort_keys=True)
 
 
-CURRENT_PRODUCTION_SPEC = EmbeddingModelSpec(
-    model_id="sentence-transformers/all-MiniLM-L6-v2",
-    pooling="mean",
-    normalize=True,
-    text_mode="plain",
-    max_tokens=256,
-)
-
 BGE_BASE_OFFICIAL_SPEC = EmbeddingModelSpec(
     model_id="BAAI/bge-base-en-v1.5",
     pooling="cls",
     normalize=True,
     text_mode="plain",
 )
+
+CURRENT_PRODUCTION_SPEC = BGE_BASE_OFFICIAL_SPEC
 
 ALL_MINILM_L6_V2_SPEC = EmbeddingModelSpec(
     model_id="sentence-transformers/all-MiniLM-L6-v2",

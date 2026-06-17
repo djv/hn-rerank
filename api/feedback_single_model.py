@@ -137,14 +137,13 @@ def build_single_model_feature_batch(
         len(stories),
     )
 
-    columns: list[NDArray[np.float32]] = []
-    if config.classifier.raw_embedding_features:
-        columns.append(story_embeddings.astype(np.float32))
-    if derived_rows.shape[1] > 0:
-        columns.append(derived_rows.astype(np.float32))
-    if metadata_rows.shape[1] > 0:
-        columns.append(metadata_rows.astype(np.float32))
-    rows = np.hstack(columns).astype(np.float32)
+    from api.rerank import build_feature_matrix
+    rows = build_feature_matrix(
+        story_embeddings,
+        derived_rows,
+        metadata_rows,
+        config,
+    )
     feature_names = _feature_names(config, embedding_dim)
     if rows.shape[1] != len(feature_names):
         raise ValueError(

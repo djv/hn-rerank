@@ -50,10 +50,8 @@ from api.config import (  # noqa: E402
     ClusteringConfig,
     ClassifierConfig,
 )
-from api.feedback import FEEDBACK_STORE_PATH as _FEEDBACK_STORE_PATH  # noqa: E402
 from api.telemetry_features import extract_domain_with_fallback  # noqa: E402
 
-import json as _json  # noqa: E402
 
 # --- Feature registries ---
 # Adding a new feature? Write the compute function, add its name here, list it in config.
@@ -67,16 +65,7 @@ SIMILARITY_FEATURES: frozenset[str] = frozenset(
         "closest_pos",
         "closest_neg",
         "closest_margin",
-        "closest_centroid",
         "embedding_magnitude",
-        "knn_pos_n1",
-        "knn_pos_n3",
-        "knn_pos_n5",
-        "knn_pos_n10",
-        "knn_neg_n1",
-        "knn_neg_n3",
-        "knn_neg_n5",
-        "knn_neg_n10",
     }
 )
 
@@ -188,117 +177,52 @@ def stack_similarity_features(
 # --- Metadata feature compute functions ---
 
 
-def _meta_log_points(stories: list[Story], now: float) -> NDArray[np.float32]:
-    normalizer = np.log1p(1000.0)
-    points = np.array(
-        [max(float(s.score), 0.0) if s.is_hn else 0.0 for s in stories],
-        dtype=np.float32,
-    )
-    return (np.log1p(points) / normalizer).reshape(-1, 1)
+def _make_feature(
+    extract_fn: Callable[[Story, float], float],
+    norm_val: float = 1.0,
+    log: bool = True,
+) -> Callable[[list[Story], float], NDArray[np.float32]]:
+    def _feature_fn(stories: list[Story], now: float) -> NDArray[np.float32]:
+        vals = np.array([extract_fn(s, now) for s in stories], dtype=np.float32)
+        if log:
+            vals = np.log1p(vals)
+            if norm_val != 1.0:
+                vals /= np.log1p(norm_val)
+        elif norm_val != 1.0:
+            vals /= norm_val
+        return vals.reshape(-1, 1)
+    return _feature_fn
 
-
-METADATA_FEATURES["log_points"] = _meta_log_points
-
-
-def _meta_log_comments(stories: list[Story], now: float) -> NDArray[np.float32]:
-    normalizer = np.log1p(500.0)
-    comments = np.array(
-        [
-            max(float(s.comment_count if s.comment_count is not None else 0.0), 0.0)
-            if s.is_hn
-            else 0.0
-            for s in stories
-        ],
-        dtype=np.float32,
-    )
-    return (np.log1p(comments) / normalizer).reshape(-1, 1)
-
-
-METADATA_FEATURES["log_comments"] = _meta_log_comments
-
-
-def _meta_comment_ratio(stories: list[Story], now: float) -> NDArray[np.float32]:
-    comments = np.array(
-        [
-            max(float(s.comment_count if s.comment_count is not None else 0.0), 0.0)
-            if s.is_hn
-            else 0.0
-            for s in stories
-        ],
-        dtype=np.float32,
-    )
-    points = np.array(
-        [max(float(s.score), 0.0) if s.is_hn else 0.0 for s in stories],
-        dtype=np.float32,
-    )
-    return (np.log1p(comments) / (np.log1p(points) + 1.0)).reshape(-1, 1)
-
-
-METADATA_FEATURES["comment_ratio"] = _meta_comment_ratio
-
-
-def _meta_title_len(stories: list[Story], now: float) -> NDArray[np.float32]:
-    title_len = np.array([float(len(s.title or "")) for s in stories], dtype=np.float32)
-    return (np.log1p(title_len) / np.log1p(120.0)).reshape(-1, 1)
-
-
-METADATA_FEATURES["title_len"] = _meta_title_len
-
-
-def _meta_text_len(stories: list[Story], now: float) -> NDArray[np.float32]:
-    text_len = np.array(
-        [float(len(s.text_content or "")) for s in stories], dtype=np.float32
-    )
-    return (np.log1p(text_len) / np.log1p(5000.0)).reshape(-1, 1)
-
-
-METADATA_FEATURES["text_len"] = _meta_text_len
-
-
-def _meta_is_github(stories: list[Story], now: float) -> NDArray[np.float32]:
-    is_github = np.array(
-        [1.0 if s.url and "github.com" in s.url.lower() else 0.0 for s in stories],
-        dtype=np.float32,
-    )
-    return is_github.reshape(-1, 1)
-
-
-METADATA_FEATURES["is_github"] = _meta_is_github
-
-
-def _meta_is_pdf(stories: list[Story], now: float) -> NDArray[np.float32]:
-    is_pdf = np.array(
-        [1.0 if s.url and s.url.lower().endswith(".pdf") else 0.0 for s in stories],
-        dtype=np.float32,
-    )
-    return is_pdf.reshape(-1, 1)
-
-
-METADATA_FEATURES["is_pdf"] = _meta_is_pdf
-
-
-def _meta_comments_count(stories: list[Story], now: float) -> NDArray[np.float32]:
-    comments_count = np.array(
-        [
-            max(float(s.comment_count if s.comment_count is not None else 0.0), 0.0)
-            if s.is_hn
-            else 0.0
-            for s in stories
-        ],
-        dtype=np.float32,
-    )
-    return (np.log1p(comments_count) / np.log1p(15.0)).reshape(-1, 1)
-
-
-METADATA_FEATURES["comments_count"] = _meta_comments_count
-
-
-def _meta_is_hn(stories: list[Story], now: float) -> NDArray[np.float32]:
-    is_hn = np.array([1.0 if s.is_hn else 0.0 for s in stories], dtype=np.float32)
-    return is_hn.reshape(-1, 1)
-
-
-METADATA_FEATURES["is_hn"] = _meta_is_hn
+METADATA_FEATURES["log_points"] = _make_feature(
+    lambda s, now: max(float(s.score), 0.0) if s.is_hn else 0.0, norm_val=1000.0
+)
+METADATA_FEATURES["points_per_hour"] = _make_feature(
+    lambda s, now: max(float(s.score), 0.0) / max(1.0, (now - s.time) / 3600.0) if s.is_hn else 0.0, norm_val=100.0
+)
+METADATA_FEATURES["log_comments"] = _make_feature(
+    lambda s, now: max(float(s.comment_count or 0.0), 0.0) if s.is_hn else 0.0, norm_val=500.0
+)
+METADATA_FEATURES["comment_ratio"] = _make_feature(
+    lambda s, now: np.log1p(max(float(s.comment_count or 0.0), 0.0) if s.is_hn else 0.0) / (np.log1p(max(float(s.score), 0.0) if s.is_hn else 0.0) + 1.0), log=False
+)
+METADATA_FEATURES["title_len"] = _make_feature(
+    lambda s, now: float(len(s.title or "")), norm_val=120.0
+)
+METADATA_FEATURES["text_len"] = _make_feature(
+    lambda s, now: float(len(s.text_content or "")), norm_val=5000.0
+)
+METADATA_FEATURES["is_github"] = _make_feature(
+    lambda s, now: 1.0 if s.url and "github.com" in s.url.lower() else 0.0, log=False
+)
+METADATA_FEATURES["is_pdf"] = _make_feature(
+    lambda s, now: 1.0 if s.url and s.url.lower().endswith(".pdf") else 0.0, log=False
+)
+METADATA_FEATURES["comments_count"] = _make_feature(
+    lambda s, now: max(float(s.comment_count or 0.0), 0.0) if s.is_hn else 0.0, norm_val=15.0
+)
+METADATA_FEATURES["is_hn"] = _make_feature(
+    lambda s, now: 1.0 if s.is_hn else 0.0, log=False
+)
 
 # --- source_trust: per-domain quality from feedback ---
 
@@ -316,111 +240,58 @@ METADATA_FEATURES["source_trust"] = _meta_source_trust
 
 # --- Telemetry-derived features ---
 
+def _make_telemetry_feature(
+    extract_fn: Callable[[Story, dict, dict], float],
+    norm_val: float = 1.0,
+    log: bool = True,
+) -> Callable[[list[Story], float], NDArray[np.float32]]:
+    def _feature_fn(stories: list[Story], now: float) -> NDArray[np.float32]:
+        from api.telemetry_features import load_telemetry_stats
+        story_stats, domain_stats = load_telemetry_stats()
+        
+        vals = np.array([extract_fn(s, story_stats, domain_stats) for s in stories], dtype=np.float32)
+        if log:
+            vals = np.log1p(vals)
+            if norm_val != 1.0:
+                vals /= np.log1p(norm_val)
+        elif norm_val != 1.0:
+            vals /= norm_val
+        return vals.reshape(-1, 1)
+    return _feature_fn
 
-def _meta_impression_count(stories: list[Story], now: float) -> NDArray[np.float32]:
-    from api.telemetry_features import load_telemetry_stats
+METADATA_FEATURES["impression_count"] = _make_telemetry_feature(
+    lambda s, ss, ds: float(ss[s.id].impression_count) if s.id in ss else 0.0, norm_val=200.0
+)
 
-    story_stats, _ = load_telemetry_stats()
-    normalizer = np.log1p(200.0)
-    vals = [
-        np.log1p(float(story_stats[s.id].impression_count)) / normalizer
-        if s.id in story_stats
-        else 0.0
-        for s in stories
-    ]
-    return np.array(vals, dtype=np.float32).reshape(-1, 1)
+METADATA_FEATURES["click_count"] = _make_telemetry_feature(
+    lambda s, ss, ds: float(ss[s.id].click_count) if s.id in ss else 0.0, norm_val=20.0
+)
 
+METADATA_FEATURES["click_ratio"] = _make_telemetry_feature(
+    lambda s, ss, ds: float(ss[s.id].click_ratio) if s.id in ss else 0.0, log=False
+)
 
-METADATA_FEATURES["impression_count"] = _meta_impression_count
+METADATA_FEATURES["implicit_skip"] = _make_telemetry_feature(
+    lambda s, ss, ds: 1.0 if s.id in ss and ss[s.id].impression_count > 0 and ss[s.id].click_count == 0 else 0.0, log=False
+)
 
+METADATA_FEATURES["days_since_last_impression"] = _make_telemetry_feature(
+    lambda s, ss, ds: (30.0 - float(ss[s.id].days_since_last_impression)) / 30.0 if s.id in ss else 0.0, log=False
+)
 
-def _meta_click_count(stories: list[Story], now: float) -> NDArray[np.float32]:
-    from api.telemetry_features import load_telemetry_stats
+def _domain_ctr_extract(s: Story, ss: dict, ds: dict) -> float:
+    from api.telemetry_features import extract_domain_with_fallback
+    d = extract_domain_with_fallback(s.url, is_hn=s.is_hn)
+    return float(ds[d].domain_ctr) if d and d in ds else 0.0
 
-    story_stats, _ = load_telemetry_stats()
-    normalizer = np.log1p(20.0)
-    vals = [
-        np.log1p(float(story_stats[s.id].click_count)) / normalizer
-        if s.id in story_stats
-        else 0.0
-        for s in stories
-    ]
-    return np.array(vals, dtype=np.float32).reshape(-1, 1)
+METADATA_FEATURES["domain_ctr"] = _make_telemetry_feature(_domain_ctr_extract, log=False)
 
+def _domain_imp_extract(s: Story, ss: dict, ds: dict) -> float:
+    from api.telemetry_features import extract_domain_with_fallback
+    d = extract_domain_with_fallback(s.url, is_hn=s.is_hn)
+    return float(ds[d].domain_impression_count) if d and d in ds else 0.0
 
-METADATA_FEATURES["click_count"] = _meta_click_count
-
-
-def _meta_click_ratio(stories: list[Story], now: float) -> NDArray[np.float32]:
-    from api.telemetry_features import load_telemetry_stats
-
-    story_stats, _ = load_telemetry_stats()
-    vals = [
-        float(story_stats[s.id].click_ratio) if s.id in story_stats else 0.0
-        for s in stories
-    ]
-    return np.array(vals, dtype=np.float32).reshape(-1, 1)
-
-
-METADATA_FEATURES["click_ratio"] = _meta_click_ratio
-
-
-def _meta_days_since_last_impression(
-    stories: list[Story], now: float
-) -> NDArray[np.float32]:
-    from api.telemetry_features import load_telemetry_stats
-
-    story_stats, _ = load_telemetry_stats()
-    vals = [
-        (30.0 - float(story_stats[s.id].days_since_last_impression)) / 30.0
-        if s.id in story_stats
-        else 0.0
-        for s in stories
-    ]
-    return np.array(vals, dtype=np.float32).reshape(-1, 1)
-
-
-METADATA_FEATURES["days_since_last_impression"] = _meta_days_since_last_impression
-
-
-def _meta_domain_ctr(stories: list[Story], now: float) -> NDArray[np.float32]:
-    from api.telemetry_features import load_telemetry_stats
-
-    _, domain_stats = load_telemetry_stats()
-    vals: list[float] = []
-    for s in stories:
-        domain = extract_domain_with_fallback(s.url, is_hn=s.is_hn)
-        if domain and domain in domain_stats:
-            vals.append(float(domain_stats[domain].domain_ctr))
-        else:
-            vals.append(0.0)
-    return np.array(vals, dtype=np.float32).reshape(-1, 1)
-
-
-METADATA_FEATURES["domain_ctr"] = _meta_domain_ctr
-
-
-def _meta_domain_impression_count(
-    stories: list[Story], now: float
-) -> NDArray[np.float32]:
-    from api.telemetry_features import load_telemetry_stats
-
-    _, domain_stats = load_telemetry_stats()
-    normalizer = np.log1p(500.0)
-    vals: list[float] = []
-    for s in stories:
-        domain = extract_domain_with_fallback(s.url, is_hn=s.is_hn)
-        if domain and domain in domain_stats:
-            vals.append(
-                np.log1p(float(domain_stats[domain].domain_impression_count))
-                / normalizer
-            )
-        else:
-            vals.append(0.0)
-    return np.array(vals, dtype=np.float32).reshape(-1, 1)
-
-
-METADATA_FEATURES["domain_impression_count"] = _meta_domain_impression_count
+METADATA_FEATURES["domain_impression_count"] = _make_telemetry_feature(_domain_imp_extract, norm_val=500.0)
 
 
 def _meta_local_density(stories: list[Story], now: float) -> NDArray[np.float32]:
@@ -529,6 +400,23 @@ def _classifier_metadata_features(
         np.float32
     )
 
+def build_feature_matrix(
+    embeddings: NDArray[np.float32],
+    derived_rows: NDArray[np.float32],
+    metadata_rows: NDArray[np.float32],
+    config: AppConfig,
+) -> NDArray[np.float32]:
+    columns: list[NDArray[np.float32]] = []
+    if config.classifier.raw_embedding_features:
+        columns.append(embeddings.astype(np.float32))
+    if derived_rows.shape[1] > 0:
+        columns.append(derived_rows.astype(np.float32))
+    if metadata_rows.shape[1] > 0:
+        columns.append(metadata_rows.astype(np.float32))
+    if not columns:
+        return np.zeros((embeddings.shape[0], 0), dtype=np.float32)
+    return np.hstack(columns).astype(np.float32)
+
 
 def _mask_self_similarity(
     sim: NDArray[np.float32],
@@ -610,23 +498,7 @@ def compute_classifier_similarity_features(
         else np.zeros(len(embs), dtype=np.float32)
     )
 
-    def compute_knn_mean(sims: NDArray[np.float32], n: int) -> NDArray[np.float32]:
-        num_ref = sims.shape[1]
-        if num_ref == 0:
-            return np.zeros(sims.shape[0], dtype=np.float32)
-        effective_n = min(num_ref, n)
-        top_n = np.partition(sims, -effective_n, axis=1)[:, -effective_n:]
-        return np.mean(top_n, axis=1)
 
-    knn_p1 = compute_knn_mean(sim_p, 1)
-    knn_p3 = compute_knn_mean(sim_p, 3)
-    knn_p5 = compute_knn_mean(sim_p, 5)
-    knn_p10 = compute_knn_mean(sim_p, 10)
-
-    knn_n1 = compute_knn_mean(sim_n, 1)
-    knn_n3 = compute_knn_mean(sim_n, 3)
-    knn_n5 = compute_knn_mean(sim_n, 5)
-    knn_n10 = compute_knn_mean(sim_n, 10)
 
     k_pos = min(pos_ref.shape[0], config.k_feat)
     if k_pos > 0 and sim_p.shape[1] > 0:
@@ -657,16 +529,7 @@ def compute_classifier_similarity_features(
         "closest_pos": f_closest_pos,
         "closest_neg": f_closest_neg,
         "closest_margin": f_closest_margin,
-        "closest_centroid": f_centroid_max,
         "embedding_magnitude": f_embedding_magnitude,
-        "knn_pos_n1": knn_p1,
-        "knn_pos_n3": knn_p3,
-        "knn_pos_n5": knn_p5,
-        "knn_pos_n10": knn_p10,
-        "knn_neg_n1": knn_n1,
-        "knn_neg_n3": knn_n3,
-        "knn_neg_n5": knn_n5,
-        "knn_neg_n10": knn_n10,
     }
 
 
@@ -1546,18 +1409,16 @@ def rank_stories(
 
         if expected_n != cand_features.shape[1]:
             # Build full single-model features (embeddings + derived + metadata)
-            columns: list[NDArray[np.float32]] = []
-            if config.classifier.raw_embedding_features:
-                columns.append(cand_emb.astype(np.float32))
             derived_rows = stack_similarity_features(
                 cand_derived,
                 config.classifier,
             )
-            if derived_rows.shape[1] > 0:
-                columns.append(derived_rows.astype(np.float32))
-            if cand_metadata.shape[1] > 0:
-                columns.append(cand_metadata.astype(np.float32))
-            full_features = np.hstack(columns).astype(np.float32)
+            full_features = build_feature_matrix(
+                cand_emb,
+                derived_rows,
+                cand_metadata,
+                config,
+            )
             model_scores, downvote, neutral, upvote = _predict_ordinal_outputs(
                 model, full_features
             )
