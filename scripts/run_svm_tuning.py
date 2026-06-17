@@ -1,20 +1,11 @@
 #!/usr/bin/env -S uv run
 """SVM tuning: C x gamma grid, kernel variants, 5-feature subset."""
 
-from tuning_runner import OUTDIR, run_eval as _run_eval
+from tuning_runner import OUTDIR, F16_RAW, F5_RAW, run_eval as _run_eval
 import json
 
 SNAPSHOT = "tests/snapshots/baseline_full.json"
 FEEDBACK = ".cache/user_feedback/dashboard_feedback.json"
-
-F16_RAW = (
-    "centroid,pos_knn,neg_knn,pos_neg_ratio,"
-    "title_len,text_len,is_github,is_pdf,"
-    "closest_pos,closest_neg,closest_margin,"
-    "is_hn,source_trust,local_density,cluster_size,"
-    "embedding_magnitude"
-)
-F5_RAW = "source_trust,closest_pos,closest_margin,centroid,pos_neg_ratio"
 
 BASE = [
     "uv",

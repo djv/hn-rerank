@@ -6,6 +6,14 @@ from pathlib import Path
 OUTDIR = Path("results")
 OUTDIR.mkdir(parents=True, exist_ok=True)
 
+F16_RAW = (
+    "centroid,pos_knn,neg_knn,pos_neg_ratio,"
+    "title_len,text_len,is_github,is_pdf,"
+    "closest_pos,closest_neg,closest_margin,"
+    "is_hn,source_trust,local_density,cluster_size,"
+    "embedding_magnitude"
+)
+F5_RAW = "source_trust,closest_pos,closest_margin,centroid,pos_neg_ratio"
 
 def run_eval(
     label: str,

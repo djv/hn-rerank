@@ -1,19 +1,11 @@
 #!/usr/bin/env -S uv run
 """MLP + Random Forest tuning: alpha, hidden layers, solver, lr_init, RF params."""
 
-from tuning_runner import OUTDIR, run_eval
+from tuning_runner import OUTDIR, F16_RAW, run_eval
 import json
 
 SNAPSHOT = "tests/snapshots/baseline_full.json"
 FEEDBACK = ".cache/user_feedback/dashboard_feedback.json"
-
-F16 = (
-    "centroid,pos_knn,neg_knn,pos_neg_ratio,"
-    "title_len,text_len,is_github,is_pdf,"
-    "closest_pos,closest_neg,closest_margin,"
-    "is_hn,source_trust,local_density,cluster_size,"
-    "embedding_magnitude"
-)
 
 MLP_BASE = [
     "uv",
@@ -53,7 +45,7 @@ print("=== Phase 1: MLP alpha sweep (16f+raw, relu, (64,32), adam) ===", flush=T
 alpha_values = [0.0001, 0.001, 0.005, 0.01, 0.05, 0.1]
 results = []
 for a in alpha_values:
-    r = run_mlp(f"mlp16f_a{a}", F16, {"mlp_alpha": str(a)})
+    r = run_mlp(f"mlp16f_a{a}", F16_RAW, {"mlp_alpha": str(a)})
     r["mlp_alpha"] = a
     r["mlp_hidden_layers"] = "64,32"
     results.append(r)
@@ -73,7 +65,7 @@ print(
 hl_values = ["32", "64", "128", "32,16", "64,32", "128,64", "128,64,32"]
 for hl in hl_values:
     label = "mlp16f_h" + hl.replace(",", "_")
-    r = run_mlp(label, F16, {"mlp_alpha": str(best_alpha), "mlp_hidden_layers": hl})
+    r = run_mlp(label, F16_RAW, {"mlp_alpha": str(best_alpha), "mlp_hidden_layers": hl})
     r["mlp_alpha"] = best_alpha
     r["mlp_hidden_layers"] = hl
     results.append(r)
@@ -94,7 +86,7 @@ for solver in ["adam", "lbfgs"]:
     label = f"mlp16f_s{solver}"
     r = run_mlp(
         label,
-        F16,
+        F16_RAW,
         {
             "mlp_alpha": str(best_alpha),
             "mlp_hidden_layers": best_hl,
@@ -129,7 +121,7 @@ for lr in [0.0001, 0.001, 0.01]:
     label = f"mlp16f_lr{lr}"
     r = run_mlp(
         label,
-        F16,
+        F16_RAW,
         {
             "mlp_alpha": str(best_alpha),
             "mlp_hidden_layers": best_hl,
@@ -165,7 +157,7 @@ if best_mlp.get("mlp_solver") is not None:
     ov["mlp_solver"] = str(best_mlp["mlp_solver"])
 if best_mlp.get("mlp_lr_init") is not None:
     ov["mlp_learning_rate_init"] = str(best_mlp["mlp_lr_init"])
-r = run_mlp("mlp_16f+raw_winner", F16, ov, raw=True)
+r = run_mlp("mlp_16f+raw_winner", F16_RAW, ov, raw=True)
 r["mlp_alpha"] = best_mlp.get("mlp_alpha")
 r["mlp_hidden_layers"] = best_mlp.get("mlp_hidden_layers")
 r["mlp_solver"] = best_mlp.get("mlp_solver")
@@ -205,7 +197,7 @@ rf_configs = [
     ),
 ]
 for label, ov in rf_configs:
-    r = run_rf(label, F16, ov)
+    r = run_rf(label, F16_RAW, ov)
     r["rf_overrides"] = ov
     results.append(r)
 
@@ -216,7 +208,7 @@ rf_best = max(
     (r for r in results if r.get("rf_overrides")), key=lambda r: r["aggregate_score"]
 )
 print(f"\n=== Phase 7: RF winner recap (from {rf_best['name']}) ===", flush=True)
-r = run_rf("rf_16f+raw_winner", F16, rf_best["rf_overrides"], raw=True)
+r = run_rf("rf_16f+raw_winner", F16_RAW, rf_best["rf_overrides"], raw=True)
 r["rf_overrides"] = rf_best["rf_overrides"]
 results.append(r)
 
