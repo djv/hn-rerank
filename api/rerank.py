@@ -530,6 +530,30 @@ def _classifier_metadata_features(
     )
 
 
+def _mask_self_similarity(
+    sim: NDArray[np.float32],
+    n_ref: int,
+    offset: int,
+) -> None:
+    """Set self-similarity entries to -1.0 in a non-square similarity matrix.
+
+    When ``embs`` is ``[pos; neg]`` stacked vertically and ``ref`` is one of
+    the two halves, the self-similarity entry for reference item ``j`` lives
+    at ``sim[offset + j, j]``, not on the naive diagonal ``sim[j, j]``.
+
+    Args:
+        sim: Similarity matrix of shape ``(n_embs, n_ref)``.
+        n_ref: Number of reference items (columns).
+        offset: Row index in ``embs`` where the reference block starts.
+    """
+    n_to_mask = min(n_ref, sim.shape[0] - offset)
+    if n_to_mask <= 0:
+        return
+    rows = np.arange(n_to_mask) + offset
+    cols = np.arange(n_to_mask)
+    sim[rows, cols] = -1.0
+
+
 def compute_classifier_similarity_features(
     embs: NDArray[np.float32],
     pos_ref: NDArray[np.float32],
@@ -540,7 +564,14 @@ def compute_classifier_similarity_features(
     exclude_self_pos: bool = False,
     exclude_self_neg: bool = False,
 ) -> dict[str, NDArray[np.float32]]:
-    """Compute the first-stage derived similarity features used by the classifier."""
+    """Compute the first-stage derived similarity features used by the classifier.
+
+    When ``exclude_self_pos`` / ``exclude_self_neg`` are set, the caller
+    promises that ``embs`` is laid out as ``[pos_ref; neg_ref]`` (vertically
+    stacked).  Self-similarity entries are masked at the correct row offsets:
+    positive self-entries start at row 0, negative self-entries start at row
+    ``len(pos_ref)``.
+    """
 
     sim_c = (
         cosine_similarity(embs, centroid_ref)
@@ -559,7 +590,7 @@ def compute_classifier_similarity_features(
         else np.zeros((len(embs), 0), dtype=np.float32)
     )
     if exclude_self_pos and sim_p.shape[1] > 0:
-        np.fill_diagonal(sim_p, -1.0)
+        _mask_self_similarity(sim_p, pos_ref.shape[0], offset=0)
     f_closest_pos = (
         np.max(sim_p, axis=1)
         if sim_p.shape[1] > 0
@@ -572,7 +603,7 @@ def compute_classifier_similarity_features(
         else np.zeros((len(embs), 0), dtype=np.float32)
     )
     if exclude_self_neg and sim_n.shape[1] > 0:
-        np.fill_diagonal(sim_n, -1.0)
+        _mask_self_similarity(sim_n, neg_ref.shape[0], offset=pos_ref.shape[0])
     f_closest_neg = (
         np.max(sim_n, axis=1)
         if sim_n.shape[1] > 0

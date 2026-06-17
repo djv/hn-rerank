@@ -39,6 +39,7 @@ class AblationResult:
     mrr: float
     precision_at_5: float
     recall_at_5: float
+    recall_at_50: float
     ndcg_at_30: float
     hit_at_30: float
     mean_rank: float
@@ -53,11 +54,12 @@ class AblationResult:
     nonhn_at_0_5_fraction: float = 0.0
 
 
-_DEFAULT_K = [5, 30]
+_DEFAULT_K = [5, 30, 50]
 _METRIC_KEYS = [
     "mrr",
     "precision@5",
     "recall@5",
+    "recall@50",
     "ndcg@30",
     "hit@30",
     "mean_rank",
@@ -159,6 +161,7 @@ def run_one(
         mrr=metrics.get("mrr", 0.0),
         precision_at_5=metrics.get("precision@5", 0.0),
         recall_at_5=metrics.get("recall@5", 0.0),
+        recall_at_50=metrics.get("recall@50", 0.0),
         ndcg_at_30=metrics.get("ndcg@30", 0.0),
         hit_at_30=metrics.get("hit@30", 0.0),
         mean_rank=metrics.get("mean_rank", 0.0),
