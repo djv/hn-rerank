@@ -391,3 +391,16 @@ Eval: 3-fold cross validation (content-based, chronological boundaries removed).
 - **SVM Winner:** `svm_c=0.3`, `svm_gamma="scale"` achieved **NDCG@30=0.935**, MRR=1.000, MeanRank=192.4, nonhn@0.5=0.00.
 
 **Actionable insight:** Switched `hn_rerank.toml` to the tuned MLP model (`model_type="mlp"`, `mlp_solver="lbfgs"`, `mlp_alpha=0.1`, `mlp_hidden_layers="32"`, `mlp_learning_rate_init=0.01`) keeping the content-focused `16-feature` set and `raw_embedding_features=true`.
+
+### Run J — CV=3 Metric Saturation Discovery
+
+The `NDCG@30` metric in the `CV=3` ablation runs was discovered to be artificially saturated.
+In 3-fold CV on ~800 total positive stories, each test fold contains ~266 positive items mixed into a candidate pool of ~481 neutral items.
+Because `NDCG@30` only evaluates the top 30 slots, a model only needs to identify the 30 "easiest" positive stories out of 266 (a ~11% recall rate) to achieve a perfect `1.000` score.
+Highly expressive models like MLP (with raw embeddings) easily isolate 30 highly confident matches that align with training clusters, gaming the `NDCG@30` metric.
+
+When evaluating the robust **Mean Rank** across all test positives (lower is better):
+- `16f+raw-svm-rbf` (C=0.3): Mean Rank = **192.4**
+- `16f+raw-mlp` (LBFGS, α=0.1): Mean Rank = **212.3**
+
+**Actionable Insight:** SVM RBF remains the globally superior model for ranking the entire positive distribution, outperforming MLP by ~20 positions on average. `hn_rerank.toml` has been reverted back to the `svm` architecture.

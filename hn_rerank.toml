@@ -50,16 +50,12 @@ slots = 7
 min_positive_labels = 10
 min_negative_labels = 10
 balance_training_labels = true
-model_type = "mlp"
-mlp_solver = "lbfgs"
-mlp_hidden_layers = "32"
-mlp_alpha = 0.1
-mlp_learning_rate_init = 0.01
-mlp_activation = "relu"
+model_type = "svm"
 svm_kernel = "rbf"
 svm_c = 0.3
 svm_gamma = "scale"
-# Switched to MLP LBFGS 2026-06-16 from SVM RBF
-# Tuned MLP config: solver=lbfgs, alpha=0.1, hidden_layers="32", lr_init=0.01
-# With 16 metadata features + 384 raw embeddings, this config achieved NDCG@30=0.992
-# in content-based 3-fold cross-validation.
+mlp_activation = "relu"
+mlp_alpha = 0.0001
+# Reverted to SVM RBF 2026-06-16
+# CV=3 saturation analysis proved MLP NDCG@30=1.000 was an artifact of test_pos >> 30.
+# Mean rank evaluation showed SVM (192.4) outperforms MLP (212.3) on the full test distribution.
