@@ -221,7 +221,8 @@ def _extract_comments_recursive(
         text = child.get("text", "")
         if text:
             # Strip HTML tags
-            clean = re.sub(r"<[^>]+>", " ", text)
+            # Strip HTML tags using bs4 via strip_html
+            clean = strip_html(text)
             clean = _clean_text(clean)
             # Filter short comments (low value)
             if clean and len(clean) >= MIN_COMMENT_LENGTH:

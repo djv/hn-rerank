@@ -7,8 +7,8 @@ import logging
 import re
 import time
 from collections.abc import Sequence, Callable
+from dateutil.parser import parse as parse_date
 from datetime import UTC, datetime
-from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Literal, TypedDict, cast
 from xml.etree import ElementTree as ET
@@ -80,31 +80,18 @@ def _write_cache_json(path: Path, data: dict[str, object] | Sequence[object]) ->
 def _parse_date(text: str) -> int | None:
     if not text:
         return None
-    first_error: Exception | None = None
     try:
-        dt = parsedate_to_datetime(text)
-        if dt is not None:
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=UTC)
-            return int(dt.timestamp())
-    except Exception as exc:
-        first_error = exc
-    second_error: Exception | None = None
-    try:
-        iso = text.strip().replace("Z", "+00:00")
-        dt = datetime.fromisoformat(iso)
+        dt = parse_date(text)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=UTC)
         return int(dt.timestamp())
     except Exception as exc:
-        second_error = exc
-    logger.debug(
-        "Failed to parse RSS date %r (parsedate_to_datetime=%s, fromisoformat=%s)",
-        text,
-        first_error,
-        second_error,
-    )
-    return None
+        logger.debug(
+            "Failed to parse RSS date %r (parse_date=%s)",
+            text,
+            exc,
+        )
+        return None
 
 
 def _extract_opml_feed_urls(opml_text: str) -> list[str]:
