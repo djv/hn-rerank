@@ -39,9 +39,6 @@ class OrdinalThresholdModel:
     upvote: Pipeline
 
 
-
-
-
 def _binary_targets_from_ordinal(
     y: NDArray[np.int64],
     threshold: int,
@@ -64,10 +61,7 @@ def _threshold_binary_counts(y: NDArray[np.int64]) -> dict[str, tuple[int, int]]
     }
 
 
-
-
-
-def _make_pipeline(config: SingleModelConfig) -> Pipeline:
+def _make_pipeline(config: SingleModelConfig, cv: int = 3) -> Pipeline:
     from sklearn.ensemble import RandomForestClassifier, HistGradientBoostingClassifier
     from sklearn.svm import SVC
     from sklearn.neural_network import MLPClassifier
@@ -127,10 +121,17 @@ def _make_pipeline(config: SingleModelConfig) -> Pipeline:
             solver="liblinear",
         )
 
+    if cv < 2:
+        model_step = clf
+    else:
+        from sklearn.calibration import CalibratedClassifierCV
+
+        model_step = CalibratedClassifierCV(clf, method="isotonic", cv=cv)
+
     return Pipeline(
         [
             ("scale", StandardScaler()),
-            ("model", clf),
+            ("model", model_step),
         ]
     )
 
@@ -161,10 +162,27 @@ def train_model_from_matrix(
     neutral_x, neutral_y = x_train, neutral_target
     upvote_x, upvote_y = x_train, upvote_target
 
-    neutral_model = _make_pipeline(config)
+    def get_cv(y: NDArray[np.int64]) -> int:
+        min_class_count = min(np.sum(y == 0), np.sum(y == 1))
+        return int(min(3, min_class_count))
+
+    neutral_cv = get_cv(neutral_y)
+    upvote_cv = get_cv(upvote_y)
+    logging.warning(
+        "[TRAIN DEBUG] x_train.shape=%s n_pos=%d n_neutral=%d n_neg=%d "
+        "neutral_cv=%d upvote_cv=%d",
+        x_train.shape,
+        int(np.sum(y_train == UPVOTE_LABEL)),
+        int(np.sum(y_train == NEUTRAL_LABEL)),
+        int(np.sum(y_train == DOWNVOTE_LABEL)),
+        neutral_cv,
+        upvote_cv,
+    )
+
+    neutral_model = _make_pipeline(config, cv=neutral_cv)
     neutral_model.fit(neutral_x, neutral_y)
 
-    upvote_model = _make_pipeline(config)
+    upvote_model = _make_pipeline(config, cv=upvote_cv)
     upvote_model.fit(upvote_x, upvote_y)
 
     return OrdinalThresholdModel(
@@ -183,9 +201,29 @@ def _predict_ordinal_outputs(
         np.float32
     )
     upvote = model.upvote.predict_proba(x_score)[:, 1].astype(np.float32)
+    logging.warning(
+        "[SCORE DEBUG] at_least_neutral: mean=%.4f std=%.4f min=%.4f max=%.4f",
+        at_least_neutral.mean(),
+        at_least_neutral.std(),
+        at_least_neutral.min(),
+        at_least_neutral.max(),
+    )
+    logging.warning(
+        "[SCORE DEBUG] upvote: mean=%.4f std=%.4f min=%.4f max=%.4f",
+        upvote.mean(),
+        upvote.std(),
+        upvote.min(),
+        upvote.max(),
+    )
     # Compute utility on raw probabilities to preserve variance (prevents 0.5 ties)
     expected_score = at_least_neutral + upvote
     utility = np.clip(expected_score / 2.0, 0.0, 1.0)
+    logging.warning(
+        "[SCORE DEBUG] utility: mean=%.4f std=%.4f unique=%d",
+        utility.mean(),
+        utility.std(),
+        len(np.unique(utility)),
+    )
 
     # Compute valid constrained probabilities for the breakdown
     at_least_neutral = np.clip(at_least_neutral, 0.0, 1.0)
