@@ -9,9 +9,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-from api.config import AppConfig  # noqa: E402
 
-_config = AppConfig.load()
 
 
 # Content Limits
@@ -126,7 +124,7 @@ TOP_COMMENTS_FOR_UI = 10
 MIN_COMMENT_LENGTH = 30  # Filter short low-value comments (relaxed)
 
 # LLM Configuration
-LLM_PROVIDER = _config.llm.provider
+
 LLM_CLUSTER_NAME_MODEL_PRIMARY = "llama-3.3-70b-versatile"
 LLM_CLUSTER_NAME_MODEL_FALLBACK = "llama-3.1-8b-instant"
 LLM_MISTRAL_MODEL = "mistral-small-latest"

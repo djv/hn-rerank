@@ -38,9 +38,7 @@ async def test_generate_html_integration(tmp_path):
             "generate_html.train_single_model_from_embeddings"
         ) as mock_train_single_model,
         patch("generate_html.rerank.rank_stories") as mock_rank,
-        patch(
-            "generate_html.filter_top_ranked_hn_dupes", new_callable=AsyncMock
-        ) as mock_dupes,
+
         patch("generate_html.refresh_hn_story_metadata", new_callable=AsyncMock),
         patch(
             "generate_html.llm_utils.generate_batch_tldrs", new_callable=AsyncMock
@@ -89,7 +87,7 @@ async def test_generate_html_integration(tmp_path):
                 max_cluster_score=0.90,
             )
         ]
-        mock_dupes.return_value = mock_rank.return_value
+
 
         # Mock sys.argv
         with patch.object(

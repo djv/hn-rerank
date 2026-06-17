@@ -387,7 +387,7 @@ def _build_cli_config(args: argparse.Namespace) -> AppConfig:
     config = apply_evaluator_overrides(
         config,
         pure_semantic=args.pure_semantic,
-        use_new_features=args.use_new_features,
+
         no_raw_embedding_features=args.no_raw_embedding_features,
     )
 
@@ -445,7 +445,7 @@ async def main() -> int:
     parser.add_argument("--rf-max-features", default=None)
     parser.add_argument("--knn", type=int, default=None)
 
-    parser.add_argument("--use-new-features", action="store_true")
+
     parser.add_argument("--pure-semantic", action="store_true")
     parser.add_argument("--no-raw-embedding-features", action="store_true")
 

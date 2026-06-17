@@ -36,10 +36,6 @@ def test_build_first_stage_ablation_config_preserves_other_settings() -> None:
     assert "comment_ratio" not in updated.classifier.features
 
 
-def test_apply_evaluator_overrides_use_new_features_is_noop() -> None:
-    config = AppConfig()
-    updated = apply_evaluator_overrides(config, use_new_features=True)
-    assert updated.classifier.features == config.classifier.features
 
 
 def test_single_model_config_can_override_svm_kernel() -> None:

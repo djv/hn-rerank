@@ -421,7 +421,7 @@ def apply_evaluator_overrides(
     config: AppConfig,
     *,
     pure_semantic: bool = False,
-    use_new_features: bool = False,
+
     no_raw_embedding_features: bool = False,
 ) -> AppConfig:
     updated = config
@@ -1028,6 +1028,50 @@ class RankingEvaluator:
                     training_config,
                     training_config.single_model,
                 )
+                
+                # --- Hard negative mining ---
+                hn_count = getattr(training_config.single_model, "hard_negative_mining_count", 0)
+                if hn_count > 0:
+                    first_pass_results = rank_stories(
+                        fold_candidates,
+                        model,
+                        positive_embeddings=train_emb,
+                        negative_embeddings=dataset.neg_embeddings,
+                        config=training_config,
+                        diagnostics=None,
+                        positive_stories=[all_stories[i] for i in train_idx],
+                        negative_stories=dataset.neg_stories,
+                        cluster_names=None,
+                        cluster_keywords=cluster_keywords,
+                    )
+                    
+                    hard_neg_candidates = []
+                    for r in first_pass_results:
+                        cand = fold_candidates[r.index]
+                        if cand.id not in test_ids:
+                            hard_neg_candidates.append(cand)
+                            if len(hard_neg_candidates) == hn_count:
+                                break
+                    
+                    if hard_neg_candidates:
+                        from api.rerank import get_embeddings
+                        hard_neg_emb = get_embeddings([s.text_content for s in hard_neg_candidates])
+                        augmented_neg_stories = dataset.neg_stories + hard_neg_candidates
+                        augmented_neg_emb = np.vstack([dataset.neg_embeddings, hard_neg_emb])
+                        
+                        model, _ = train_single_model_from_embeddings(
+                            _training_labels_from_histories(
+                                [all_stories[i] for i in train_idx],
+                                augmented_neg_stories,
+                            ),
+                            np.vstack([train_emb, augmented_neg_emb]),
+                            train_emb,
+                            augmented_neg_emb,
+                            training_config,
+                            training_config.single_model,
+                        )
+                # ------------------------------
+
                 results = rank_stories(
                     fold_candidates,
                     model,
@@ -1254,11 +1298,7 @@ async def main():
         default=None,
         help='SVM gamma when --model-type=svm: "scale", "auto", or a numeric value',
     )
-    parser.add_argument(
-        "--use-new-features",
-        action="store_true",
-        help="Enable experimental metadata features for the single-model evaluator",
-    )
+
     parser.add_argument(
         "--compare-first-stage",
         action="store_true",
@@ -1325,7 +1365,7 @@ async def main():
     config = apply_evaluator_overrides(
         config,
         pure_semantic=args.pure_semantic,
-        use_new_features=args.use_new_features,
+
     )
 
     evaluator = RankingEvaluator(args.username)
