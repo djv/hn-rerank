@@ -896,18 +896,19 @@ async def main() -> None:
         # 2. Embedding
         e_task: TaskID = progress.add_task("[*] Embedding preferences...", total=100)
 
-        # Track overall advancement for embeddings to avoid double-counting
-        last_e_completed = 0
+        def make_progress_cb(task: TaskID, weight_key: str) -> Callable[[int, int], None]:
+            last_completed = 0
+            weight = PROGRESS_WEIGHTS[weight_key]
+            def cb(curr: int, total: int) -> None:
+                nonlocal last_completed
+                progress.update(task, total=total, completed=curr)
+                if total > 0:
+                    delta = curr - last_completed
+                    progress.update(overall_task, advance=(delta / total) * weight)
+                    last_completed = curr
+            return cb
 
-        def emb_cb(curr: int, total: int) -> None:
-            nonlocal last_e_completed
-            progress.update(e_task, total=total, completed=curr)
-            # Advance overall bar proportionally to the weight of this phase
-            if total > 0:
-                delta = curr - last_e_completed
-                overall_advance = (delta / total) * PROGRESS_WEIGHTS["emb_pref"]
-                progress.update(overall_task, advance=overall_advance)
-                last_e_completed = curr
+        emb_cb = make_progress_cb(e_task, "emb_pref")
 
         p_emb: NDArray[np.float32] | None = (
             rerank.get_embeddings(
@@ -922,7 +923,6 @@ async def main() -> None:
         if not pos_stories:
             progress.update(overall_task, advance=PROGRESS_WEIGHTS["emb_pref"])
 
-        last_e_completed = 0
         n_emb: NDArray[np.float32] | None = (
             rerank.get_embeddings(
                 [s.text_content for s in neg_stories],
@@ -939,16 +939,7 @@ async def main() -> None:
             ce_task: TaskID = progress.add_task(
                 "[*] Embedding cluster content...", total=100
         )
-            last_ce_completed = 0
-
-            def cluster_emb_cb(curr: int, total: int) -> None:
-                nonlocal last_ce_completed
-                progress.update(ce_task, total=total, completed=curr)
-                if total > 0:
-                    delta = curr - last_ce_completed
-                    overall_advance = (delta / total) * PROGRESS_WEIGHTS["emb_clust"]
-                    progress.update(overall_task, advance=overall_advance)
-                    last_ce_completed = curr
+            cluster_emb_cb = make_progress_cb(ce_task, "emb_clust")
 
             cluster_emb = rerank.get_embeddings(
                 [s.text_content for s in pos_stories],
@@ -1001,16 +992,7 @@ async def main() -> None:
             name_task: TaskID = progress.add_task(
                 "[cyan]Naming clusters...", total=n_clusters
         )
-            last_n_completed = 0
-
-            def name_cb(curr: int, total: int) -> None:
-                nonlocal last_n_completed
-                progress.update(name_task, completed=curr)
-                if total > 0:
-                    delta = curr - last_n_completed
-                    overall_advance = (delta / total) * PROGRESS_WEIGHTS["naming"]
-                    progress.update(overall_task, advance=overall_advance)
-                    last_n_completed = curr
+            name_cb = make_progress_cb(name_task, "naming")
 
             if config.no_naming:
                 for cid in clusters_for_naming:
@@ -1062,37 +1044,42 @@ async def main() -> None:
             "rss_feeds": 15.0,
             "rss_content": 15.0,
         }
-        candidate_phase_order = list(candidate_phase_weights)
-        candidate_phase_completed = dict.fromkeys(candidate_phase_weights, 0.0)
-        last_c_completed = 0.0
+        def make_phase_cb(
+            task: TaskID,
+            weight_key: str,
+            phase_weights: dict[str, float],
+            finalize_label: str,
+        ) -> Callable[[str, int, int, str], None]:
+            phase_order = list(phase_weights.keys())
+            phase_completed = dict.fromkeys(phase_weights, 0.0)
+            last_completed = 0.0
+            overall_weight = PROGRESS_WEIGHTS[weight_key]
+
+            def cb(phase: str, curr: int, total: int, description: str) -> None:
+                nonlocal last_completed
+                if phase == "complete":
+                    completed = 100.0
+                    desc = f"[*] {finalize_label}..."
+                else:
+                    total = max(total, 1)
+                    fraction = min(max(curr / total, 0.0), 1.0)
+                    phase_completed[phase] = phase_weights[phase] * fraction
+                    idx = phase_order.index(phase)
+                    for prior in phase_order[:idx]:
+                        phase_completed[prior] = phase_weights[prior]
+                    completed = min(sum(phase_completed.values()), 99.0)
+                    desc = description
+                progress.update(task, completed=completed, description=desc)
+                delta = completed - last_completed
+                if delta > 0:
+                    progress.update(overall_task, advance=(delta / 100.0) * overall_weight)
+                    last_completed = completed
+            return cb
+
+        _cand_cb_impl = make_phase_cb(c_task, "candidates", candidate_phase_weights, "Finalizing candidates")
 
         def cand_cb(event: CandidateProgress) -> None:
-            nonlocal last_c_completed
-            phase = event["phase"]
-            if phase == "complete":
-                completed = 100.0
-                description = "[*] Finalizing candidates..."
-            else:
-                total = max(event["total"], 1)
-                phase_fraction = min(max(event["current"] / total, 0.0), 1.0)
-                candidate_phase_completed[phase] = (
-                    candidate_phase_weights[phase] * phase_fraction
-            )
-                phase_index = candidate_phase_order.index(phase)
-                for prior_phase in candidate_phase_order[:phase_index]:
-                    candidate_phase_completed[prior_phase] = candidate_phase_weights[
-                        prior_phase
-                    ]
-                completed = min(sum(candidate_phase_completed.values()), 99.0)
-                description = f"[*] {event['label']}..."
-            progress.update(c_task, completed=completed, description=description)
-            delta = completed - last_c_completed
-            if delta > 0:
-                progress.update(
-                    overall_task,
-                    advance=(delta / 100.0) * PROGRESS_WEIGHTS["candidates"],
-            )
-                last_c_completed = completed
+            _cand_cb_impl(event["phase"], event.get("current", 0), event.get("total", 1), f"[*] {event.get('label', '')}...")
 
         # Exclude everything we've already interacted with
         exclude_ids: set[int] = data["favorites"] | data["hidden"]
@@ -1120,33 +1107,10 @@ async def main() -> None:
             "scoring": 35.0,
             "finalize": 10.0,
         }
-        rank_phase_order = list(rank_phase_weights)
-        rank_phase_completed = dict.fromkeys(rank_phase_weights, 0.0)
-        last_r_completed = 0.0
+        _rank_cb_impl = make_phase_cb(r_task, "rank", rank_phase_weights, "Finalizing rerank")
 
         def rank_cb(event: rerank.RankProgress) -> None:
-            nonlocal last_r_completed
-            phase = event["phase"]
-            if phase == "complete":
-                completed = 100.0
-                description = "[*] Finalizing rerank..."
-            else:
-                total = max(event["total"], 1)
-                phase_fraction = min(max(event["current"] / total, 0.0), 1.0)
-                rank_phase_completed[phase] = rank_phase_weights[phase] * phase_fraction
-                phase_index = rank_phase_order.index(phase)
-                for prior_phase in rank_phase_order[:phase_index]:
-                    rank_phase_completed[prior_phase] = rank_phase_weights[prior_phase]
-                completed = min(sum(rank_phase_completed.values()), 99.0)
-                description = f"[*] {event['label']}..."
-            progress.update(r_task, completed=completed, description=description)
-            delta = completed - last_r_completed
-            if delta > 0:
-                progress.update(
-                    overall_task,
-                    advance=(delta / 100.0) * PROGRESS_WEIGHTS["rank"],
-            )
-                last_r_completed = completed
+            _rank_cb_impl(event["phase"], event.get("current", 0), event.get("total", 1), f"[*] {event.get('label', '')}...")
 
         feedback_labels = build_single_model_feedback_labels(feedback_records).labels
         feedback_story_embeddings = rerank.get_embeddings(
@@ -1196,27 +1160,7 @@ async def main() -> None:
             "metadata": 10.0,
             "cards": 10.0,
         }
-        prep_phase_completed = dict.fromkeys(prep_phase_weights, 0.0)
-        last_prep_completed = 0.0
-
-        def update_prep(
-            phase: str,
-            current: int,
-            total: int,
-            description: str,
-        ) -> None:
-            nonlocal last_prep_completed
-            phase_fraction = min(max(current / max(total, 1), 0.0), 1.0)
-            prep_phase_completed[phase] = prep_phase_weights[phase] * phase_fraction
-            completed = min(sum(prep_phase_completed.values()), 100.0)
-            progress.update(prep_task, completed=completed, description=description)
-            delta = completed - last_prep_completed
-            if delta > 0:
-                progress.update(
-                    overall_task,
-                    advance=(delta / 100.0) * PROGRESS_WEIGHTS["prepare"],
-            )
-                last_prep_completed = completed
+        update_prep = make_phase_cb(prep_task, "prepare", prep_phase_weights, "Finalizing prep")
 
         # Pre-build StoryDisplay items (without TL;DRs yet)
         cand_cluster_map = build_candidate_cluster_map(
@@ -1336,16 +1280,7 @@ async def main() -> None:
             llm_task: TaskID = progress.add_task(
                 "[cyan]Generating TL;DRs...", total=len(stories_data)
         )
-            last_t_completed = 0
-
-            def tldr_cb(curr: int, total: int) -> None:
-                nonlocal last_t_completed
-                progress.update(llm_task, completed=curr)
-                if total > 0:
-                    delta = curr - last_t_completed
-                    overall_advance = (delta / total) * PROGRESS_WEIGHTS["tldr"]
-                    progress.update(overall_task, advance=overall_advance)
-                    last_t_completed = curr
+            tldr_cb = make_progress_cb(llm_task, "tldr")
 
             stories_for_tldr = [sd.to_dict() for sd in stories_data]
             tldrs = await llm_utils.generate_batch_tldrs(
