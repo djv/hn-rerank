@@ -105,7 +105,7 @@ class Story:
             discussion_url=d.get("discussion_url"),
             comments=d.get("comments", []),
             text_content=str(d.get("text_content", "")),
-            source=cast("StorySource", d.get("source", "hn")),
+            source=d.get("source", "hn"),
             comment_count=d.get("comment_count"),
             feedback_updated_at=d.get("feedback_updated_at", 0.0),
         )

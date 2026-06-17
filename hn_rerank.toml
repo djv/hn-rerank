@@ -53,7 +53,7 @@ balance_training_labels = true
 model_type = "svm"
 svm_kernel = "rbf"
 svm_c = 0.3
-svm_gamma = "scale"
+svm_gamma = 0.1
 mlp_activation = "relu"
 mlp_alpha = 0.0001
 # Reverted to SVM RBF 2026-06-16

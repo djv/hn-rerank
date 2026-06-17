@@ -112,8 +112,6 @@ class SingleModelConfig:
 
     min_positive_labels: int = 10
     min_negative_labels: int = 10
-    balance_training_labels: bool = True
-    hard_negative_mining_count: int = 0
     model_type: str = (
         "svm"  # Options: logistic, random_forest, gradient_boosting, svm, mlp
     )

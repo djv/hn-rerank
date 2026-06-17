@@ -56,6 +56,8 @@ from api.rerank import ClusterItem
 
 logger = logging.getLogger(__name__)
 
+_GLOBAL_LLM_LIMITER = AsyncLimiter(1, max(1.0, float(LLM_MIN_REQUEST_INTERVAL)))
+
 
 def build_messages(contents: object | None) -> list[dict[str, str]]:
     messages: list[dict[str, str]] = []
@@ -354,7 +356,7 @@ async def _generate_with_retry(
         pool=LLM_HTTP_POOL_TIMEOUT,
     )
 
-    _limiter = AsyncLimiter(1, max(1.0, float(LLM_MIN_REQUEST_INTERVAL)))
+    # Using module-level limiter
     async with httpx.AsyncClient(timeout=timeout) as client:
         try:
             async for attempt in AsyncRetrying(
@@ -365,7 +367,7 @@ async def _generate_with_retry(
             ):
                 with attempt:
                     try:
-                        async with _limiter:
+                        async with _GLOBAL_LLM_LIMITER:
                             resp = await client.post(
                                 base_url,
                                 headers={
