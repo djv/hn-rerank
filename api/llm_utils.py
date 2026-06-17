@@ -444,7 +444,7 @@ def _extract_llm_error_message(resp: httpx.Response) -> str:
                 return str(error.get("message", ""))
             if isinstance(error, str):
                 return error
-    except Exception:
+    except ValueError:
         pass
     return resp.text or "Unknown error"
 

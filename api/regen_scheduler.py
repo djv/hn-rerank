@@ -58,5 +58,5 @@ def request_regen() -> None:
                     f"[{datetime.now():%Y-%m-%d %H:%M:%S}] FATAL: "
                     f"{traceback.format_exc()}\n"
                 )
-        except Exception:
+        except OSError:
             pass

@@ -81,7 +81,7 @@ def get_cached_candidates(
     if path.exists() and (allow_stale or time.time() - path.stat().st_mtime < ttl):
         try:
             return json.loads(path.read_text())
-        except Exception:
+        except ValueError:
             pass
     return None
 
