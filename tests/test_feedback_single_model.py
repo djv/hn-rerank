@@ -232,11 +232,7 @@ def test_single_model_scores_are_stable_and_bounded(
 
 def test_svm_pipeline_uses_configured_kernel() -> None:
     pipeline = _make_pipeline(SingleModelConfig(model_type="svm", svm_kernel="linear"))
-    model_step = pipeline.named_steps["model"]
-    if hasattr(model_step, "estimator"):
-        assert model_step.estimator.kernel == "linear"
-    else:
-        assert model_step.kernel == "linear"
+    assert pipeline.named_steps["model"].kernel == "linear"
 
 
 def test_feature_builder_without_raw_embeddings() -> None:
