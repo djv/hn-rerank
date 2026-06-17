@@ -181,7 +181,6 @@ class AppConfig:
             known = {f.name for f in dataclasses.fields(cls_)}
             return {k: v for k, v in _get_section(name).items() if k in known}
 
-        # Initialize sub-configs
         ranking = RankingConfig(**_safe_section("ranking", RankingConfig))
         semantic = SemanticConfig(**_safe_section("semantic", SemanticConfig))
         classifier = ClassifierConfig(**_safe_section("classifier", ClassifierConfig))

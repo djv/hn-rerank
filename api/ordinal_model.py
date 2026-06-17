@@ -179,9 +179,6 @@ def _binary_targets_from_ordinal(
     return (y >= threshold).astype(np.int64)
 
 
-
-
-
 def _threshold_binary_counts(y: NDArray[np.int64]) -> dict[str, tuple[int, int]]:
     at_least_neutral = _binary_targets_from_ordinal(y, NEUTRAL_LABEL)
     upvote = _binary_targets_from_ordinal(y, UPVOTE_LABEL)

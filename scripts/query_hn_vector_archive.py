@@ -62,7 +62,9 @@ def _as_int_set(value: Any) -> set[int]:
     return out
 
 
-def load_cached_user_ids(username: str, cache_dir: Path = USER_CACHE_DIR_PATH) -> dict[str, set[int]]:
+def load_cached_user_ids(
+    username: str, cache_dir: Path = USER_CACHE_DIR_PATH
+) -> dict[str, set[int]]:
     path = cache_dir / f"{username}.json"
     if not path.is_file():
         raise FileNotFoundError(f"No cached user data found at {path}")
@@ -151,7 +153,9 @@ async def load_upvote_stories(
     return stories
 
 
-def embed_profile(texts: Sequence[str], *, model_name: str = VECTOR_MODEL_NAME) -> np.ndarray:
+def embed_profile(
+    texts: Sequence[str], *, model_name: str = VECTOR_MODEL_NAME
+) -> np.ndarray:
     try:
         from sentence_transformers import SentenceTransformer
     except ImportError as exc:
@@ -178,7 +182,9 @@ def embed_profile(texts: Sequence[str], *, model_name: str = VECTOR_MODEL_NAME) 
     return (profile / norm).astype(np.float32)
 
 
-def save_profile_cache(path: Path, username: str, upvote_ids: Sequence[int], profile: np.ndarray) -> None:
+def save_profile_cache(
+    path: Path, username: str, upvote_ids: Sequence[int], profile: np.ndarray
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "version": PROFILE_CACHE_VERSION,
@@ -191,7 +197,9 @@ def save_profile_cache(path: Path, username: str, upvote_ids: Sequence[int], pro
     path.write_text(json.dumps(payload))
 
 
-def load_profile_cache(path: Path, username: str, upvote_ids: Sequence[int]) -> np.ndarray | None:
+def load_profile_cache(
+    path: Path, username: str, upvote_ids: Sequence[int]
+) -> np.ndarray | None:
     if not path.is_file():
         return None
     try:
@@ -259,7 +267,9 @@ def archive_parquet_paths(
         from huggingface_hub import list_repo_files
         from huggingface_hub import hf_hub_url
     except ImportError as exc:
-        raise RuntimeError("huggingface_hub is required to list archive shards") from exc
+        raise RuntimeError(
+            "huggingface_hub is required to list archive shards"
+        ) from exc
 
     files = [
         path

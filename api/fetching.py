@@ -293,7 +293,6 @@ async def fetch_story(
 
             item = cast(AlgoliaItem, resp.json())
 
-            # Validate it's a story
             if item.get("type") != "story":
                 cache_missing_story()
                 return None
@@ -307,7 +306,6 @@ async def fetch_story(
                 str(item.get("story_text") or item.get("text") or "")
             )
 
-            # Extract comments from nested structure
             children = item.get("children", [])
             all_comments = _extract_comments_recursive(children)
 

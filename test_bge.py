@@ -15,7 +15,7 @@ for c in data["train_stories"]:
 for c in data.get("test_stories", []):
     texts.append(c["title"] + " " + c.get("text_content", ""))
 
-texts = list(set(texts)) # unique texts
+texts = list(set(texts))  # unique texts
 print(f"Loaded {len(texts)} unique texts.")
 
 spec = BIENCODER_BAKEOFF_SPECS["bge_base_official"]
@@ -25,13 +25,16 @@ print("Starting embedding with BGE...")
 start = time.time()
 # monkey patch the cache dir and model loader
 import api.rerank
-api.rerank.CACHE_DIR = __import__('pathlib').Path(".cache/bge_test")
+
+api.rerank.CACHE_DIR = __import__("pathlib").Path(".cache/bge_test")
 api.rerank.EMBEDDING_MODEL_DIR = api.rerank.CACHE_DIR
 api.rerank._MODEL_CACHE = {}
+
 
 def progress(curr, total):
     if curr % 100 == 0 or curr == total:
         print(f"  Embedded {curr}/{total}...")
+
 
 get_embeddings(texts, progress_callback=progress)
 end = time.time()

@@ -151,7 +151,9 @@ def test_rank_stories_empty_positive_embeddings():
 
     with patch("api.rerank.get_embeddings", return_value=np.array([[0.5] * 768])):
         # Empty array
-        results = rank_stories(stories, positive_embeddings=np.array([]), config=AppConfig())
+        results = rank_stories(
+            stories, positive_embeddings=np.array([]), config=AppConfig()
+        )
 
         assert len(results) == 1
         result = results[0]

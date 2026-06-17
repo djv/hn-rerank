@@ -21,9 +21,7 @@ def atomic_write_json(path: Path, data: Any) -> None:
         raise
 
 
-def evict_old_cache_files(
-    cache_dir: Path, pattern: str, max_files: int
-) -> None:
+def evict_old_cache_files(cache_dir: Path, pattern: str, max_files: int) -> None:
     """Remove oldest cache files if over max_files limit (LRU by mtime)."""
     if max_files <= 0:
         return

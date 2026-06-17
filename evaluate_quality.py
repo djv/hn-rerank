@@ -15,8 +15,8 @@ import numpy as np
 from api.type_utils import as_float as _as_float
 from numpy.typing import NDArray
 
-
 from api.env_setup import ensure_joblib_settings
+
 ensure_joblib_settings()
 
 from api.client import HNClient  # noqa: E402
@@ -30,7 +30,6 @@ from api.models import RankResult, Story, StoryDict  # noqa: E402
 from api.rerank import get_embeddings, rank_stories  # noqa: E402
 from api.url_utils import normalize_url  # noqa: E402
 from api.config import AppConfig  # noqa: E402
-
 
 BASELINE_DEFAULT_PATH = ".cache/metrics_baseline.json"
 DEFAULT_GUARD_METRICS = [
@@ -139,9 +138,6 @@ def _average_metrics(all_metrics: list[dict[str, float]]) -> dict[str, float]:
         avg_metrics[key] = float(np.mean(values))
         avg_metrics[f"{key}_std"] = float(np.std(values))
     return avg_metrics
-
-
-
 
 
 def _summarize_rank_diagnostics(records: list[dict[str, object]]) -> dict[str, object]:
@@ -395,7 +391,6 @@ def apply_evaluator_overrides(
     config: AppConfig,
     *,
     pure_semantic: bool = False,
-
     no_raw_embedding_features: bool = False,
 ) -> AppConfig:
     updated = config
@@ -641,7 +636,6 @@ class RankingEvaluator:
         print(f"Found {len(all_positives)} positive, {len(hidden_ids)} hidden")
 
         async with httpx.AsyncClient(timeout=30.0) as http:
-            # Fetch positive stories
             print("Fetching positive stories...")
             pos_stories: list[Story] = []
             for sid in list(all_positives)[:limit_pos]:
@@ -1002,9 +996,10 @@ class RankingEvaluator:
                     training_config,
                     training_config.single_model,
                 )
-                
-                # --- Hard negative mining ---
-                hn_count = getattr(training_config.single_model, "hard_negative_mining_count", 0)
+
+                hn_count = getattr(
+                    training_config.single_model, "hard_negative_mining_count", 0
+                )
                 if hn_count > 0:
                     first_pass_results = rank_stories(
                         fold_candidates,
@@ -1018,7 +1013,7 @@ class RankingEvaluator:
                         cluster_names=None,
                         cluster_keywords=cluster_keywords,
                     )
-                    
+
                     hard_neg_candidates = []
                     for r in first_pass_results:
                         cand = fold_candidates[r.index]
@@ -1026,13 +1021,20 @@ class RankingEvaluator:
                             hard_neg_candidates.append(cand)
                             if len(hard_neg_candidates) == hn_count:
                                 break
-                    
+
                     if hard_neg_candidates:
                         from api.rerank import get_embeddings
-                        hard_neg_emb = get_embeddings([s.text_content for s in hard_neg_candidates])
-                        augmented_neg_stories = dataset.neg_stories + hard_neg_candidates
-                        augmented_neg_emb = np.vstack([dataset.neg_embeddings, hard_neg_emb])
-                        
+
+                        hard_neg_emb = get_embeddings(
+                            [s.text_content for s in hard_neg_candidates]
+                        )
+                        augmented_neg_stories = (
+                            dataset.neg_stories + hard_neg_candidates
+                        )
+                        augmented_neg_emb = np.vstack(
+                            [dataset.neg_embeddings, hard_neg_emb]
+                        )
+
                         model, _ = train_single_model_from_embeddings(
                             _training_labels_from_histories(
                                 [all_stories[i] for i in train_idx],
@@ -1044,7 +1046,6 @@ class RankingEvaluator:
                             training_config,
                             training_config.single_model,
                         )
-                # ------------------------------
 
                 results = rank_stories(
                     fold_candidates,
@@ -1121,7 +1122,6 @@ class RankingEvaluator:
             m["nonhn_score_stddev"] = 0.0
             m["nonhn_at_0.5_fraction"] = 0.0
             return m, None
-
 
         # Run folds (parallel or serial)
         if parallel and n_folds > 1:
@@ -1288,7 +1288,6 @@ async def main():
     )
     args = parser.parse_args()
 
-    # Create config for tuning/evaluation
     config = AppConfig.load(
         username=args.username,
         count=args.count,
@@ -1339,7 +1338,6 @@ async def main():
     config = apply_evaluator_overrides(
         config,
         pure_semantic=args.pure_semantic,
-
     )
 
     evaluator = RankingEvaluator(args.username)

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Literal, TypedDict, cast
 
 
 from api.env_setup import ensure_joblib_settings
+
 ensure_joblib_settings()
 
 import numpy as np  # noqa: E402
@@ -41,9 +42,6 @@ from api.config import (  # noqa: E402
 from api.telemetry_features import extract_domain_with_fallback  # noqa: E402
 
 
-# --- Feature registries ---
-# Adding a new feature? Write the compute function, add its name here, list it in config.
-
 SIMILARITY_FEATURES: frozenset[str] = frozenset(
     {
         "centroid",
@@ -60,6 +58,7 @@ SIMILARITY_FEATURES: frozenset[str] = frozenset(
 MetadataFeatureFn = Callable[[list[Story], float], NDArray[np.float32]]
 METADATA_FEATURES: dict[str, MetadataFeatureFn] = {}
 
+
 # Thread-local caches for metadata feature functions.
 # Each rank_stories call has its own local_density and cluster_size arrays,
 # eliminating races in parallel CV (_local_density_cache, _cluster_size_cache).
@@ -74,30 +73,41 @@ class _RankCache(threading.local):
 
 _rank_cache = _RankCache()
 
+
 def _populate_rank_cache_metadata(
     positive_stories: list[Story] | None,
     negative_stories: list[Story] | None,
-    now: float
+    now: float,
 ) -> None:
     _rank_cache.domain_trust.clear()
     _rank_cache.story_age_at_vote_map.clear()
     _rank_cache.domain_recency_map.clear()
 
     counts: dict[str, list[int]] = {}
-    
+
     for stories, idx in [(positive_stories, 0), (negative_stories, 1)]:
         if not stories:
             continue
         for s in stories:
-            if s.id and s.feedback_updated_at > 0 and s.time > 0 and s.feedback_updated_at > s.time:
-                _rank_cache.story_age_at_vote_map[s.id] = (s.feedback_updated_at - s.time) / 86400.0
+            if (
+                s.id
+                and s.feedback_updated_at > 0
+                and s.time > 0
+                and s.feedback_updated_at > s.time
+            ):
+                _rank_cache.story_age_at_vote_map[s.id] = (
+                    s.feedback_updated_at - s.time
+                ) / 86400.0
             domain = extract_domain_with_fallback(s.url, is_hn=s.is_hn)
             if domain:
                 c = counts.setdefault(domain, [0, 0])
                 c[idx] += 1
                 if s.feedback_updated_at > 0:
                     days = (now - s.feedback_updated_at) / 86400.0
-                    if domain not in _rank_cache.domain_recency_map or days < _rank_cache.domain_recency_map[domain]:
+                    if (
+                        domain not in _rank_cache.domain_recency_map
+                        or days < _rank_cache.domain_recency_map[domain]
+                    ):
                         _rank_cache.domain_recency_map[domain] = max(days, 0.0)
 
     _rank_cache.domain_trust.update(
@@ -106,9 +116,6 @@ def _populate_rank_cache_metadata(
             for domain, (ups, downs) in counts.items()
         }
     )
-
-
-
 
 
 logger = logging.getLogger(__name__)
@@ -151,9 +158,6 @@ def stack_similarity_features(
     return np.hstack([derived[f].reshape(-1, 1) for f in enabled]).astype(np.float32)
 
 
-# --- Metadata feature compute functions ---
-
-
 def _make_feature(
     extract_fn: Callable[[Story, float], float],
     norm_val: float = 1.0,
@@ -168,19 +172,29 @@ def _make_feature(
         elif norm_val != 1.0:
             vals /= norm_val
         return vals.reshape(-1, 1)
+
     return _feature_fn
+
 
 METADATA_FEATURES["log_points"] = _make_feature(
     lambda s, now: max(float(s.score), 0.0) if s.is_hn else 0.0, norm_val=1000.0
 )
 METADATA_FEATURES["points_per_hour"] = _make_feature(
-    lambda s, now: max(float(s.score), 0.0) / max(1.0, (now - s.time) / 3600.0) if s.is_hn else 0.0, norm_val=100.0
+    lambda s, now: (
+        max(float(s.score), 0.0) / max(1.0, (now - s.time) / 3600.0) if s.is_hn else 0.0
+    ),
+    norm_val=100.0,
 )
 METADATA_FEATURES["log_comments"] = _make_feature(
-    lambda s, now: max(float(s.comment_count or 0.0), 0.0) if s.is_hn else 0.0, norm_val=500.0
+    lambda s, now: max(float(s.comment_count or 0.0), 0.0) if s.is_hn else 0.0,
+    norm_val=500.0,
 )
 METADATA_FEATURES["comment_ratio"] = _make_feature(
-    lambda s, now: np.log1p(max(float(s.comment_count or 0.0), 0.0) if s.is_hn else 0.0) / (np.log1p(max(float(s.score), 0.0) if s.is_hn else 0.0) + 1.0), log=False
+    lambda s, now: (
+        np.log1p(max(float(s.comment_count or 0.0), 0.0) if s.is_hn else 0.0)
+        / (np.log1p(max(float(s.score), 0.0) if s.is_hn else 0.0) + 1.0)
+    ),
+    log=False,
 )
 METADATA_FEATURES["title_len"] = _make_feature(
     lambda s, now: float(len(s.title or "")), norm_val=120.0
@@ -195,13 +209,13 @@ METADATA_FEATURES["is_pdf"] = _make_feature(
     lambda s, now: 1.0 if s.url and s.url.lower().endswith(".pdf") else 0.0, log=False
 )
 METADATA_FEATURES["comments_count"] = _make_feature(
-    lambda s, now: max(float(s.comment_count or 0.0), 0.0) if s.is_hn else 0.0, norm_val=15.0
+    lambda s, now: max(float(s.comment_count or 0.0), 0.0) if s.is_hn else 0.0,
+    norm_val=15.0,
 )
 METADATA_FEATURES["is_hn"] = _make_feature(
     lambda s, now: 1.0 if s.is_hn else 0.0, log=False
 )
 
-# --- source_trust: per-domain quality from feedback ---
 
 def _meta_source_trust(stories: list[Story], now: float) -> NDArray[np.float32]:
     trust = getattr(_rank_cache, "domain_trust", {})
@@ -215,8 +229,6 @@ def _meta_source_trust(stories: list[Story], now: float) -> NDArray[np.float32]:
 METADATA_FEATURES["source_trust"] = _meta_source_trust
 
 
-# --- Telemetry-derived features ---
-
 def _make_telemetry_feature(
     extract_fn: Callable[[Story, dict, dict], float],
     norm_val: float = 1.0,
@@ -224,9 +236,13 @@ def _make_telemetry_feature(
 ) -> Callable[[list[Story], float], NDArray[np.float32]]:
     def _feature_fn(stories: list[Story], now: float) -> NDArray[np.float32]:
         from api.telemetry_features import load_telemetry_stats
+
         story_stats, domain_stats = load_telemetry_stats()
-        
-        vals = np.array([extract_fn(s, story_stats, domain_stats) for s in stories], dtype=np.float32)
+
+        vals = np.array(
+            [extract_fn(s, story_stats, domain_stats) for s in stories],
+            dtype=np.float32,
+        )
         if log:
             vals = np.log1p(vals)
             if norm_val != 1.0:
@@ -234,10 +250,13 @@ def _make_telemetry_feature(
         elif norm_val != 1.0:
             vals /= norm_val
         return vals.reshape(-1, 1)
+
     return _feature_fn
 
+
 METADATA_FEATURES["impression_count"] = _make_telemetry_feature(
-    lambda s, ss, ds: float(ss[s.id].impression_count) if s.id in ss else 0.0, norm_val=200.0
+    lambda s, ss, ds: float(ss[s.id].impression_count) if s.id in ss else 0.0,
+    norm_val=200.0,
 )
 
 METADATA_FEATURES["click_count"] = _make_telemetry_feature(
@@ -249,26 +268,46 @@ METADATA_FEATURES["click_ratio"] = _make_telemetry_feature(
 )
 
 METADATA_FEATURES["implicit_skip"] = _make_telemetry_feature(
-    lambda s, ss, ds: 1.0 if s.id in ss and ss[s.id].impression_count > 0 and ss[s.id].click_count == 0 else 0.0, log=False
+    lambda s, ss, ds: (
+        1.0
+        if s.id in ss and ss[s.id].impression_count > 0 and ss[s.id].click_count == 0
+        else 0.0
+    ),
+    log=False,
 )
 
 METADATA_FEATURES["days_since_last_impression"] = _make_telemetry_feature(
-    lambda s, ss, ds: (30.0 - float(ss[s.id].days_since_last_impression)) / 30.0 if s.id in ss else 0.0, log=False
+    lambda s, ss, ds: (
+        (30.0 - float(ss[s.id].days_since_last_impression)) / 30.0
+        if s.id in ss
+        else 0.0
+    ),
+    log=False,
 )
+
 
 def _domain_ctr_extract(s: Story, ss: dict, ds: dict) -> float:
     from api.telemetry_features import extract_domain_with_fallback
+
     d = extract_domain_with_fallback(s.url, is_hn=s.is_hn)
     return float(ds[d].domain_ctr) if d and d in ds else 0.0
 
-METADATA_FEATURES["domain_ctr"] = _make_telemetry_feature(_domain_ctr_extract, log=False)
+
+METADATA_FEATURES["domain_ctr"] = _make_telemetry_feature(
+    _domain_ctr_extract, log=False
+)
+
 
 def _domain_imp_extract(s: Story, ss: dict, ds: dict) -> float:
     from api.telemetry_features import extract_domain_with_fallback
+
     d = extract_domain_with_fallback(s.url, is_hn=s.is_hn)
     return float(ds[d].domain_impression_count) if d and d in ds else 0.0
 
-METADATA_FEATURES["domain_impression_count"] = _make_telemetry_feature(_domain_imp_extract, norm_val=500.0)
+
+METADATA_FEATURES["domain_impression_count"] = _make_telemetry_feature(
+    _domain_imp_extract, norm_val=500.0
+)
 
 
 def _meta_local_density(stories: list[Story], now: float) -> NDArray[np.float32]:
@@ -359,9 +398,6 @@ def _meta_domain_recency(stories: list[Story], now: float) -> NDArray[np.float32
 METADATA_FEATURES["domain_recency"] = _meta_domain_recency
 
 
-# --- Metadata feature matrix builder ---
-
-
 def _classifier_metadata_features(
     stories: list[Story],
     config: AppConfig,
@@ -376,6 +412,7 @@ def _classifier_metadata_features(
     return np.hstack([METADATA_FEATURES[f](stories, now) for f in enabled]).astype(
         np.float32
     )
+
 
 def build_feature_matrix(
     embeddings: NDArray[np.float32],
@@ -474,8 +511,6 @@ def compute_classifier_similarity_features(
         if sim_n.shape[1] > 0
         else np.zeros(len(embs), dtype=np.float32)
     )
-
-
 
     k_pos = min(pos_ref.shape[0], config.k_feat)
     if k_pos > 0 and sim_p.shape[1] > 0:

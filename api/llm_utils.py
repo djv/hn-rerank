@@ -47,7 +47,6 @@ from api.constants import (
     LLM_TLDR_DETAIL_MAX_TOKENS,
     LLM_TLDR_MAX_TOKENS,
     LLM_TLDR_MODEL,
-
     LLM_MISTRAL_MODEL,
     RATE_LIMIT_ERROR_BACKOFF_BASE,
     RATE_LIMIT_ERROR_BACKOFF_MAX,
@@ -328,6 +327,7 @@ async def _generate_with_retry(
     import os
 
     from api.config import AppConfig
+
     provider = os.environ.get("LLM_PROVIDER", AppConfig.load().llm.provider).lower()
 
     if provider == "mistral":

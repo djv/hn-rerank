@@ -46,12 +46,8 @@ async def test_fetch_user_data_mocked():
 
             # Verify scrape calls
             mock_items.assert_any_call(f"/hidden?id={username}", max_pages=20)
-            mock_items.assert_any_call(
-                f"/favorites?id={username}", max_pages=15
-            )
-            mock_items.assert_any_call(
-                f"/upvoted?id={username}", max_pages=15
-            )
+            mock_items.assert_any_call(f"/favorites?id={username}", max_pages=15)
+            mock_items.assert_any_call(f"/upvoted?id={username}", max_pages=15)
             mock_ids.assert_not_called()
 
 
@@ -97,7 +93,9 @@ async def test_scrape_ids_empty():
 
 
 @pytest.mark.asyncio
-async def test_load_cookies_logs_warning_on_malformed_cookie_file(tmp_path, monkeypatch, caplog):
+async def test_load_cookies_logs_warning_on_malformed_cookie_file(
+    tmp_path, monkeypatch, caplog
+):
     cookie_path = tmp_path / "cookies.json"
     cookie_path.write_text("{not valid json")
     monkeypatch.setattr(client_module, "COOKIES_FILE", Path(cookie_path))

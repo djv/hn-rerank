@@ -220,7 +220,9 @@ def test_story_age_uses_cache_for_training_samples() -> None:
     from api.rerank import _meta_story_age
 
     now = 86400.0 * 100  # arbitrary "now"
-    rerank_mod._rank_cache.story_age_at_vote_map = {1: 2.0}  # story was age 2 days when voted
+    rerank_mod._rank_cache.story_age_at_vote_map = {
+        1: 2.0
+    }  # story was age 2 days when voted
 
     try:
         stories = [Story(id=1, title="s", url=None, score=0, time=0, text_content="")]
@@ -275,7 +277,9 @@ def test_story_age_clamps_negative_age() -> None:
     from api.rerank import _meta_story_age
     import api.rerank as rerank_mod
 
-    rerank_mod._rank_cache.story_age_at_vote_map = {1: -1.0}  # clock skew -> negative age
+    rerank_mod._rank_cache.story_age_at_vote_map = {
+        1: -1.0
+    }  # clock skew -> negative age
     try:
         stories = [
             Story(id=1, title="s", url=None, score=0, time=1000, text_content="")
@@ -390,7 +394,6 @@ def test_domain_recency_no_url_sentinel() -> None:
 
     rerank_mod._rank_cache.domain_recency_map = {}
 
-    stories = [
-        Story(id=1, title="Ask HN", url=None, score=0, time=0, text_content="")]
+    stories = [Story(id=1, title="Ask HN", url=None, score=0, time=0, text_content="")]
     out = _meta_domain_recency(stories, now=0.0)
     np.testing.assert_allclose(out[0, 0], float(np.log1p(365.0)), atol=1e-6)

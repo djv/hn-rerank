@@ -8,8 +8,7 @@ import logging
 from typing import cast
 
 TRAIN_EXTRA_HINT = (
-    "tune_embeddings.py requires the 'train' extra. "
-    "Run: uv sync --extra train"
+    "tune_embeddings.py requires the 'train' extra. Run: uv sync --extra train"
 )
 
 try:
@@ -19,7 +18,6 @@ try:
 except ModuleNotFoundError as exc:
     raise SystemExit(TRAIN_EXTRA_HINT) from exc
 
-# Configure logging
 logging.basicConfig(
     format="%(asctime)s - %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
@@ -39,9 +37,7 @@ def load_triplets(path: Path) -> list[InputExample]:
             continue
         item = json.loads(line)
         examples.append(
-            InputExample(
-                texts=[item["anchor"], item["positive"], item["negative"]]
-            )
+            InputExample(texts=[item["anchor"], item["positive"], item["negative"]])
         )
     return examples
 
@@ -63,12 +59,13 @@ def load_pairs(path: Path) -> list[InputExample]:
 def tune(epochs: int = 3, batch_size: int = 16, use_triplets: bool = True) -> None:
     """Fine-tune the embedding model."""
 
-    # Check for data
     train_triplets_path = Path("train_triplets.jsonl")
     train_pairs_path = Path("train_pairs.jsonl")
     val_triplets_path = Path("val_triplets.jsonl")
 
-    has_triplets = train_triplets_path.exists() and train_triplets_path.stat().st_size > 0
+    has_triplets = (
+        train_triplets_path.exists() and train_triplets_path.stat().st_size > 0
+    )
     has_pairs = train_pairs_path.exists() and train_pairs_path.stat().st_size > 0
 
     if not has_triplets and not has_pairs:
@@ -81,7 +78,6 @@ def tune(epochs: int = 3, batch_size: int = 16, use_triplets: bool = True) -> No
         has_pairs = True
         train_pairs_path = legacy_train
 
-    # Load data
     train_examples = []
 
     if use_triplets and has_triplets:
@@ -97,15 +93,14 @@ def tune(epochs: int = 3, batch_size: int = 16, use_triplets: bool = True) -> No
         print("No training examples loaded.")
         return
 
-    # Load validation triplets for evaluation
-    val_triplets = load_triplets(val_triplets_path) if val_triplets_path.exists() else []
+    val_triplets = (
+        load_triplets(val_triplets_path) if val_triplets_path.exists() else []
+    )
 
-    # Load model
     model_id = "BAAI/bge-base-en-v1.5"
     print(f"Loading {model_id}...")
     model = SentenceTransformer(model_id)
 
-    # Setup training
     train_dataloader = DataLoader(
         cast(Dataset[InputExample], train_examples),
         shuffle=True,
@@ -126,7 +121,6 @@ def tune(epochs: int = 3, batch_size: int = 16, use_triplets: bool = True) -> No
         train_loss = losses.MultipleNegativesRankingLoss(model)
         print("Using MultipleNegativesRankingLoss")
 
-    # Setup evaluator
     evaluator = None
     if val_triplets:
         anchors: list[str] = []
@@ -172,9 +166,17 @@ def tune(epochs: int = 3, batch_size: int = 16, use_triplets: bool = True) -> No
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Fine-tune embeddings")
-    parser.add_argument("--epochs", type=int, default=3, help="Number of training epochs")
+    parser.add_argument(
+        "--epochs", type=int, default=3, help="Number of training epochs"
+    )
     parser.add_argument("--batch-size", type=int, default=16, help="Batch size")
-    parser.add_argument("--no-triplets", action="store_true", help="Use pairs only (no hard negatives)")
+    parser.add_argument(
+        "--no-triplets", action="store_true", help="Use pairs only (no hard negatives)"
+    )
     args = parser.parse_args()
 
-    tune(epochs=args.epochs, batch_size=args.batch_size, use_triplets=not args.no_triplets)
+    tune(
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        use_triplets=not args.no_triplets,
+    )

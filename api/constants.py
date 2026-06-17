@@ -9,9 +9,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-
-
-
 # Content Limits
 ARTICLE_SNIPPET_LENGTH = 1500
 TEXT_CONTENT_MAX_TOKENS = 512

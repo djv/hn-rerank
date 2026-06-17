@@ -17,8 +17,7 @@ import subprocess
 from pathlib import Path
 
 TRAIN_EXTRA_HINT = (
-    "finetune_runpod.py requires the 'train' extra. "
-    "Run: uv sync --extra train"
+    "finetune_runpod.py requires the 'train' extra. Run: uv sync --extra train"
 )
 
 try:
@@ -90,7 +89,6 @@ def main():
 
         print("\nPod running!")
 
-        # Get SSH info
         runtime = status["runtime"]
         ssh_host = runtime.get("publicIp")
         ssh_port = 22
@@ -107,15 +105,18 @@ def main():
 
         print(f"SSH: root@{ssh_host}:{ssh_port}")
 
-        # Run training via SSH
         print("Starting training (~3 min on RTX 4090)...")
         result = subprocess.run(
             [
-                "ssh", "-p", str(ssh_port),
-                "-o", "StrictHostKeyChecking=no",
-                "-o", "ConnectTimeout=30",
+                "ssh",
+                "-p",
+                str(ssh_port),
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "ConnectTimeout=30",
                 f"root@{ssh_host}",
-                TRAIN_SCRIPT
+                TRAIN_SCRIPT,
             ],
             capture_output=True,
             text=True,
@@ -132,18 +133,21 @@ def main():
         print("Downloading model...")
         subprocess.run(
             [
-                "scp", "-P", str(ssh_port),
-                "-o", "StrictHostKeyChecking=no",
+                "scp",
+                "-P",
+                str(ssh_port),
+                "-o",
+                "StrictHostKeyChecking=no",
                 f"root@{ssh_host}:/workspace/onnx_model.tar.gz",
-                "."
+                ".",
             ],
             check=True,
             timeout=120,
         )
 
-        # Extract
         if Path("onnx_model").exists():
             import shutil
+
             shutil.move("onnx_model", "onnx_model_backup_local")
 
         subprocess.run(["tar", "-xzf", "onnx_model.tar.gz"], check=True)

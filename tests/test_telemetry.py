@@ -13,11 +13,16 @@ from api.impressions import (
     impression_from_payload,
 )
 
+
 @pytest.fixture
 def patch_db(tmp_path):
     db_path = tmp_path / "test.db"
-    with patch("api.impressions.DB_PATH", db_path), patch("api.telemetry_features.DB_PATH", db_path):
+    with (
+        patch("api.impressions.DB_PATH", db_path),
+        patch("api.telemetry_features.DB_PATH", db_path),
+    ):
         yield
+
 
 def test_url_column_exists(patch_db):
     conn = init_event_schema()
@@ -25,6 +30,7 @@ def test_url_column_exists(patch_db):
     columns = [row["name"] for row in cursor.fetchall()]
     assert "url" in columns
     conn.close()
+
 
 def test_url_column_idempotent(patch_db):
     conn = init_event_schema()
@@ -36,6 +42,7 @@ def test_url_column_idempotent(patch_db):
     # Verify we still only have one 'url' column
     assert columns.count("url") == 1
     conn.close()
+
 
 def test_url_roundtrip(patch_db):
     rec = ImpressionRecord(
@@ -55,14 +62,17 @@ def test_url_roundtrip(patch_db):
         event="impression",
     )
     append_impressions([rec])
-    
+
     conn = connect_db()
-    rows = conn.execute("SELECT feedback_key, url, event FROM telemetry_events").fetchall()
+    rows = conn.execute(
+        "SELECT feedback_key, url, event FROM telemetry_events"
+    ).fetchall()
     assert len(rows) == 1
     assert rows[0]["feedback_key"] == "http://example.com/foo"
     assert rows[0]["url"] == "http://example.com/foo"
     assert rows[0]["event"] == "impression"
     conn.close()
+
 
 def test_url_insert_without_url(patch_db):
     rec = ImpressionRecord(
@@ -82,13 +92,14 @@ def test_url_insert_without_url(patch_db):
         # url omitted (defaults to None)
     )
     append_impressions([rec])
-    
+
     conn = connect_db()
     rows = conn.execute("SELECT feedback_key, url FROM telemetry_events").fetchall()
     assert len(rows) == 1
     assert rows[0]["feedback_key"] == "hn:123"
     assert rows[0]["url"] is None
     conn.close()
+
 
 def test_parser_handles_url():
     payload = {
@@ -110,6 +121,7 @@ def test_parser_handles_url():
     assert rec is not None
     assert rec.url == "https://example.com/original"
 
+
 def test_parser_handles_missing_url():
     payload = {
         "event": "impression",
@@ -129,6 +141,7 @@ def test_parser_handles_missing_url():
     rec = impression_from_payload(payload)
     assert rec is not None
     assert rec.url is None
+
 
 def test_click_has_url(patch_db):
     """Click event payload includes url field and roundtrips through the DB."""
@@ -281,9 +294,36 @@ def test_telemetry_features_aggregation(patch_db):
 
     # 5. Metadata features array integration and bounding
     s_cands = [
-        Story(id=1, title="S1", url="https://github.com/foo/bar", score=10, time=int(now), text_content="t1", source="rss", comment_count=0),
-        Story(id=2, title="S2", url="", score=20, time=int(now), text_content="t2", source="hn", comment_count=0),
-        Story(id=99, title="S99", url="https://newdomain.com/abc", score=0, time=int(now), text_content="t99", source="rss", comment_count=0),
+        Story(
+            id=1,
+            title="S1",
+            url="https://github.com/foo/bar",
+            score=10,
+            time=int(now),
+            text_content="t1",
+            source="rss",
+            comment_count=0,
+        ),
+        Story(
+            id=2,
+            title="S2",
+            url="",
+            score=20,
+            time=int(now),
+            text_content="t2",
+            source="hn",
+            comment_count=0,
+        ),
+        Story(
+            id=99,
+            title="S99",
+            url="https://newdomain.com/abc",
+            score=0,
+            time=int(now),
+            text_content="t99",
+            source="rss",
+            comment_count=0,
+        ),
     ]
 
     # Warm caching
@@ -340,4 +380,3 @@ def test_telemetry_features_aggregation(patch_db):
     assert arr[2][0] == 0.0
 
     reset_telemetry_stats_cache()
-

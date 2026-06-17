@@ -51,7 +51,9 @@ def test_vector_dot_normalizes_archive_vector() -> None:
 
 
 def test_metadata_url_extracts_optional_url() -> None:
-    assert metadata_url('{"url":"https://example.com/post"}') == "https://example.com/post"
+    assert (
+        metadata_url('{"url":"https://example.com/post"}') == "https://example.com/post"
+    )
     assert metadata_url('{"url":""}') is None
     assert metadata_url("not-json") is None
 
@@ -66,8 +68,26 @@ def test_metadata_comment_count_extracts_descendants() -> None:
 def test_top_archive_hits_keeps_highest_similarity() -> None:
     profile = np.array([1.0, 0.0], dtype=np.float32)
     rows = [
-        (1, "Low", "2024-01-01", 10, "a", '{"url":"https://low.test","descendants":4}', "low text", [0.0, 1.0]),
-        (2, "High", "2024-01-02", 20, "b", '{"url":"https://high.test","descendants":8}', "high text", [1.0, 0.0]),
+        (
+            1,
+            "Low",
+            "2024-01-01",
+            10,
+            "a",
+            '{"url":"https://low.test","descendants":4}',
+            "low text",
+            [0.0, 1.0],
+        ),
+        (
+            2,
+            "High",
+            "2024-01-02",
+            20,
+            "b",
+            '{"url":"https://high.test","descendants":8}',
+            "high text",
+            [1.0, 0.0],
+        ),
         (3, "Mid", "2024-01-03", 30, "c", '{"descendants":2}', "mid text", [0.5, 0.5]),
     ]
 
@@ -82,8 +102,26 @@ def test_top_archive_hits_keeps_highest_similarity() -> None:
 def test_top_archive_hits_filters_min_comments() -> None:
     profile = np.array([1.0, 0.0], dtype=np.float32)
     rows = [
-        (1, "No comments", "2024-01-01", 100, "a", '{"descendants":0}', "text", [1.0, 0.0]),
-        (2, "Discussed", "2024-01-02", 10, "b", '{"descendants":3}', "text", [0.5, 0.5]),
+        (
+            1,
+            "No comments",
+            "2024-01-01",
+            100,
+            "a",
+            '{"descendants":0}',
+            "text",
+            [1.0, 0.0],
+        ),
+        (
+            2,
+            "Discussed",
+            "2024-01-02",
+            10,
+            "b",
+            '{"descendants":3}',
+            "text",
+            [0.5, 0.5],
+        ),
     ]
 
     hits = top_archive_hits(rows, profile=profile, top_k=2, min_comments=1)
@@ -106,7 +144,12 @@ def test_archive_parquet_paths_can_limit_newest(monkeypatch) -> None:
     def fake_list_repo_files(repo: str, repo_type: str):
         assert repo
         assert repo_type == "dataset"
-        return ["README.md", "train-00000.parquet", "train-00001.parquet", "train-00002.parquet"]
+        return [
+            "README.md",
+            "train-00000.parquet",
+            "train-00001.parquet",
+            "train-00002.parquet",
+        ]
 
     def fake_hf_hub_url(repo: str, filename: str, repo_type: str):
         assert repo

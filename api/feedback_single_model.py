@@ -30,9 +30,6 @@ from api.rerank import (
     METADATA_FEATURES,
 )
 
-# --- Feature flag tables removed ---
-# Feature names are derived from the registries in api/rerank.py.
-
 
 @dataclass(frozen=True)
 class SingleModelLabeledStory:
@@ -138,6 +135,7 @@ def build_single_model_feature_batch(
     )
 
     from api.rerank import build_feature_matrix
+
     rows = build_feature_matrix(
         story_embeddings,
         derived_rows,

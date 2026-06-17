@@ -97,7 +97,6 @@ class HNClient:
             atomic_write_json(COOKIES_FILE, dict(self.client.cookies))
             return True, "Success"
 
-        # Check for specific error message in HN response
         error_msg: str = "Login failed"
         if "Bad login" in resp.text:
             error_msg = "Bad login (check username/password)"
@@ -126,8 +125,7 @@ class HNClient:
                     continue
                 sid = int(sid_attr)
                 ids.add(sid)
-                
-                # Extract URL for duplicate/hidden detection
+
                 title_span = r.find("span", class_="titleline")
                 if isinstance(title_span, Tag):
                     a = title_span.find("a")
@@ -236,7 +234,6 @@ class HNClient:
             upvoted_urls = set(cached_ids.get("upvoted_urls", []))
 
         if not cache_valid:
-            # Fetch fresh favorites and upvotes
             fav_ids, fav_urls = await self._scrape_items(
                 f"/favorites?id={user}", max_pages=15
             )
@@ -250,14 +247,17 @@ class HNClient:
                 upvoted = up_ids
                 upvoted_urls = up_urls
             elif is_logged_in:
-                logger.warning(f"Logged in as @{logged_in_as}, but requested data for @{user}. Private signals (upvoted/hidden) skipped.")
+                logger.warning(
+                    f"Logged in as @{logged_in_as}, but requested data for @{user}. Private signals (upvoted/hidden) skipped."
+                )
             else:
-                logger.info(f"Not logged in. Only public favorites for @{user} will be fetched.")
+                logger.info(
+                    f"Not logged in. Only public favorites for @{user} will be fetched."
+                )
 
         # Combined positive signals: (Favorites | Upvoted) - Hidden
         pos_combined = (favorites | upvoted) - hidden
 
-        # Update cache with all data
         out_ids = {
             "pos": list(pos_combined),
             "upvoted": list(upvoted),

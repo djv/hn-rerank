@@ -30,9 +30,6 @@ MLP_BASE = [
 ]
 
 
-
-
-
 def run_mlp(label, features, overrides=None, raw=True):
     base = MLP_BASE + ["--model-type", "mlp"]
     if raw:

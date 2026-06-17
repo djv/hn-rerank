@@ -93,7 +93,9 @@ all_cells.sort(key=lambda r: -r["aggregate_score"])
 winner_cell = all_cells[0]
 
 print("\n=== Results table ===", flush=True)
-print(f"{'name':<35} {'Agg Score':>9} {'Median':>6} {'Mean':>6} {'Recall@50':>9} {'NDCG@30':>7}")
+print(
+    f"{'name':<35} {'Agg Score':>9} {'Median':>6} {'Mean':>6} {'Recall@50':>9} {'NDCG@30':>7}"
+)
 print("-" * 74)
 for r in all_cells:
     name = r["name"][:34]

@@ -33,7 +33,6 @@ async def prepare_data(username: str, limit: int = 300) -> None:
         console.print("[red]Need at least 20 positive signals for training.[/red]")
         return
 
-    # Fetch story details
     pos_stories = []
     neg_stories = []
 
@@ -50,7 +49,9 @@ async def prepare_data(username: str, limit: int = 300) -> None:
             if story and story.text_content and len(story.text_content) > 100:
                 neg_stories.append(story)
 
-    console.print(f"Loaded {len(pos_stories)} positive, {len(neg_stories)} negative stories")
+    console.print(
+        f"Loaded {len(pos_stories)} positive, {len(neg_stories)} negative stories"
+    )
 
     if len(pos_stories) < 20:
         console.print("[red]Not enough positive stories with content.[/red]")
@@ -64,10 +65,12 @@ async def prepare_data(username: str, limit: int = 300) -> None:
         others = [s for j, s in enumerate(pos_stories) if j != i]
         if others:
             pos_example = random.choice(others)
-            positive_pairs.append({
-                "anchor": anchor.text_content[:2000],
-                "positive": pos_example.text_content[:2000],
-            })
+            positive_pairs.append(
+                {
+                    "anchor": anchor.text_content[:2000],
+                    "positive": pos_example.text_content[:2000],
+                }
+            )
 
     # Strategy 2: Triplets (anchor, positive, negative) for hard negative mining
     triplets = []
@@ -75,11 +78,13 @@ async def prepare_data(username: str, limit: int = 300) -> None:
         for anchor in pos_stories:
             pos_example = random.choice([s for s in pos_stories if s.id != anchor.id])
             neg_example = random.choice(neg_stories)
-            triplets.append({
-                "anchor": anchor.text_content[:2000],
-                "positive": pos_example.text_content[:2000],
-                "negative": neg_example.text_content[:2000],
-            })
+            triplets.append(
+                {
+                    "anchor": anchor.text_content[:2000],
+                    "positive": pos_example.text_content[:2000],
+                    "negative": neg_example.text_content[:2000],
+                }
+            )
 
     # Shuffle and split
     random.shuffle(positive_pairs)
@@ -95,13 +100,8 @@ async def prepare_data(username: str, limit: int = 300) -> None:
     train_triplets = triplets[:split_triplets]
     val_triplets = triplets[split_triplets:]
 
-    # Save data
-    Path("train_pairs.jsonl").write_text(
-        "\n".join(json.dumps(p) for p in train_pairs)
-    )
-    Path("val_pairs.jsonl").write_text(
-        "\n".join(json.dumps(p) for p in val_pairs)
-    )
+    Path("train_pairs.jsonl").write_text("\n".join(json.dumps(p) for p in train_pairs))
+    Path("val_pairs.jsonl").write_text("\n".join(json.dumps(p) for p in val_pairs))
     Path("train_triplets.jsonl").write_text(
         "\n".join(json.dumps(t) for t in train_triplets)
     )
@@ -115,8 +115,12 @@ async def prepare_data(username: str, limit: int = 300) -> None:
     console.print(f"[green]Saved {len(val_triplets)} validation triplets[/green]")
 
     # Also save legacy format for backward compatibility
-    legacy_train = [{"query": p["anchor"][:500], "pos": p["positive"][:500]} for p in train_pairs]
-    legacy_val = [{"query": p["anchor"][:500], "pos": p["positive"][:500]} for p in val_pairs]
+    legacy_train = [
+        {"query": p["anchor"][:500], "pos": p["positive"][:500]} for p in train_pairs
+    ]
+    legacy_val = [
+        {"query": p["anchor"][:500], "pos": p["positive"][:500]} for p in val_pairs
+    ]
 
     Path("train.jsonl").write_text("\n".join(json.dumps(p) for p in legacy_train))
     Path("val.jsonl").write_text("\n".join(json.dumps(p) for p in legacy_val))
@@ -127,7 +131,9 @@ async def prepare_data(username: str, limit: int = 300) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Prepare fine-tuning data")
     parser.add_argument("username", help="HN username")
-    parser.add_argument("--limit", type=int, default=300, help="Max stories per signal type")
+    parser.add_argument(
+        "--limit", type=int, default=300, help="Max stories per signal type"
+    )
     args = parser.parse_args()
 
     asyncio.run(prepare_data(args.username, args.limit))

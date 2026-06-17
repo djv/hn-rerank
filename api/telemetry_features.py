@@ -37,13 +37,16 @@ def extract_domain_with_fallback(url: str | None, is_hn: bool = False) -> str | 
     if not url:
         return "hn.text" if is_hn else None
     from api.url_utils import extract_domain
+
     domain = extract_domain(url)
     if not domain:
         return "hn.text" if is_hn else None
     return domain
 
 
-def fetch_impression_stats() -> tuple[dict[int, StoryImpressionStats], dict[str, DomainImpressionStats]]:
+def fetch_impression_stats() -> tuple[
+    dict[int, StoryImpressionStats], dict[str, DomainImpressionStats]
+]:
     """Query telemetry_events and return per-story + per-domain stats.
 
     Returns ({story_id: stats}, {domain: stats}). Missing keys = all-zeros.
@@ -99,8 +102,12 @@ def fetch_impression_stats() -> tuple[dict[int, StoryImpressionStats], dict[str,
             is_hn = row["story_source"] == "hn"
             domain = extract_domain_with_fallback(url, is_hn=is_hn)
             if domain:
-                domain_clicks[domain] = domain_clicks.get(domain, 0) + int(row["clicks"] or 0)
-                domain_impressions[domain] = domain_impressions.get(domain, 0) + int(row["impressions"] or 0)
+                domain_clicks[domain] = domain_clicks.get(domain, 0) + int(
+                    row["clicks"] or 0
+                )
+                domain_impressions[domain] = domain_impressions.get(domain, 0) + int(
+                    row["impressions"] or 0
+                )
 
         per_domain: dict[str, DomainImpressionStats] = {}
         for domain in domain_impressions:
@@ -116,9 +123,11 @@ def fetch_impression_stats() -> tuple[dict[int, StoryImpressionStats], dict[str,
         conn.close()
 
 
-def load_telemetry_stats() -> tuple[dict[int, StoryImpressionStats], dict[str, DomainImpressionStats]]:
+def load_telemetry_stats() -> tuple[
+    dict[int, StoryImpressionStats], dict[str, DomainImpressionStats]
+]:
     """Lazy thread-safe cache load of telemetry stats for the current run.
-    
+
     This is called independently by each metadata feature function (e.g., 6 times
     per rank_stories invocation). The cache ensures we only query SQLite once
     and makes the independent calls extremely fast dict-lookups.
