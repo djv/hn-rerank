@@ -179,19 +179,7 @@ def _binary_targets_from_ordinal(
     return (y >= threshold).astype(np.int64)
 
 
-def _balance_binary_matrix(
-    x: NDArray[np.float32],
-    y: NDArray[np.int64],
-) -> tuple[NDArray[np.float32], NDArray[np.int64]]:
-    positive_indices = np.flatnonzero(y == 1)
-    negative_indices = np.flatnonzero(y == 0)
-    keep = min(len(positive_indices), len(negative_indices))
-    if keep == 0 or len(positive_indices) == len(negative_indices):
-        return x, y
-    interleaved = np.empty(keep * 2, dtype=np.int64)
-    interleaved[0::2] = positive_indices[:keep]
-    interleaved[1::2] = negative_indices[:keep]
-    return x[interleaved], y[interleaved]
+
 
 
 def _threshold_binary_counts(y: NDArray[np.int64]) -> dict[str, tuple[int, int]]:
@@ -347,9 +335,6 @@ def train_model_from_matrix(
 
     neutral_x, neutral_y = x_train, neutral_target
     upvote_x, upvote_y = x_train, upvote_target
-    if config.balance_training_labels:
-        neutral_x, neutral_y = _balance_binary_matrix(neutral_x, neutral_y)
-        upvote_x, upvote_y = _balance_binary_matrix(upvote_x, upvote_y)
 
     neutral_model = _make_pipeline(config)
     neutral_model.fit(neutral_x, neutral_y)
@@ -373,10 +358,14 @@ def _predict_ordinal_outputs(
         np.float32
     )
     upvote = model.upvote.predict_proba(x_score)[:, 1].astype(np.float32)
+    # Compute utility on raw probabilities to preserve variance (prevents 0.5 ties)
+    expected_score = at_least_neutral + upvote
+    utility = np.clip(expected_score / 2.0, 0.0, 1.0)
+
+    # Compute valid constrained probabilities for the breakdown
     at_least_neutral = np.clip(at_least_neutral, 0.0, 1.0)
     upvote = np.clip(upvote, 0.0, 1.0)
     upvote = np.minimum(upvote, at_least_neutral)
     downvote = np.clip(1.0 - at_least_neutral, 0.0, 1.0)
     neutral = np.clip(at_least_neutral - upvote, 0.0, 1.0)
-    utility = np.clip((at_least_neutral + upvote) / 2.0, 0.0, 1.0)
     return utility, downvote, neutral, upvote
