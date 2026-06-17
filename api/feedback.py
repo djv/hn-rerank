@@ -10,6 +10,7 @@ from typing import Literal, NotRequired, TypedDict, cast
 
 from api.cache_utils import atomic_write_json
 from api.models import Story, StorySource
+from api.type_utils import optional_int as _optional_int
 from api.url_utils import normalize_url
 
 FeedbackAction = Literal["up", "neutral", "down"]
@@ -131,16 +132,6 @@ class FeedbackRecord:
             comment_count=self.comment_count,
             feedback_updated_at=self.updated_at,
         )
-
-
-def _optional_int(value: object) -> int | None:
-    if isinstance(value, bool):
-        return int(value)
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value)
-    return None
 
 
 def feedback_key(source: str, story_id: int, url: str | None) -> str:
