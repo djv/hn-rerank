@@ -1,0 +1,42 @@
+
+<div class="story-card group relative{% if is_external %} rss-story{% endif %}" data-rank-index="{{ rank_index }}" data-story-time="{{ story_time }}" data-story-id="{{ story_id }}" data-story-source="{{ story_source }}" data-story-title="{{ title }}" data-story-url="{{ story_url or '' }}" data-story-discussion-url="{{ hn_url or '' }}" data-story-score="{{ story_score }}" data-story-comment-count="{{ story_comment_count if story_comment_count is not none else '' }}" data-feedback-key="{{ feedback_key }}" data-feedback-action="{{ feedback_action or '' }}" data-acquisition-kind="{{ acquisition_kind }}" data-model-score="{{ model_score }}" data-knn-score="{{ knn_score }}" data-max-sim-score="{{ max_sim_score }}" data-max-cluster-score="{{ max_cluster_score }}">
+    {% if card_url %}
+    <a href="{{ card_url }}" target="_blank" class="absolute inset-0 z-10 rounded-lg" aria-label="{{ card_aria_label }}"></a>
+    {% endif %}
+    <div class="flex items-center gap-2 mb-0.5 flex-wrap{% if card_url %} relative z-20 pointer-events-none{% endif %}">
+        <span class="px-1.5 py-0.5 rounded bg-hn/10 text-hn text-[10px] font-bold" title="Hybrid Match Score">
+            {{ score }}%
+        </span>
+        {% if source_badge %}
+        <span class="rss-badge">{{ source_badge }}</span>
+        {% endif %}
+        {% if cluster_name %}
+        <span class="cluster-chip">{{ cluster_name }}</span>
+        {% endif %}
+        {% if acquisition_kind != 'exploit' %}
+        <span class="px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-[10px] font-mono font-semibold">{{ acquisition_kind }}</span>
+        {% endif %}
+        <span class="text-[10px] text-stone-400 font-mono">{{ points }} pts</span>
+        <span class="text-[10px] text-stone-400 font-mono">{{ time_ago }}</span>
+        {% if hn_url %}
+        <a href="{{ hn_url }}" target="_blank" class="text-[10px] text-stone-400 font-mono hover:text-hn transition-colors pointer-events-auto shrink-0" title="Comments">💬{% if comment_count is not none %} {{ comment_count }}{% endif %}</a>
+        {% elif comment_count is not none %}
+        <span class="text-[10px] text-stone-400 font-mono shrink-0" title="Comments">💬 {{ comment_count }}</span>
+        {% endif %}
+        <span class="ml-auto flex items-center gap-1 pointer-events-auto" aria-label="Dashboard feedback">
+            <button type="button" class="h-6 w-6 rounded border border-stone-200 bg-white text-xs text-stone-500 hover:border-hn hover:text-hn" title="Upvote for future dashboards" data-feedback-button="up">▲</button>
+            <button type="button" class="h-6 w-6 rounded border border-stone-200 bg-white text-xs text-emerald-700 hover:border-emerald-500 hover:text-emerald-700" title="Mark neutral for future dashboards" data-feedback-button="neutral">✓</button>
+            <button type="button" class="h-6 w-6 rounded border border-stone-200 bg-white text-xs text-stone-500 hover:border-stone-700 hover:text-stone-900" title="Downvote for future dashboards" data-feedback-button="down">▼</button>
+        </span>
+        <span class="text-[10px] text-stone-400 font-mono pointer-events-none" data-feedback-status></span>
+    </div>
+    <h2 class="text-sm font-semibold text-stone-900 leading-snug mb-1{% if card_url %} relative z-20 pointer-events-none{% endif %}">
+        <a href="{{ url }}" target="_blank" class="block hover:text-hn transition-colors pointer-events-auto">{{ title }}</a>
+    </h2>
+    {% if tldr %}
+    <div class="text-sm text-stone-600 bg-stone-50 p-2 rounded border border-stone-100 leading-relaxed whitespace-pre-line{% if card_url %} relative z-20 pointer-events-none{% endif %}">{{ tldr }}</div>
+    {% endif %}
+    <div class="mt-1 flex justify-end{% if card_url %} relative z-20 pointer-events-none{% endif %}">
+        <button type="button" class="tldr-detail-btn pointer-events-auto" data-tldr-detail>🔍 Detailed analysis</button>
+    </div>
+</div>
