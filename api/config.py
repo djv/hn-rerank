@@ -10,13 +10,6 @@ from typing import Any, Self
 
 
 @dataclass(frozen=True)
-class RankingConfig:
-    """Weights and limits for the ranking engine."""
-
-    max_results: int = 500
-
-
-@dataclass(frozen=True)
 class SemanticConfig:
     """Semantic scoring and k-NN parameters."""
 
@@ -77,13 +70,7 @@ class LLMConfig:
     """LLM provider and model settings."""
 
     provider: str = "mistral"
-    cluster_name_model_primary: str = "llama-3.3-70b-versatile"
-    cluster_name_model_fallback: str = "llama-3.1-8b-instant"
-    mistral_model: str = "mistral-small-latest"
-    tldr_model: str = "llama-3.1-8b-instant"
-    temperature: float = 0.2
-    tldr_batch_size: int = 3
-    max_total_seconds: float = 600.0
+
 
 
 @dataclass(frozen=True)
@@ -92,7 +79,6 @@ class ExploreConfig:
 
     enabled: bool = False
     slots: int = 4
-    method: str = "entropy"
     min_quality: float = 0.4
     top_reserve: int = 5
 
@@ -147,7 +133,6 @@ class AppConfig:
     debug_scores: bool = True
     debug_clusters: bool = False
 
-    ranking: RankingConfig = field(default_factory=RankingConfig)
     semantic: SemanticConfig = field(default_factory=SemanticConfig)
     classifier: ClassifierConfig = field(default_factory=ClassifierConfig)
     clustering: ClusteringConfig = field(default_factory=ClusteringConfig)
@@ -175,11 +160,16 @@ class AppConfig:
         # fields (e.g. adaptive_hn, freshness) don't cause TypeError on load.
         def _safe_section(name: str, cls_: type) -> dict[str, Any]:
             import dataclasses
+            import logging
+            logger = logging.getLogger(__name__)
 
             known = {f.name for f in dataclasses.fields(cls_)}
-            return {k: v for k, v in _get_section(name).items() if k in known}
+            section = _get_section(name)
+            unknown = set(section.keys()) - known
+            if unknown:
+                logger.warning("Config section '%s' contains unknown keys that will be ignored: %s", name, ", ".join(unknown))
+            return {k: v for k, v in section.items() if k in known}
 
-        ranking = RankingConfig(**_safe_section("ranking", RankingConfig))
         semantic = SemanticConfig(**_safe_section("semantic", SemanticConfig))
         classifier = ClassifierConfig(**_safe_section("classifier", ClassifierConfig))
         clustering = ClusteringConfig(**_safe_section("clustering", ClusteringConfig))
@@ -210,7 +200,6 @@ class AppConfig:
             no_naming=bool(_get_root("no_naming", False)),
             debug_scores=bool(_get_root("debug_scores", True)),
             debug_clusters=bool(_get_root("debug_clusters", False)),
-            ranking=ranking,
             semantic=semantic,
             classifier=classifier,
             clustering=clustering,

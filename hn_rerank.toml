@@ -49,7 +49,6 @@ slots = 7
 [hn_rerank.single_model]
 min_positive_labels = 10
 min_negative_labels = 10
-balance_training_labels = true
 model_type = "svm"
 svm_kernel = "rbf"
 svm_c = 0.3

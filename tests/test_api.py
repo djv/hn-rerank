@@ -5,7 +5,7 @@ from api.constants import STORY_CACHE_VERSION
 from api.rerank import rank_stories
 from api.fetching import fetch_story
 from api.models import Story
-from api.config import AppConfig, RankingConfig
+from api.config import AppConfig
 
 
 @pytest.mark.asyncio
@@ -159,19 +159,3 @@ def test_rank_stories_empty_positive_embeddings():
         result = results[0]
         assert result.max_sim_score == 0.0
         assert result.best_fav_index == -1
-
-
-def test_rank_stories_returns_full_ranked_pool_even_when_max_results_is_lower():
-    stories = [
-        Story(id=1, title="A", url=None, score=0, time=1000, text_content="A"),
-        Story(id=2, title="B", url=None, score=0, time=1000, text_content="B"),
-        Story(id=3, title="C", url=None, score=0, time=1000, text_content="C"),
-    ]
-    pos_emb = np.array([[1.0] * 768])
-    cand_emb = np.array([[1.0] * 768, [0.9] * 768, [0.8] * 768])
-
-    config = AppConfig(ranking=RankingConfig(max_results=1))
-    with patch("api.rerank.get_embeddings", return_value=cand_emb):
-        results = rank_stories(stories, pos_emb, config=config)
-
-    assert len(results) == 3

@@ -5,9 +5,11 @@ from api.rerank import rank_stories
 from api.models import Story, RankResult, StorySource
 from api.config import (
     AppConfig,
-    RankingConfig,
-    SemanticConfig,
+    ArchiveConfig,
     ClassifierConfig,
+    ClusteringConfig,
+    LLMConfig,
+    SemanticConfig,
     SingleModelConfig,
 )
 from api.feedback_single_model import (
@@ -209,7 +211,7 @@ def test_rank_stories_empty_signals():
     with pytest.MonkeyPatch().context() as mp:
         mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: cand_emb)
 
-        config = AppConfig(ranking=RankingConfig())
+        config = AppConfig()
         results = rank_stories(
             stories,
             positive_embeddings=np.zeros((0, 384), dtype=np.float32),
@@ -310,7 +312,7 @@ def test_heuristic_ranking_negative_embeddings_no_effect_when_negative_matches()
         mp.setattr(api.rerank, "get_embeddings", lambda texts, **kwargs: cand_emb)
 
         # Baseline: Rank WITHOUT negative embeddings
-        config_baseline = AppConfig(ranking=RankingConfig())
+        config_baseline = AppConfig()
         res_baseline = rank_stories(
             stories, pos_emb, negative_embeddings=None, config=config_baseline
         )

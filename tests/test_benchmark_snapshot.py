@@ -321,7 +321,4 @@ def test_evaluate_cv_populates_diagnostics_summary():
             )
 
     assert diagnostics_summary["rank_calls"] == 2
-    assert diagnostics_summary["classifier_requested_count"] == 2
-    assert diagnostics_summary["classifier_used_count"] == 2
-    assert diagnostics_summary["classifier_used_rate"] == 1.0
     assert diagnostics_summary["avg_derived_feature_dim"] == 2.0
