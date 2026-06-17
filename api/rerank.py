@@ -1,5 +1,4 @@
 from __future__ import annotations
-import os
 import hashlib
 import json
 import logging
@@ -11,19 +10,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypedDict, cast
 
 
-def _ensure_joblib_settings() -> None:
-    # Disable joblib multiprocessing in this environment to avoid SemLock
-    # permission warnings; joblib falls back to serial either way.
-    os.environ.setdefault("JOBLIB_MULTIPROCESSING", "0")
-    tmp = os.environ.get("JOBLIB_TEMP_FOLDER") or os.environ.get("LOKY_TEMP_FOLDER")
-    if not tmp:
-        tmp = str(Path(__file__).resolve().parents[1] / ".cache" / "joblib")
-        os.environ["JOBLIB_TEMP_FOLDER"] = tmp
-        os.environ["LOKY_TEMP_FOLDER"] = tmp
-    Path(tmp).mkdir(parents=True, exist_ok=True)
-
-
-_ensure_joblib_settings()
+from api.env_setup import ensure_joblib_settings
+ensure_joblib_settings()
 
 import numpy as np  # noqa: E402
 import onnxruntime as ort  # noqa: E402
@@ -97,27 +85,16 @@ def _populate_rank_cache_metadata(
 
     counts: dict[str, list[int]] = {}
     
-    if positive_stories:
-        for s in positive_stories:
+    for stories, idx in [(positive_stories, 0), (negative_stories, 1)]:
+        if not stories:
+            continue
+        for s in stories:
             if s.id and s.feedback_updated_at > 0 and s.time > 0 and s.feedback_updated_at > s.time:
                 _rank_cache.story_age_at_vote_map[s.id] = (s.feedback_updated_at - s.time) / 86400.0
             domain = extract_domain_with_fallback(s.url, is_hn=s.is_hn)
             if domain:
                 c = counts.setdefault(domain, [0, 0])
-                c[0] += 1
-                if s.feedback_updated_at > 0:
-                    days = (now - s.feedback_updated_at) / 86400.0
-                    if domain not in _rank_cache.domain_recency_map or days < _rank_cache.domain_recency_map[domain]:
-                        _rank_cache.domain_recency_map[domain] = max(days, 0.0)
-
-    if negative_stories:
-        for s in negative_stories:
-            if s.id and s.feedback_updated_at > 0 and s.time > 0 and s.feedback_updated_at > s.time:
-                _rank_cache.story_age_at_vote_map[s.id] = (s.feedback_updated_at - s.time) / 86400.0
-            domain = extract_domain_with_fallback(s.url, is_hn=s.is_hn)
-            if domain:
-                c = counts.setdefault(domain, [0, 0])
-                c[1] += 1
+                c[idx] += 1
                 if s.feedback_updated_at > 0:
                     days = (now - s.feedback_updated_at) / 86400.0
                     if domain not in _rank_cache.domain_recency_map or days < _rank_cache.domain_recency_map[domain]:

@@ -4,7 +4,6 @@
 import argparse
 import asyncio
 import json
-import os
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -13,22 +12,12 @@ from typing import TypedDict, cast
 
 import httpx
 import numpy as np
+from api.type_utils import as_float as _as_float
 from numpy.typing import NDArray
 
 
-def _ensure_joblib_settings() -> None:
-    # Disable joblib multiprocessing in this environment to avoid SemLock
-    # permission warnings; joblib falls back to serial either way.
-    os.environ.setdefault("JOBLIB_MULTIPROCESSING", "0")
-    tmp = os.environ.get("JOBLIB_TEMP_FOLDER") or os.environ.get("LOKY_TEMP_FOLDER")
-    if not tmp:
-        tmp = str(Path(__file__).resolve().parent / ".cache" / "joblib")
-        os.environ["JOBLIB_TEMP_FOLDER"] = tmp
-        os.environ["LOKY_TEMP_FOLDER"] = tmp
-    Path(tmp).mkdir(parents=True, exist_ok=True)
-
-
-_ensure_joblib_settings()
+from api.env_setup import ensure_joblib_settings
+ensure_joblib_settings()
 
 from api.client import HNClient  # noqa: E402
 from api.feedback_single_model import (  # noqa: E402
@@ -152,22 +141,7 @@ def _average_metrics(all_metrics: list[dict[str, float]]) -> dict[str, float]:
     return avg_metrics
 
 
-def _as_float(value: object, default: float = 0.0) -> float:
-    if isinstance(value, bool):
-        return float(value)
-    if isinstance(value, (int, float)):
-        return float(value)
-    return default
 
-
-def _as_int(value: object, default: int = 0) -> int:
-    if isinstance(value, bool):
-        return int(value)
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value)
-    return default
 
 
 def _summarize_rank_diagnostics(records: list[dict[str, object]]) -> dict[str, object]:
