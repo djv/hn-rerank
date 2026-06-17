@@ -145,59 +145,16 @@ def _summarize_rank_diagnostics(records: list[dict[str, object]]) -> dict[str, o
         return {}
 
     rank_calls = len(records)
-    classifier_requested_count = sum(
-        1 for record in records if bool(record.get("classifier_requested", False))
-    )
-    classifier_used_count = sum(
-        1 for record in records if bool(record.get("classifier_used", False))
-    )
-    local_hidden_penalty_applied_count = sum(
-        1
-        for record in records
-        if bool(record.get("local_hidden_penalty_applied", False))
-    )
-    classifier_metadata_features_used_count = sum(
-        1
-        for record in records
-        if bool(record.get("classifier_metadata_features_used", False))
-    )
-
     def _avg(key: str) -> float:
         return float(np.mean([_as_float(record.get(key, 0.0)) for record in records]))
 
-    failure_reasons: dict[str, int] = {}
-    for record in records:
-        reason = record.get("classifier_failure_reason")
-        if not reason:
-            continue
-        failure_reasons[str(reason)] = failure_reasons.get(str(reason), 0) + 1
-
     return {
         "rank_calls": rank_calls,
-        "classifier_requested_count": classifier_requested_count,
-        "classifier_used_count": classifier_used_count,
-        "classifier_fallback_count": classifier_requested_count - classifier_used_count,
-        "classifier_used_rate": (
-            float(classifier_used_count / classifier_requested_count)
-            if classifier_requested_count
-            else 0.0
-        ),
-        "local_hidden_penalty_applied_count": local_hidden_penalty_applied_count,
-        "classifier_metadata_features_used_count": classifier_metadata_features_used_count,
         "avg_positive_count": _avg("positive_count"),
         "avg_negative_count": _avg("negative_count"),
         "avg_base_feature_dim": _avg("base_feature_dim"),
         "avg_derived_feature_dim": _avg("derived_feature_dim"),
         "avg_classifier_metadata_feature_dim": _avg("classifier_metadata_feature_dim"),
-        "avg_local_hidden_penalty_mean": _avg("local_hidden_penalty_mean"),
-        "avg_local_hidden_penalty_max": _avg("local_hidden_penalty_max"),
-        "max_local_hidden_penalty_max": float(
-            max(
-                _as_float(record.get("local_hidden_penalty_max", 0.0))
-                for record in records
-            )
-        ),
-        "classifier_failure_reasons": failure_reasons,
     }
 
 
@@ -997,56 +954,6 @@ class RankingEvaluator:
                     training_config.single_model,
                 )
 
-                hn_count = getattr(
-                    training_config.single_model, "hard_negative_mining_count", 0
-                )
-                if hn_count > 0:
-                    first_pass_results = rank_stories(
-                        fold_candidates,
-                        model,
-                        positive_embeddings=train_emb,
-                        negative_embeddings=dataset.neg_embeddings,
-                        config=training_config,
-                        diagnostics=None,
-                        positive_stories=[all_stories[i] for i in train_idx],
-                        negative_stories=dataset.neg_stories,
-                        cluster_names=None,
-                        cluster_keywords=cluster_keywords,
-                    )
-
-                    hard_neg_candidates = []
-                    for r in first_pass_results:
-                        cand = fold_candidates[r.index]
-                        if cand.id not in test_ids:
-                            hard_neg_candidates.append(cand)
-                            if len(hard_neg_candidates) == hn_count:
-                                break
-
-                    if hard_neg_candidates:
-                        from api.rerank import get_embeddings
-
-                        hard_neg_emb = get_embeddings(
-                            [s.text_content for s in hard_neg_candidates]
-                        )
-                        augmented_neg_stories = (
-                            dataset.neg_stories + hard_neg_candidates
-                        )
-                        augmented_neg_emb = np.vstack(
-                            [dataset.neg_embeddings, hard_neg_emb]
-                        )
-
-                        model, _ = train_single_model_from_embeddings(
-                            _training_labels_from_histories(
-                                [all_stories[i] for i in train_idx],
-                                augmented_neg_stories,
-                            ),
-                            np.vstack([train_emb, augmented_neg_emb]),
-                            train_emb,
-                            augmented_neg_emb,
-                            training_config,
-                            training_config.single_model,
-                        )
-
                 results = rank_stories(
                     fold_candidates,
                     model,
@@ -1294,15 +1201,6 @@ async def main():
         candidates=args.candidates,
     )
 
-    # Apply CLI overrides to nested config objects.
-    ranking_overrides = {}
-    if args.diversity is not None:
-        ranking_overrides["diversity_lambda"] = args.diversity
-    if args.neg_weight is not None:
-        ranking_overrides["negative_weight"] = args.neg_weight
-
-    if ranking_overrides:
-        config = replace(config, ranking=replace(config.ranking, **ranking_overrides))
 
     if args.knn is not None:
         config = replace(

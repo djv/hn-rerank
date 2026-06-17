@@ -179,12 +179,7 @@ def _make_feature(
 METADATA_FEATURES["log_points"] = _make_feature(
     lambda s, now: max(float(s.score), 0.0) if s.is_hn else 0.0, norm_val=1000.0
 )
-METADATA_FEATURES["points_per_hour"] = _make_feature(
-    lambda s, now: (
-        max(float(s.score), 0.0) / max(1.0, (now - s.time) / 3600.0) if s.is_hn else 0.0
-    ),
-    norm_val=100.0,
-)
+
 METADATA_FEATURES["log_comments"] = _make_feature(
     lambda s, now: max(float(s.comment_count or 0.0), 0.0) if s.is_hn else 0.0,
     norm_val=500.0,
@@ -265,15 +260,6 @@ METADATA_FEATURES["click_count"] = _make_telemetry_feature(
 
 METADATA_FEATURES["click_ratio"] = _make_telemetry_feature(
     lambda s, ss, ds: float(ss[s.id].click_ratio) if s.id in ss else 0.0, log=False
-)
-
-METADATA_FEATURES["implicit_skip"] = _make_telemetry_feature(
-    lambda s, ss, ds: (
-        1.0
-        if s.id in ss and ss[s.id].impression_count > 0 and ss[s.id].click_count == 0
-        else 0.0
-    ),
-    log=False,
 )
 
 METADATA_FEATURES["days_since_last_impression"] = _make_telemetry_feature(
@@ -1252,9 +1238,6 @@ def rank_stories(
         derived_feature_dim=0,
         classifier_metadata_features_used=False,
         classifier_metadata_feature_dim=0,
-        local_hidden_penalty_applied=False,
-        local_hidden_penalty_mean=0.0,
-        local_hidden_penalty_max=0.0,
     )
 
     # Display-only scores (always populated regardless of scoring path)

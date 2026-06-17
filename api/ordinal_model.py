@@ -18,17 +18,6 @@ from api.models import RankResult, Story
 
 logger = logging.getLogger(__name__)
 
-FEATURE_NAMES: tuple[str, ...] = (
-    "model_score",
-    "max_cluster_score",
-    "knn_score",
-    "max_sim_score",
-    "log_points",
-    "log_comments",
-)
-MODEL_VERSION = 6
-TRAINING_SOURCE = "dashboard_feedback"
-MODEL_KIND = "ordinal_threshold_v1"
 DOWNVOTE_LABEL = 0
 NEUTRAL_LABEL = 1
 UPVOTE_LABEL = 2
@@ -45,131 +34,12 @@ ORDINAL_TO_ACTION: dict[int, FeedbackAction] = {
 
 
 @dataclass(frozen=True)
-class LabeledStory:
-    """Explicit dashboard feedback label with captured rank diagnostics."""
-
-    story: Story
-    label: int
-    rank_result: RankResult
-    feedback_updated_at: float = 0.0
-    has_raw_story_score: bool = True
-    has_raw_comment_count: bool = True
-
-    @property
-    def feedback_action(self) -> FeedbackAction:
-        return ORDINAL_TO_ACTION.get(self.label, "down")
-
-    @property
-    def legacy_binary_label(self) -> int:
-        return 1 if self.label == UPVOTE_LABEL else 0
-
-
-@dataclass(frozen=True)
 class OrdinalThresholdModel:
     at_least_neutral: Pipeline
     upvote: Pipeline
 
 
-def build_labels_from_feedback(
-    records: dict[str, FeedbackRecord],
-) -> list[LabeledStory]:
-    labels: list[LabeledStory] = []
-    for record in records.values():
-        rank_result = RankResult(
-            index=-1,
-            model_score=0.0,
-            best_fav_index=-1,
-            max_sim_score=0.0,
-            knn_score=0.0,
-            max_cluster_score=0.0,
-        )
-        labels.append(
-            LabeledStory(
-                story=record.to_story(),
-                label=ACTION_TO_ORDINAL.get(record.action, DOWNVOTE_LABEL),
-                rank_result=rank_result,
-                feedback_updated_at=record.updated_at,
-                has_raw_story_score=record.score is not None,
-                has_raw_comment_count=record.comment_count is not None,
-            )
-        )
-    return labels
 
-
-def _safe_float(value: float | int | None) -> float:
-    if value is None:
-        return 0.0
-    result = float(value)
-    if not math.isfinite(result):
-        return 0.0
-    return result
-
-
-def build_features(
-    story: Story,
-    result: RankResult | None = None,
-    *,
-    now: float | None = None,
-) -> list[float]:
-    """Build the stable numeric feature vector used by the learned ranker."""
-    score = max(float(story.score or 0), 0.0)
-    comments = max(float(story.comment_count or 0), 0.0)
-
-    if result is None:
-        rank_features = {
-            "model_score": 0.0,
-            "max_cluster_score": 0.0,
-            "knn_score": 0.0,
-            "max_sim_score": 0.0,
-        }
-    else:
-        rank_features = {
-            "model_score": result.model_score,
-            "max_cluster_score": result.max_cluster_score,
-            "knn_score": result.knn_score,
-            "max_sim_score": result.max_sim_score,
-        }
-
-    return [
-        _safe_float(rank_features["model_score"]),
-        _safe_float(rank_features["max_cluster_score"]),
-        _safe_float(rank_features["knn_score"]),
-        _safe_float(rank_features["max_sim_score"]),
-        math.log1p(score),
-        math.log1p(comments),
-    ]
-
-
-def _label_timestamp(label: LabeledStory) -> float:
-    if label.feedback_updated_at > 0:
-        return float(label.feedback_updated_at)
-    return float(label.story.time or 0)
-
-
-def _count_labels(labels: list[LabeledStory]) -> tuple[int, int, int]:
-    positive = sum(item.label == UPVOTE_LABEL for item in labels)
-    neutral = sum(item.label == NEUTRAL_LABEL for item in labels)
-    negative = sum(item.label == DOWNVOTE_LABEL for item in labels)
-    return positive, neutral, negative
-
-
-def build_training_matrix(
-    labels: list[LabeledStory],
-    *,
-    now: float | None = None,
-) -> tuple[NDArray[np.float32], NDArray[np.int64]]:
-    rows: list[list[float]] = []
-    y: list[int] = []
-    for item in labels:
-        rows.append(
-            build_features(
-                item.story,
-                item.rank_result,
-                now=item.feedback_updated_at or now,
-            )
-        )
-        y.append(item.label)
-    return np.asarray(rows, dtype=np.float32), np.asarray(y, dtype=np.int64)
 
 
 def _binary_targets_from_ordinal(
@@ -194,31 +64,7 @@ def _threshold_binary_counts(y: NDArray[np.int64]) -> dict[str, tuple[int, int]]
     }
 
 
-def _has_sufficient_threshold_labels(
-    labels: list[LabeledStory],
-    config: SingleModelConfig,
-) -> bool:
-    if not labels:
-        return False
-    _, y = build_training_matrix(labels)
-    counts = _threshold_binary_counts(y)
-    return all(
-        positive >= config.min_positive_labels
-        and negative >= config.min_negative_labels
-        for positive, negative in counts.values()
-    )
 
-
-def _insufficient_label_message(
-    labels: list[LabeledStory],
-    config: SingleModelConfig,
-) -> str:
-    positive_count, neutral_count, negative_count = _count_labels(labels)
-    return (
-        f"need at least {config.min_positive_labels} upvote and "
-        f"{config.min_negative_labels} downvote labels; got "
-        f"{positive_count} upvote, {neutral_count} neutral, {negative_count} downvote"
-    )
 
 
 def _make_pipeline(config: SingleModelConfig) -> Pipeline:
@@ -289,42 +135,24 @@ def _make_pipeline(config: SingleModelConfig) -> Pipeline:
     )
 
 
-def train_model(
-    labels: list[LabeledStory],
-    config: SingleModelConfig,
-    *,
-    now: float | None = None,
-) -> OrdinalThresholdModel:
-    x_train, y_train = build_training_matrix(
-        labels,
-        now=now,
-    )
-    return train_model_from_matrix(x_train, y_train, config, labels=labels)
-
-
 def train_model_from_matrix(
     x_train: NDArray[np.float32],
     y_train: NDArray[np.int64],
     config: SingleModelConfig,
-    *,
-    labels: list[LabeledStory] | None = None,
 ) -> OrdinalThresholdModel:
     counts = _threshold_binary_counts(y_train)
     if any(
         positive < config.min_positive_labels or negative < config.min_negative_labels
         for positive, negative in counts.values()
     ):
-        if labels is None:
-            positive_count = int(np.sum(y_train == UPVOTE_LABEL))
-            neutral_count = int(np.sum(y_train == NEUTRAL_LABEL))
-            negative_count = int(np.sum(y_train == DOWNVOTE_LABEL))
-            detail = (
-                f"need at least {config.min_positive_labels} upvote and "
-                f"{config.min_negative_labels} downvote labels; got "
-                f"{positive_count} upvote, {neutral_count} neutral, {negative_count} downvote"
-            )
-        else:
-            detail = _insufficient_label_message(labels, config)
+        positive_count = int(np.sum(y_train == UPVOTE_LABEL))
+        neutral_count = int(np.sum(y_train == NEUTRAL_LABEL))
+        negative_count = int(np.sum(y_train == DOWNVOTE_LABEL))
+        detail = (
+            f"need at least {config.min_positive_labels} upvote and "
+            f"{config.min_negative_labels} downvote labels; got "
+            f"{positive_count} upvote, {neutral_count} neutral, {negative_count} downvote"
+        )
         raise ValueError(f"insufficient labels: {detail}")
 
     neutral_target = _binary_targets_from_ordinal(y_train, NEUTRAL_LABEL)
