@@ -1,15 +1,11 @@
 #!/usr/bin/env -S uv run
 """MLP + Random Forest tuning: alpha, hidden layers, solver, lr_init, RF params."""
 
-import subprocess
+from tuning_runner import OUTDIR, run_eval
 import json
-import time
-from pathlib import Path
 
 SNAPSHOT = "tests/snapshots/baseline_full.json"
 FEEDBACK = ".cache/user_feedback/dashboard_feedback.json"
-OUTDIR = Path("results")
-OUTDIR.mkdir(parents=True, exist_ok=True)
 
 F16 = (
     "centroid,pos_knn,neg_knn,pos_neg_ratio,"
@@ -34,30 +30,7 @@ MLP_BASE = [
 ]
 
 
-def run_eval(label, features, base, overrides=None):
-    cmd = base + [
-        "--output",
-        str(OUTDIR / f"{label}.json"),
-        "--features",
-        f"{label}={features}",
-    ]
-    if overrides:
-        for k, v in overrides.items():
-            cmd += ["--override", f"{k}={v}"]
-    print(f"  [{label}] overrides={overrides}", flush=True)
-    start = time.time()
-    subprocess.run(cmd, check=True)
-    elapsed = time.time() - start
-    with open(OUTDIR / f"{label}.json") as f:
-        data = json.load(f)
-    r = data[0]
-    r['aggregate_score'] = (r.get('recall_at_50', 0) * 1000) - r['median_rank']
-    print(
-        f"  -> Median={r['median_rank']:.1f} mean={r['mean_rank']:.1f} "
-        f"Recall@50={r.get('recall_at_50', 0):.3f} Agg={r['aggregate_score']:.1f} ({elapsed:.1f}s)",
-        flush=True,
-    )
-    return r
+
 
 
 def run_mlp(label, features, overrides=None, raw=True):

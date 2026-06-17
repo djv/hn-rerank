@@ -1,15 +1,11 @@
 #!/usr/bin/env -S uv run
 """SVM tuning: C x gamma grid, kernel variants, 5-feature subset."""
 
-import subprocess
+from tuning_runner import OUTDIR, run_eval as _run_eval
 import json
-import time
-from pathlib import Path
 
 SNAPSHOT = "tests/snapshots/baseline_full.json"
 FEEDBACK = ".cache/user_feedback/dashboard_feedback.json"
-OUTDIR = Path("results")
-OUTDIR.mkdir(parents=True, exist_ok=True)
 
 F16_RAW = (
     "centroid,pos_knn,neg_knn,pos_neg_ratio,"
@@ -39,29 +35,7 @@ BASE = [
 
 
 def run_eval(label, features, overrides=None):
-    cmd = BASE + [
-        "--output",
-        str(OUTDIR / f"{label}.json"),
-        "--features",
-        f"{label}={features}",
-    ]
-    if overrides:
-        for k, v in overrides.items():
-            cmd += ["--override", f"{k}={v}"]
-    print(f"  [{label}] overrides={overrides}", flush=True)
-    start = time.time()
-    subprocess.run(cmd, check=True)
-    elapsed = time.time() - start
-    with open(OUTDIR / f"{label}.json") as f:
-        data = json.load(f)
-    r = data[0]
-    r['aggregate_score'] = (r.get('recall_at_50', 0) * 1000) - r['median_rank']
-    print(
-        f"  -> Median Rank={r['median_rank']:.1f} mean_rank={r['mean_rank']:.1f} "
-        f"Recall@50={r.get('recall_at_50', 0):.3f} Agg={r['aggregate_score']:.1f} ({elapsed:.1f}s)",
-        flush=True,
-    )
-    return r
+    return _run_eval(label, features, BASE, overrides)
 
 
 # Phase 1: C x gamma grid
