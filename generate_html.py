@@ -297,9 +297,6 @@ def get_cluster_id_for_result(
 def select_ranked_results(
     ranked: list[RankResult],
     cands: list[Story],
-    cluster_labels: NDArray[np.int32] | None,
-    cluster_names: dict[int, str],
-    cand_cluster_map: dict[int, int],
     count: int,
 ) -> list[RankResult]:
     """Select a ranked subset with a small fixed external quota and diversity.
@@ -307,7 +304,6 @@ def select_ranked_results(
     The quota compensates for HN's site-score blend so external stories are not
     crowded out purely by HN points. It also ensures source diversity for external items.
     """
-    _ = (cluster_labels, cluster_names, cand_cluster_map)
     if not ranked:
         return []
 
@@ -1191,9 +1187,6 @@ async def main() -> None:
         selected_results = select_ranked_results(
             ranked,
             cands,
-            cluster_labels,
-            cluster_names,
-            cand_cluster_map,
             config.count,
         )
         update_prep("select", 1, 1, "[*] Selecting final stories...")

@@ -673,9 +673,6 @@ def test_select_ranked_results_external_quota_scenarios(
     selected = select_ranked_results(
         ranked,
         cands,
-        cluster_labels=None,
-        cluster_names={},
-        cand_cluster_map={},
         count=count,
     )
 
@@ -697,9 +694,6 @@ def test_select_ranked_results_no_longer_prioritizes_cluster_coverage():
     selected = select_ranked_results(
         ranked,
         cands,
-        cluster_labels=np.array([0, 1], dtype=np.int32),
-        cluster_names={0: "Alpha", 1: "Beta"},
-        cand_cluster_map={0: 0, 1: 0, 2: 1},
         count=2,
     )
 
@@ -719,9 +713,6 @@ def test_select_ranked_results_uses_model_scores():
     selected = select_ranked_results(
         ranked,
         cands,
-        cluster_labels=None,
-        cluster_names={},
-        cand_cluster_map={},
         count=2,
     )
 

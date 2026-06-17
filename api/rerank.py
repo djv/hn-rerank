@@ -39,7 +39,8 @@ from api.config import (  # noqa: E402
     ClusteringConfig,
     ClassifierConfig,
 )
-from api.telemetry_features import extract_domain_with_fallback  # noqa: E402
+from api.telemetry_features import extract_domain_with_fallback, load_telemetry_stats  # noqa: E402
+from api.url_utils import extract_domain  # noqa: E402
 
 
 SIMILARITY_FEATURES: frozenset[str] = frozenset(
@@ -230,8 +231,6 @@ def _make_telemetry_feature(
     log: bool = True,
 ) -> Callable[[list[Story], float], NDArray[np.float32]]:
     def _feature_fn(stories: list[Story], now: float) -> NDArray[np.float32]:
-        from api.telemetry_features import load_telemetry_stats
-
         story_stats, domain_stats = load_telemetry_stats()
 
         vals = np.array(
@@ -272,27 +271,22 @@ METADATA_FEATURES["days_since_last_impression"] = _make_telemetry_feature(
 )
 
 
-def _domain_ctr_extract(s: Story, ss: dict, ds: dict) -> float:
-    from api.telemetry_features import extract_domain_with_fallback
-
-    d = extract_domain_with_fallback(s.url, is_hn=s.is_hn)
-    return float(ds[d].domain_ctr) if d and d in ds else 0.0
-
-
 METADATA_FEATURES["domain_ctr"] = _make_telemetry_feature(
-    _domain_ctr_extract, log=False
+    lambda s, ss, ds: (
+        float(ds[d].domain_ctr)
+        if (d := extract_domain_with_fallback(s.url, is_hn=s.is_hn)) and d in ds
+        else 0.0
+    ),
+    log=False,
 )
 
-
-def _domain_imp_extract(s: Story, ss: dict, ds: dict) -> float:
-    from api.telemetry_features import extract_domain_with_fallback
-
-    d = extract_domain_with_fallback(s.url, is_hn=s.is_hn)
-    return float(ds[d].domain_impression_count) if d and d in ds else 0.0
-
-
 METADATA_FEATURES["domain_impression_count"] = _make_telemetry_feature(
-    _domain_imp_extract, norm_val=500.0
+    lambda s, ss, ds: (
+        float(ds[d].domain_impression_count)
+        if (d := extract_domain_with_fallback(s.url, is_hn=s.is_hn)) and d in ds
+        else 0.0
+    ),
+    norm_val=500.0,
 )
 
 
@@ -366,8 +360,6 @@ def _meta_domain_recency(stories: list[Story], now: float) -> NDArray[np.float32
     Stories from domains never voted on get 365-day sentinel.
     HN discussions (no domain) get the same sentinel.
     """
-    from api.url_utils import extract_domain
-
     _SENTINEL_DAYS = 365.0
     vals: list[float] = []
     recency_map = getattr(_rank_cache, "domain_recency_map", {})
@@ -722,12 +714,7 @@ def init_model() -> ONNXEmbeddingModel:
     return _model
 
 
-def get_model() -> ONNXEmbeddingModel:
-    return init_model()
 
-
-def init_cluster_model() -> ONNXEmbeddingModel:
-    return init_model()
 
 
 def _get_embeddings_with_model(
@@ -842,7 +829,7 @@ def get_embeddings(
     is_query: bool = False,
     progress_callback: Callable[[int, int], None] | None = None,
 ) -> NDArray[np.float32]:
-    model: ONNXEmbeddingModel = get_model()
+    model: ONNXEmbeddingModel = init_model()
     return _get_embeddings_with_model(
         texts,
         model=model,
@@ -851,13 +838,6 @@ def get_embeddings(
         is_query=is_query,
         progress_callback=progress_callback,
     )
-
-
-def get_cluster_embeddings(
-    texts: list[str],
-    progress_callback: Callable[[int, int], None] | None = None,
-) -> NDArray[np.float32]:
-    return get_embeddings(texts, is_query=False, progress_callback=progress_callback)
 
 
 def cluster_interests_with_labels(
@@ -1305,39 +1285,14 @@ def rank_stories(
     )
     cand_metadata = cand_metadata[: len(cand_emb)]
 
-    def _stack_with_embeddings(
-        derived: dict[str, NDArray[np.float32]],
-        embeddings: NDArray[np.float32],
-        cfg: ClassifierConfig,
-    ) -> NDArray[np.float32]:
-        cols: list[NDArray[np.float32]] = []
-        if cfg.raw_embedding_features:
-            cols.append(embeddings)
-        dr = stack_similarity_features(derived, cfg)
-        if dr.shape[1] > 0:
-            cols.append(dr)
-        return (
-            np.hstack(cols).astype(np.float32)
-            if cols
-            else np.zeros((len(embeddings), 0), dtype=np.float32)
-        )
-
-    cand_columns: list[NDArray[np.float32]] = []
-    if config.classifier.raw_embedding_features:
-        cand_columns.append(cand_emb)
-    derived_rows = stack_similarity_features(cand_derived, config.classifier)
-    if derived_rows.shape[1] > 0:
-        cand_columns.append(derived_rows)
-    if cand_metadata.shape[1] > 0:
-        cand_columns.append(cand_metadata)
-    cand_features = (
-        np.hstack(cand_columns).astype(np.float32)
-        if cand_columns
-        else np.zeros((len(cand_emb), 0), dtype=np.float32)
+    cand_derived_rows = stack_similarity_features(cand_derived, config.classifier)
+    cand_features = build_feature_matrix(
+        cand_emb,
+        cand_derived_rows,
+        cand_metadata,
+        config,
     )
-    derived_width = int(
-        stack_similarity_features(cand_derived, config.classifier).shape[1]
-    )
+    derived_width = int(cand_derived_rows.shape[1])
     _set_rank_diagnostics(
         diagnostics,
         derived_feature_dim=int(derived_width),
@@ -1376,10 +1331,18 @@ def rank_stories(
                 time.time(),
                 len(X_neg),
             )
-            if pos_metadata.shape[1] > 0:
-                pos_features = np.hstack([pos_features, pos_metadata])
-            if neg_metadata.shape[1] > 0:
-                neg_features = np.hstack([neg_features, neg_metadata])
+            pos_features = build_feature_matrix(
+                X_pos,
+                stack_similarity_features(pos_derived, config.classifier),
+                pos_metadata,
+                config,
+            )
+            neg_features = build_feature_matrix(
+                X_neg,
+                stack_similarity_features(neg_derived, config.classifier),
+                neg_metadata,
+                config,
+            )
             train_rows = np.vstack([pos_features, neg_features]).astype(np.float32)
             train_labels = np.concatenate(
                 [
@@ -1397,30 +1360,9 @@ def rank_stories(
         model_scores = cluster_max_scores
 
     if model is not None:
-        try:
-            expected_n = model.at_least_neutral.steps[0][1].n_features_in_
-        except AttributeError:
-            expected_n = cand_features.shape[1]
-
-        if expected_n != cand_features.shape[1]:
-            # Build full single-model features (embeddings + derived + metadata)
-            derived_rows = stack_similarity_features(
-                cand_derived,
-                config.classifier,
-            )
-            full_features = build_feature_matrix(
-                cand_emb,
-                derived_rows,
-                cand_metadata,
-                config,
-            )
-            model_scores, downvote, neutral, upvote = _predict_ordinal_outputs(
-                model, full_features
-            )
-        else:
-            model_scores, downvote, neutral, upvote = _predict_ordinal_outputs(
-                model, cand_features
-            )
+        model_scores, downvote, neutral, upvote = _predict_ordinal_outputs(
+            model, cand_features
+        )
     else:
         downvote = np.zeros(len(stories), dtype=np.float32)
         neutral = np.zeros(len(stories), dtype=np.float32)

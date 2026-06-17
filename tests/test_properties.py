@@ -637,7 +637,7 @@ def test_selection_output_length_invariants(
     for i, r in enumerate(ranked):
         r.model_score = float(1.0 - i * 0.01)
 
-    selected = select_ranked_results(ranked, cands, None, {}, {}, count)
+    selected = select_ranked_results(ranked, cands, count)
 
     assert 0 <= len(selected) <= count
 
@@ -696,7 +696,7 @@ def test_selection_enough_candidates_returns_exact_count(
     rng.shuffle(cands)
     ranked = [_mk_rank(i, float(1.0 - i * 0.005)) for i in range(len(cands))]
 
-    selected = select_ranked_results(ranked, cands, None, {}, {}, count)
+    selected = select_ranked_results(ranked, cands, count)
     assert len(selected) == count, f"len={len(selected)} != count={count}"
 
 
@@ -741,7 +741,7 @@ def test_selection_source_diversity_enforced(
     rng.shuffle(cands)
     ranked = [_mk_rank(i, float(1.0 - i * 0.003)) for i in range(len(cands))]
 
-    selected = select_ranked_results(ranked, cands, None, {}, {}, count)
+    selected = select_ranked_results(ranked, cands, count)
 
     ext_selected = [r for r in selected if cands[r.index].is_external]
     source_counts: dict[str, int] = {}
@@ -798,7 +798,7 @@ def test_selection_final_sort_by_score(
     rng.shuffle(cands)
     ranked = [_mk_rank(i, float(rng.uniform(0.0, 1.0))) for i in range(len(cands))]
 
-    selected = select_ranked_results(ranked, cands, None, {}, {}, count)
+    selected = select_ranked_results(ranked, cands, count)
 
     for i in range(len(selected) - 1):
         assert selected[i].model_score >= selected[i + 1].model_score - 1e-9, (
@@ -839,7 +839,7 @@ def test_selection_within_source_order_preserved(count: int, seed: int) -> None:
     all_scores = ext_scores + hn_scores
     ranked = [_mk_rank(i, all_scores[i]) for i in range(len(cands))]
 
-    selected = select_ranked_results(ranked, cands, None, {}, {}, count)
+    selected = select_ranked_results(ranked, cands, count)
 
     hn_selected = [r for r in selected if not cands[r.index].is_external]
     hn_ranked_in_order = [r for r in ranked if not cands[r.index].is_external]
@@ -886,7 +886,7 @@ def test_selection_internal_external_counts_with_forced_clamping(
 
     ranked = [_mk_rank(i, float(1.0 - i * score_gap / 10)) for i in range(len(cands))]
 
-    selected = select_ranked_results(ranked, cands, None, {}, {}, count)
+    selected = select_ranked_results(ranked, cands, count)
     assert len(selected) <= count
 
     desired_external = round(count * 0.2) + 5

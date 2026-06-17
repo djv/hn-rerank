@@ -203,9 +203,6 @@ def _finalize_ranked_results(
     selected_results = select_ranked_results(
         results,
         candidates,
-        cluster_labels=None,
-        cluster_names={},
-        cand_cluster_map={},
         count=count,
     )
 
