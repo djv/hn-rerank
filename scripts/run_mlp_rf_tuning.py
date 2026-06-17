@@ -51,15 +51,16 @@ def run_eval(label, features, base, overrides=None):
     with open(OUTDIR / f"{label}.json") as f:
         data = json.load(f)
     r = data[0]
+    r['aggregate_score'] = (r.get('recall_at_50', 0) * 1000) - r['median_rank']
     print(
-        f"  -> NDCG@30={r['ndcg_at_30']:.3f} mean_rank={r['mean_rank']:.1f} "
-        f"P@5={r['precision_at_5']:.3f} ({elapsed:.1f}s)",
+        f"  -> Median={r['median_rank']:.1f} mean={r['mean_rank']:.1f} "
+        f"Recall@50={r.get('recall_at_50', 0):.3f} Agg={r['aggregate_score']:.1f} ({elapsed:.1f}s)",
         flush=True,
     )
     return r
 
 
-def run_mlp(label, features, overrides=None, raw=False):
+def run_mlp(label, features, overrides=None, raw=True):
     base = MLP_BASE + ["--model-type", "mlp"]
     if raw:
         base += ["--raw-embedding-features"]
@@ -68,7 +69,7 @@ def run_mlp(label, features, overrides=None, raw=False):
     return run_eval(label, features, base, overrides)
 
 
-def run_rf(label, features, overrides=None, raw=False):
+def run_rf(label, features, overrides=None, raw=True):
     base = MLP_BASE + ["--model-type", "random_forest"]
     if raw:
         base += ["--raw-embedding-features"]
@@ -77,8 +78,8 @@ def run_rf(label, features, overrides=None, raw=False):
     return run_eval(label, features, base, overrides)
 
 
-# ── Phase 1: MLP alpha sweep (16f, relu, (64,32), adam) ────────────
-print("=== Phase 1: MLP alpha sweep (16f, relu, (64,32), adam) ===", flush=True)
+# ── Phase 1: MLP alpha sweep (16f+raw, relu, (64,32), adam) ────────────
+print("=== Phase 1: MLP alpha sweep (16f+raw, relu, (64,32), adam) ===", flush=True)
 alpha_values = [0.0001, 0.001, 0.005, 0.01, 0.05, 0.1]
 results = []
 for a in alpha_values:
@@ -87,16 +88,16 @@ for a in alpha_values:
     r["mlp_hidden_layers"] = "64,32"
     results.append(r)
 
-results.sort(key=lambda r: -r["ndcg_at_30"])
+results.sort(key=lambda r: -r["aggregate_score"])
 best_alpha = results[0]["mlp_alpha"]
 print(
     f"  BEST alpha: {best_alpha} -> NDCG@30={results[0]['ndcg_at_30']:.3f}\n",
     flush=True,
 )
 
-# ── Phase 2: MLP hidden layer sweep (16f, best alpha, relu, adam) ──
+# ── Phase 2: MLP hidden layer sweep (16f+raw, best alpha, relu, adam) ──
 print(
-    f"=== Phase 2: MLP hidden layer sweep (16f, alpha={best_alpha}, relu, adam) ===",
+    f"=== Phase 2: MLP hidden layer sweep (16f+raw, alpha={best_alpha}, relu, adam) ===",
     flush=True,
 )
 hl_values = ["32", "64", "128", "32,16", "64,32", "128,64", "128,64,32"]
@@ -107,16 +108,16 @@ for hl in hl_values:
     r["mlp_hidden_layers"] = hl
     results.append(r)
 
-results.sort(key=lambda r: -r["ndcg_at_30"])
+results.sort(key=lambda r: -r["aggregate_score"])
 best_hl = results[0]["mlp_hidden_layers"]
 print(
     f"  BEST hidden_layers: {best_hl} -> NDCG@30={results[0]['ndcg_at_30']:.3f}\n",
     flush=True,
 )
 
-# ── Phase 3: MLP solver test (16f, best alpha, best hl, relu) ──────
+# ── Phase 3: MLP solver test (16f+raw, best alpha, best hl, relu) ──────
 print(
-    f"=== Phase 3: MLP solver test (16f, alpha={best_alpha}, hl={best_hl}, relu) ===",
+    f"=== Phase 3: MLP solver test (16f+raw, alpha={best_alpha}, hl={best_hl}, relu) ===",
     flush=True,
 )
 for solver in ["adam", "lbfgs"]:
@@ -135,23 +136,23 @@ for solver in ["adam", "lbfgs"]:
     r["mlp_solver"] = solver
     results.append(r)
 
-results.sort(key=lambda r: -r["ndcg_at_30"])
+results.sort(key=lambda r: -r["aggregate_score"])
 print(
     f"  BEST config so far: {results[0]['name']} -> NDCG@30={results[0]['ndcg_at_30']:.3f}\n",
     flush=True,
 )
 
-# ── Phase 4: MLP learning_rate_init sweep (16f, best alpha, best hl, best solver) ──
+# ── Phase 4: MLP learning_rate_init sweep (16f+raw, best alpha, best hl, best solver) ──
 # Pick the best solver from Phase 3 results
 solver_results = [r for r in results if r.get("mlp_solver")]
 best_solver = (
-    max(solver_results, key=lambda r: r["ndcg_at_30"]).get("mlp_solver", "adam")
+    max(solver_results, key=lambda r: r["aggregate_score"]).get("mlp_solver", "adam")
     if solver_results
     else "adam"
 )
 
 print(
-    f"=== Phase 4: MLP lr_init sweep (16f, alpha={best_alpha}, hl={best_hl}, {best_solver}) ===",
+    f"=== Phase 4: MLP lr_init sweep (16f+raw, alpha={best_alpha}, hl={best_hl}, {best_solver}) ===",
     flush=True,
 )
 for lr in [0.0001, 0.001, 0.01]:
@@ -172,17 +173,17 @@ for lr in [0.0001, 0.001, 0.01]:
     r["mlp_lr_init"] = lr
     results.append(r)
 
-results.sort(key=lambda r: -r["ndcg_at_30"])
+results.sort(key=lambda r: -r["aggregate_score"])
 print(
-    f"  BEST MLP on 16f: {results[0]['name']} -> NDCG@30={results[0]['ndcg_at_30']:.3f}\n",
+    f"  BEST MLP on 16f+raw: {results[0]['name']} -> NDCG@30={results[0]['ndcg_at_30']:.3f}\n",
     flush=True,
 )
 
-# ── Phase 5: MLP winner on 16f+raw ──────────────────────────────────
+# ── Phase 5: MLP winner recap ──────────────────────────────────
 # Best MLP config on 16f (no raw). Test it on 16f+raw (400 dims).
 best_mlp = results[0]
 print(
-    f"=== Phase 5: MLP winner on 16f+raw (alpha={best_mlp.get('mlp_alpha', '?')}, hl={best_mlp.get('mlp_hidden_layers', '?')}) ===",
+    f"=== Phase 5: MLP winner recap (alpha={best_mlp.get('mlp_alpha', '?')}, hl={best_mlp.get('mlp_hidden_layers', '?')}) ===",
     flush=True,
 )
 ov = {}
@@ -201,8 +202,8 @@ r["mlp_solver"] = best_mlp.get("mlp_solver")
 r["mlp_lr_init"] = best_mlp.get("mlp_lr_init")
 results.append(r)
 
-# ── Phase 6: RF sweep (16f, no raw) ─────────────────────────────────
-print("\n=== Phase 6: RF sweep (16f, no raw) ===", flush=True)
+# ── Phase 6: RF sweep (16f+raw, no raw) ─────────────────────────────────
+print("\n=== Phase 6: RF sweep (16f+raw, no raw) ===", flush=True)
 rf_configs = [
     (
         "rf16f_baseline",
@@ -238,19 +239,19 @@ for label, ov in rf_configs:
     r["rf_overrides"] = ov
     results.append(r)
 
-results.sort(key=lambda r: -r["ndcg_at_30"])
+results.sort(key=lambda r: -r["aggregate_score"])
 
 # ── Phase 7: Best RF on 16f+raw (sanity check) ──────────────────────
 rf_best = max(
-    (r for r in results if r.get("rf_overrides")), key=lambda r: r["ndcg_at_30"]
+    (r for r in results if r.get("rf_overrides")), key=lambda r: r["aggregate_score"]
 )
-print(f"\n=== Phase 7: RF winner on 16f+raw (from {rf_best['name']}) ===", flush=True)
+print(f"\n=== Phase 7: RF winner recap (from {rf_best['name']}) ===", flush=True)
 r = run_rf("rf_16f+raw_winner", F16, rf_best["rf_overrides"], raw=True)
 r["rf_overrides"] = rf_best["rf_overrides"]
 results.append(r)
 
 # ── Final table ──────────────────────────────────────────────────────
-results.sort(key=lambda r: -r["ndcg_at_30"])
+results.sort(key=lambda r: -r["aggregate_score"])
 print("\n=== Final results ===", flush=True)
 print(
     f"{'name':<35} {'NDCG@30':>7} {'MRR':>5} {'mean_rank':>7} {'P@5':>5} {'nonhn@0.5':>9}"

@@ -1,0 +1,40 @@
+[
+  {
+    "name": "hn_mining_20",
+    "features": [
+      "centroid",
+      "pos_knn",
+      "neg_knn",
+      "pos_neg_ratio",
+      "title_len",
+      "text_len",
+      "is_github",
+      "is_pdf",
+      "closest_pos",
+      "closest_neg",
+      "closest_margin",
+      "is_hn",
+      "source_trust",
+      "local_density",
+      "cluster_size",
+      "embedding_magnitude"
+    ],
+    "mrr": 1.0,
+    "precision_at_5": 1.0,
+    "precision_at_50": 0.9,
+    "recall_at_5": 0.021613922475991438,
+    "recall_at_50": 0.19452530228392298,
+    "ndcg_at_30": 0.9471710038111215,
+    "hit_at_30": 1.0,
+    "mean_rank": 186.86302681992336,
+    "median_rank": 147.16666666666666,
+    "n_train": 644,
+    "n_test": 50,
+    "n_candidates": 474,
+    "classifier_used": true,
+    "elapsed_seconds": 25.03232431411743,
+    "n_folds": 3,
+    "nonhn_score_stddev": 0.17564285143968264,
+    "nonhn_at_0_5_fraction": 0.0428743961352657
+  }
+]

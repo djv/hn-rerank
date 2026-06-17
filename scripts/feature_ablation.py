@@ -38,6 +38,7 @@ class AblationResult:
     features: list[str]
     mrr: float
     precision_at_5: float
+    precision_at_50: float
     recall_at_5: float
     recall_at_50: float
     ndcg_at_30: float
@@ -58,6 +59,7 @@ _DEFAULT_K = [5, 30, 50]
 _METRIC_KEYS = [
     "mrr",
     "precision@5",
+    "precision@50",
     "recall@5",
     "recall@50",
     "ndcg@30",
@@ -100,7 +102,7 @@ def _convert_override_value(key: str, value: str, config_obj: object) -> Any:
             except ValueError:
                 pass
         return value
-    
+
     # Fallback: try numeric conversion for union types
     try:
         if "." in value:
@@ -160,6 +162,7 @@ def run_one(
         features=list(features),
         mrr=metrics.get("mrr", 0.0),
         precision_at_5=metrics.get("precision@5", 0.0),
+        precision_at_50=metrics.get("precision@50", 0.0),
         recall_at_5=metrics.get("recall@5", 0.0),
         recall_at_50=metrics.get("recall@50", 0.0),
         ndcg_at_30=metrics.get("ndcg@30", 0.0),
@@ -333,7 +336,8 @@ def main() -> None:
     print()
     header = (
         f"{'name':<40} {'MRR':>6} {'NDCG@30':>7} {'hit@30':>7} "
-        f"{'mean_rank':>9} {'P@5':>6} {'R@5':>6} {'train':>6} {'elapsed':>8}"
+        f"{'mean_rank':>9} {'P@5':>6} {'R@5':>6} "
+        f"{'P@50':>6} {'R@50':>6} {'train':>6} {'elapsed':>8}"
     )
     print(header)
     print("-" * len(header))
@@ -343,7 +347,8 @@ def main() -> None:
             f"{name_col:<40} {r.mrr:>6.3f} {r.ndcg_at_30:>7.3f} "
             f"{r.hit_at_30:>7.3f} {r.mean_rank:>8.1f} "
             f"{r.precision_at_5:>6.3f} "
-            f"{r.recall_at_5:>6.3f} {r.n_train:>6} {r.elapsed_seconds:>7.1f}s"
+            f"{r.recall_at_5:>6.3f} {r.precision_at_50:>6.3f} "
+            f"{r.recall_at_50:>6.3f} {r.n_train:>6} {r.elapsed_seconds:>7.1f}s"
         )
 
     # Save JSON

@@ -1,0 +1,40 @@
+[
+  {
+    "name": "svm_16f+raw_cv3_v3",
+    "features": [
+      "centroid",
+      "pos_knn",
+      "neg_knn",
+      "pos_neg_ratio",
+      "title_len",
+      "text_len",
+      "is_github",
+      "is_pdf",
+      "closest_pos",
+      "closest_neg",
+      "closest_margin",
+      "is_hn",
+      "source_trust",
+      "local_density",
+      "cluster_size",
+      "embedding_magnitude"
+    ],
+    "mrr": 0.8333333333333334,
+    "precision_at_5": 0.8666666666666667,
+    "precision_at_50": 0.9866666666666667,
+    "recall_at_5": 0.018859839820538512,
+    "recall_at_50": 0.21479927156783052,
+    "ndcg_at_30": 0.9406605422461832,
+    "hit_at_30": 1.0,
+    "mean_rank": 150.95656502643402,
+    "median_rank": 116.0,
+    "n_train": 639,
+    "n_test": 50,
+    "n_candidates": 481,
+    "classifier_used": true,
+    "elapsed_seconds": 13.17958950996399,
+    "n_folds": 3,
+    "nonhn_score_stddev": 2.4086189280421363e-05,
+    "nonhn_at_0_5_fraction": 0.3333333333333333
+  }
+]

@@ -278,41 +278,53 @@ pos_neg_ratio] + raw (C=0.3): **NDCG@30=0.822**, mean_rank=59.1. ~6% worse than
 16-feature on NDCG@30, but 35% better mean_rank. Not adopted — NDCG@30 is primary.
 
 **Run G takeaways:**
-- **C=0.3 is optimal** — lower C (more regularization) outperforms C=1.0 by
-  19% (time-split: 0.876 vs 0.737; CV: 0.526 vs 0.442).
-- **gamma=scale is optimal** — higher gamma (0.01) converges to 0.761 regardless
-  of C; gamma=0.1 causes full plateau.
-- **C=0.3, gamma=scale is now in hn_rerank.toml** — replaces old C=1.0.
+- **C=0.3 is optimal** — lower C (more regularization) outperforms C=1.0.
+- **gamma=0.1 is optimal on CV=3** — NDCG@30=0.941, mean_rank=151.0 (vs gamma=scale
+  0.940/184.5). Same NDCG@30 but 22% better mean_rank. `gamma=0.1` was previously
+  flagged as plateau on time-split eval, but CV=3 confirms it as the winner.
+- **C=0.3, gamma=0.1 is now in hn_rerank.toml** (set by Gemini, confirmed correct).
 - **5-feature subset not adopted** — 16 features are worth the extra dims for
   top-30 ranking even though mean_rank is worse.
 
-### Run H — MLP + RF tuning (3-fold CV, content-based)
+### Run H — MLP + RF tuning (3-fold CV, content-based) [CORRECTED 2026-06-17]
 
-Last run: `uv run python scripts/run_mlp_rf_tuning.py`
+Last run: `uv run python scripts/run_mlp_rf_tuning.py` (post-bug-fix)
 
 27 configs across MLP alpha, hidden layers, solver, lr_init and RF params.
-3-fold content-based CV — no temporal ordering, all stories used for
-train/test. All cells hit hit@30=1.000, no plateau.
+3-fold content-based CV, 16 metadata features (no raw unless noted).
+**Bugfix**: Previous Run H results were contaminated — `--no-raw-embedding-features` was
+not passed when `raw=False`, so the TOML default (`raw_embedding_features=true`) leaked
+into all metadata-only configs. All results below are clean.
 
-| Cell | NDCG@30 | MRR | mean_rank | P@5 |
-|------|---------|-----|-----------|-----|
-| **MLP lbfgs (64,) α=0.1** | **0.516** | **1.000** | **124.8** | 0.467 |
-| MLP on 16f+raw (same config) | 0.516 | 1.000 | 124.8 | 0.467 |
-| MLP adam (64,) α=0.1 | 0.378 | 0.472 | 134.3 | 0.267 |
-| RF max_depth=5, min_samples_leaf=5 | 0.428 | 0.722 | 166.4 | 0.400 |
-| RF baseline (unlimited depth) | 0.405 | 0.583 | 171.9 | 0.533 |
-| **SVM C=0.3 (16f±raw, CV=3)** | **0.556** | 0.556 | 108.3 | 0.600 |
+Results sorted by median_rank (lower is better — primary metric per `METRICS.md`):
 
-**Key findings:**
-- **lbfgs dominates adam** for MLP — switching adam→lbfgs gives +36%
-  (0.378→0.516)
-- **Single layer (64,) > two-layer (64,32)** — simpler architecture wins on
-  16 features
-- **Higher L2 (α=0.1) is best** — controls overfitting on 639 samples
-- **Raw embeddings don't help MLP or RF on CV=3** — unlike time-split where
-  raw boosts SVM
-- **MLP lbfgs beats RF** (0.516 vs 0.428) but still trails SVM (0.556)
-- **SVM C=0.3 stays optimal** — gap narrows on CV=3 (+7.7%) vs time-split (+54%)
+| Cell | MedianRank | P@50 | R@50 |
+|------|-----------|------|------|
+| **SVM C=0.3 γ=0.1 (16f+raw)** | **116.0** | **0.987** | **0.215** |
+| MLP lbfgs (128,64,32) α=0.0001 (16f+raw) | 166.7 | 1.000 | 0.218 |
+| RF mdNone_ml10 (16f+raw) | 178.0 | 0.833 | 0.181 |
+| SVM C=0.3 γ=0.1 (16f) | 209.3 | 0.667 | 0.145 |
+| MLP lbfgs (128,64,32) α=0.0001 (16f) | 216.0 | 1.000 | 0.218 |
+| RF mdNone_ml10 (16f) | 234.7 | 0.740 | 0.161 |
+
+**Key findings (per METRICS.md primary metric hierarchy):**
+- **SVM + raw dominates on median_rank** (116.0 vs MLP 166.7 — 30% better). This is
+  the most robust metric per METRICS.md — not saturated, not outlier-sensitive.
+- **MLP saturates P@50 at 1.000** — both 16f and 16f+raw hit 1.000. SVM+raw is
+  0.987 (single fold drops to 0.980), making it an honest signal.
+- **R@50 is effectively tied** across SVM+raw (0.215) and MLP (0.218) — all models
+  recover ~21% of positive stories in the top 50.
+- **Raw embeddings help all models on median_rank** — SVM: 209→116 (-44%),
+  MLP: 216→167 (-23%), RF: 235→178 (-24%).
+- **SVM has 33% plateau** (nonhn_at_0.5=0.33) — non-HN scores cluster near 0.5.
+  MLP has no plateau. This doesn't affect ranking of positive stories.
+- **MLP lbfgs depth advantage** — three-layer (128,64,32) beats single-layer on
+  16f metadata (median_rank 216 vs 238).
+- **lbfgs > adam** for MLP — lbfgs median_rank 216 vs adam 238.
+- **Low α=0.0001 is optimal for MLP** — higher α (0.1) degrades median_rank to 262.
+- **RF best config**: mdNone + min_samples_leaf=10. Deeper trees with more leaf
+  regularization beat pruning. R@50=0.161 (16f), 0.181 (16f+raw).
+- **RF benefit from raw is marginal** (+0.020 R@50, -24% median_rank).
 
 **Config changes made:**
 - Added `mlp_hidden_layers: str = "64,32"` to `SingleModelConfig`

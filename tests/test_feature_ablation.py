@@ -147,7 +147,6 @@ def _ablate(
     name: str = "test",
 ) -> _AblationResult:
     """Train and evaluate with the given feature set (test helper, mirrors scripts/feature_ablation.run_one)."""
-    import api.rerank as rerank_mod
     from api.config import ClassifierConfig
 
     classifier_cfg = ClassifierConfig(features=tuple(features))
