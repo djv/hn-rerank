@@ -404,3 +404,14 @@ When evaluating the robust **Mean Rank** across all test positives (lower is bet
 - `16f+raw-mlp` (LBFGS, α=0.1): Mean Rank = **212.3**
 
 **Actionable Insight:** SVM RBF remains the globally superior model for ranking the entire positive distribution, outperforming MLP by ~20 positions on average. `hn_rerank.toml` has been reverted back to the `svm` architecture.
+
+### Run K — Evaluation Pipeline Audit and Bug Fix
+
+An audit of the evaluation pipeline revealed a bug in `compute_classifier_similarity_features` during training: `np.fill_diagonal(sim_n, -1.0)` was incorrectly masking positive story rows instead of negative story rows due to row offsets when `embs` was vertically stacked `[pos; neg]`. This gave negative training stories an artificially inflated `closest_neg ≈ 1.0`, creating an optimistic bias.
+
+After replacing `fill_diagonal` with an offset-aware `_mask_self_similarity` function, the SVM `16f+raw` model showed global improvement:
+- **Mean Rank**: improved from 192.4 → **184.5**
+- **Median Rank**: improved from 150.0 → **145.0**
+
+The bug fix removed the optimistic bias, allowing the SVM to learn a better decision boundary.
+
