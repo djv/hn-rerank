@@ -55,9 +55,10 @@ def run_eval(label, features, overrides=None):
     with open(OUTDIR / f"{label}.json") as f:
         data = json.load(f)
     r = data[0]
+    r['aggregate_score'] = (r.get('recall_at_50', 0) * 1000) - r['median_rank']
     print(
-        f"  -> NDCG@30={r['ndcg_at_30']:.3f} mean_rank={r['mean_rank']:.1f} "
-        f"P@5={r['precision_at_5']:.3f} ({elapsed:.1f}s)",
+        f"  -> Median Rank={r['median_rank']:.1f} mean_rank={r['mean_rank']:.1f} "
+        f"Recall@50={r.get('recall_at_50', 0):.3f} Agg={r['aggregate_score']:.1f} ({elapsed:.1f}s)",
         flush=True,
     )
     return r
@@ -80,12 +81,12 @@ for c in c_values:
         r["svm_gamma"] = g
         grid_results.append(r)
 
-grid_results.sort(key=lambda r: -r["ndcg_at_30"])
+grid_results.sort(key=lambda r: -r["aggregate_score"])
 best = grid_results[0]
 best_c = best["svm_c"]
 best_g = best["svm_gamma"]
 print(
-    f"\n  BEST: C={best_c}, gamma={best_g} -> NDCG@30={best['ndcg_at_30']:.3f}\n",
+    f"\n  BEST: C={best_c}, gamma={best_g} -> Agg={best['aggregate_score']:.1f} (Median={best['median_rank']:.1f}, Recall={best.get('recall_at_50', 0):.3f})\n",
     flush=True,
 )
 
@@ -114,23 +115,23 @@ r5 = run_eval("svm_5feat_raw", F5_RAW, overrides)
 
 # Consolidate
 all_cells = grid_results + kernel_results + [r5]
-all_cells.sort(key=lambda r: -r["ndcg_at_30"])
+all_cells.sort(key=lambda r: -r["aggregate_score"])
 winner_cell = all_cells[0]
 
 print("\n=== Results table ===", flush=True)
-print(f"{'name':<35} {'NDCG@30':>7} {'MRR':>5} {'mean_rank':>7} {'P@5':>5}")
-print("-" * 59)
+print(f"{'name':<35} {'Agg Score':>9} {'Median':>6} {'Mean':>6} {'Recall@50':>9} {'NDCG@30':>7}")
+print("-" * 74)
 for r in all_cells:
     name = r["name"][:34]
     print(
-        f"{name:<35} {r['ndcg_at_30']:>7.3f} {r['mrr']:>5.3f} "
-        f"{r['mean_rank']:>7.1f} {r['precision_at_5']:>5.3f}"
+        f"{name:<35} {r['aggregate_score']:>9.1f} {r['median_rank']:>6.0f} {r['mean_rank']:>6.0f} "
+        f"{r.get('recall_at_50', 0):>9.3f} {r['ndcg_at_30']:>7.3f}"
     )
 
 print(
     f"\n>>> WINNER: {winner_cell['name']} "
-    f"(NDCG@30={winner_cell['ndcg_at_30']:.3f}, "
-    f"mean_rank={winner_cell['mean_rank']:.1f})",
+    f"(Agg={winner_cell['aggregate_score']:.1f}, Median={winner_cell['median_rank']:.1f}, "
+    f"Recall@50={winner_cell.get('recall_at_50', 0):.3f})",
     flush=True,
 )
 
