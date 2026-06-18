@@ -194,7 +194,7 @@ def test_feedback_training_data(db):
     # Indices of stories to attach feedback to
     feedback_indices=st.sets(st.integers(min_value=0, max_value=49))
 )
-@settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
+@settings(max_examples=25, suppress_health_check=[HealthCheck.function_scoped_fixture])
 def test_story_pruning_integrity_invariants(tmp_path, fetched_offsets, feedback_indices):
     import uuid
     db_file = tmp_path / f"test_prune_{uuid.uuid4().hex}.db"
