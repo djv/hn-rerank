@@ -1,0 +1,48 @@
+[hn_rewrite]
+username = "pure_coder"
+db_path = "hn_rewrite.db"
+output = "public/index.html"
+days = 30
+count = 40
+onnx_model_dir = "onnx_model"
+server_port = 8766
+regen_interval_seconds = 10800
+
+[hn_rewrite.model]
+svm_c = 0.3
+svm_gamma = 0.1
+svm_kernel = "rbf"
+min_feedback_labels = 10
+min_signal_examples = 5
+diversity_threshold = 0.55
+
+
+[hn_rewrite.rss]
+enabled = true
+per_feed_limit = 70
+feeds = [
+    "https://lobste.rs/top/rss",
+    "https://tildes.net/topics.rss",
+    "https://www.lesswrong.com/feed.xml?view=frontpage&karmaThreshold=20",
+    "https://rss.slashdot.org/Slashdot/slashdotMain",
+    "https://mshibanami.github.io/GitHubTrendingRSS/weekly/all.xml",
+    "https://mshibanami.github.io/GitHubTrendingRSS/weekly/python.xml",
+    "https://mshibanami.github.io/GitHubTrendingRSS/weekly/haskell.xml",
+    "https://www.reddit.com/r/MachineLearning/top/.rss?t=week&limit=25",
+    "https://www.reddit.com/r/programming/top/.rss?t=week&limit=25",
+    "https://www.reddit.com/r/compsci/top/.rss?t=week&limit=25",
+    "https://jack-clark.net/feed/",
+    "https://www.construction-physics.com/feed",
+    "https://www.bitsaboutmoney.com/archive/rss/",
+    "https://eugeneyan.com/rss/",
+    "https://huyenchip.com/feed.xml",
+    "https://www.latent.space/feed",
+    "https://bartoszmilewski.com/feed/",
+    "https://aphyr.com/posts.atom",
+    "https://googleprojectzero.blogspot.com/feeds/posts/default",
+    "https://blog.trailofbits.com/feed/",
+    "https://pudding.cool/feed.xml",
+    "https://scottaaronson.blog/?feed=rss2",
+    "https://erikbern.com/feed",
+    "https://discourse.haskell.org/latest.rss",
+]
