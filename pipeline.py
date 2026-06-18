@@ -20,6 +20,7 @@ import onnxruntime as ort
 from bs4 import BeautifulSoup
 from jinja2 import Environment, FileSystemLoader
 from numpy.typing import NDArray
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.svm import SVC
 
 from database import Database, Story
@@ -564,22 +565,82 @@ def get_or_compute_embeddings(
 # Normalization constants for metadata features
 _LOG_POINTS_SCALE = 8.0  # log1p(~3000) ≈ 8
 _AGE_DAYS_SCALE = 30.0  # cap at 30 days
+_LOG_COMMENTS_SCALE = 7.0  # log1p(~1000) ≈ 6.9
+_LOG_TEXTLEN_SCALE = 12.0  # log1p(~100000) ≈ 11.5
+_LOG_QUALITY_SCALE = 8.0  # log1p(score/(age_hours+1)) rarely exceeds 8
 
 
 def _augment_features(
     embeddings: NDArray[np.float32],
-    scores: list[int],
-    age_seconds: list[float],
+    scores: list[int] | np.ndarray,
+    age_seconds: list[float] | np.ndarray,
+    comment_counts: np.ndarray | None = None,
+    text_lengths: np.ndarray | None = None,
+    hn_quality: np.ndarray | None = None,
+    sim_to_upvoted: np.ndarray | None = None,
+    sim_to_downvoted: np.ndarray | None = None,
+    closest_upvoted: np.ndarray | None = None,
+    closest_downvoted: np.ndarray | None = None,
 ) -> NDArray[np.float32]:
-    """Concatenate [embedding, log_points_norm, age_days_norm] → (n, 386)."""
     n = len(scores)
-    meta = np.zeros((n, 2), dtype=np.float32)
-    for i in range(n):
-        meta[i, 0] = (
-            min(np.log1p(max(scores[i], 0)), _LOG_POINTS_SCALE) / _LOG_POINTS_SCALE
+    n_meta = 2
+    for f in (comment_counts, text_lengths, hn_quality):
+        if f is not None:
+            n_meta += 1
+    if sim_to_upvoted is not None:
+        n_meta += 4
+
+    meta = np.zeros((n, n_meta), dtype=np.float32)
+    col = 0
+
+    # log points
+    meta[:, col] = (
+        np.clip(np.log1p(np.maximum(scores, 0)), 0, _LOG_POINTS_SCALE)
+        / _LOG_POINTS_SCALE
+    )
+    col += 1
+
+    # age days
+    age_days = np.maximum(age_seconds, 0) / 86400.0
+    meta[:, col] = np.clip(age_days, 0, _AGE_DAYS_SCALE) / _AGE_DAYS_SCALE
+    col += 1
+
+    if comment_counts is not None:
+        meta[:, col] = (
+            np.clip(np.log1p(np.maximum(comment_counts, 0)), 0, _LOG_COMMENTS_SCALE)
+            / _LOG_COMMENTS_SCALE
         )
-        age_days = max(age_seconds[i], 0) / 86400.0
-        meta[i, 1] = min(age_days, _AGE_DAYS_SCALE) / _AGE_DAYS_SCALE
+        col += 1
+
+    if text_lengths is not None:
+        meta[:, col] = (
+            np.clip(np.log1p(np.maximum(text_lengths, 0)), 0, _LOG_TEXTLEN_SCALE)
+            / _LOG_TEXTLEN_SCALE
+        )
+        col += 1
+
+    if hn_quality is not None:
+        meta[:, col] = (
+            np.clip(np.log1p(np.maximum(hn_quality, 0)), 0, _LOG_QUALITY_SCALE)
+            / _LOG_QUALITY_SCALE
+        )
+        col += 1
+
+    if sim_to_upvoted is not None:
+        assert (
+            sim_to_downvoted is not None
+            and closest_upvoted is not None
+            and closest_downvoted is not None
+        )
+        meta[:, col] = (np.clip(sim_to_upvoted, -1, 1) + 1) / 2
+        col += 1
+        meta[:, col] = (np.clip(sim_to_downvoted, -1, 1) + 1) / 2
+        col += 1
+        meta[:, col] = (np.clip(closest_upvoted, -1, 1) + 1) / 2
+        col += 1
+        meta[:, col] = (np.clip(closest_downvoted, -1, 1) + 1) / 2
+        col += 1
+
     return np.concatenate([embeddings, meta], axis=1)
 
 
@@ -602,10 +663,73 @@ def rank_stories(
         try:
             fb_embeddings = get_or_compute_embeddings(feedback_stories, embedder, db)
 
+            # Personalization: mean/closest per class from ALL real feedback
+            fb_labels_arr = np.array(feedback_labels)
+            up_mask = fb_labels_arr == 2
+            down_mask = fb_labels_arr == 0
+            fb_up_embs = fb_embeddings[up_mask]
+            fb_down_embs = fb_embeddings[down_mask]
+
+            mean_up = (
+                fb_up_embs.mean(axis=0)
+                if up_mask.any()
+                else np.zeros(384, dtype=np.float32)
+            )
+            mean_down = (
+                fb_down_embs.mean(axis=0)
+                if down_mask.any()
+                else np.zeros(384, dtype=np.float32)
+            )
+
+            fb_sim_to_up = fb_embeddings @ mean_up
+            fb_sim_to_down = fb_embeddings @ mean_down
+            fb_closest_up = (
+                np.max(fb_embeddings @ fb_up_embs.T, axis=1)
+                if up_mask.any()
+                else np.zeros(len(fb_embeddings))
+            )
+            fb_closest_down = (
+                np.max(fb_embeddings @ fb_down_embs.T, axis=1)
+                if down_mask.any()
+                else np.zeros(len(fb_embeddings))
+            )
+
+            cand_sim_to_up = candidate_embeddings @ mean_up
+            cand_sim_to_down = candidate_embeddings @ mean_down
+            cand_closest_up = (
+                np.max(candidate_embeddings @ fb_up_embs.T, axis=1)
+                if up_mask.any()
+                else np.zeros(len(candidates))
+            )
+            cand_closest_down = (
+                np.max(candidate_embeddings @ fb_down_embs.T, axis=1)
+                if down_mask.any()
+                else np.zeros(len(candidates))
+            )
+
             # Augment training features: age_at_vote = vote_time - story_time
-            fb_scores = [s.score for s in feedback_stories]
-            fb_ages = [vt - s.time for vt, s in zip(vote_times, feedback_stories)]
-            fb_features = _augment_features(fb_embeddings, fb_scores, fb_ages)
+            fb_scores = np.array([s.score for s in feedback_stories])
+            fb_ages = np.array(
+                [vt - s.time for vt, s in zip(vote_times, feedback_stories)]
+            )
+            fb_comment_counts = np.array(
+                [s.comment_count or 0 for s in feedback_stories]
+            )
+            fb_text_lengths = np.array([len(s.text_content) for s in feedback_stories])
+            fb_quality = fb_scores / (np.maximum(fb_ages / 3600.0, 0) + 1)
+
+            fb_features = _augment_features(
+                fb_embeddings,
+                fb_scores,
+                fb_ages,
+                comment_counts=fb_comment_counts,
+                text_lengths=fb_text_lengths,
+                hn_quality=fb_quality,
+                sim_to_upvoted=fb_sim_to_up,
+                sim_to_downvoted=fb_sim_to_down,
+                closest_upvoted=fb_closest_up,
+                closest_downvoted=fb_closest_down,
+            )
 
             # Ensure all three classes (0, 1, 2) are present
             missing = {0, 1, 2} - set(feedback_labels)
@@ -639,25 +763,37 @@ def rank_stories(
                 decision_function_shape="ovr",
             )
             svm.fit(fb_features, labels, sample_weight=sample_weights)
+            n_train = len(fb_features)
+            calibrated = CalibratedClassifierCV(
+                svm, cv=[(list(range(n_train)), list(range(n_train)))], method="sigmoid"
+            )
+            calibrated.fit(fb_features, labels, sample_weight=sample_weights)
 
             # Augment candidate features: age_now = now - story_time
-            cand_scores = [s.score for s in candidates]
-            cand_ages = [now - s.time for s in candidates]
+            cand_scores = np.array([s.score for s in candidates])
+            cand_ages = np.array([now - s.time for s in candidates])
+            cand_comment_counts = np.array([s.comment_count or 0 for s in candidates])
+            cand_text_lengths = np.array([len(s.text_content) for s in candidates])
+            cand_quality = cand_scores / (np.maximum(cand_ages / 3600.0, 0) + 1)
+
             cand_features = _augment_features(
-                candidate_embeddings, cand_scores, cand_ages
+                candidate_embeddings,
+                cand_scores,
+                cand_ages,
+                comment_counts=cand_comment_counts,
+                text_lengths=cand_text_lengths,
+                hn_quality=cand_quality,
+                sim_to_upvoted=cand_sim_to_up,
+                sim_to_downvoted=cand_sim_to_down,
+                closest_upvoted=cand_closest_up,
+                closest_downvoted=cand_closest_down,
             )
 
-            # OVR decision_function → shape (n_candidates, 3) for classes [0, 1, 2]
-            dec = svm.decision_function(cand_features)
-            if dec.ndim == 1:
-                scores = 1.0 / (1.0 + np.exp(-dec))
-            else:
-                exp_dec = np.exp(dec - np.max(dec, axis=1, keepdims=True))
-                probs = exp_dec / np.sum(exp_dec, axis=1, keepdims=True)
-                class_order = list(svm.classes_)
-                idx_up = class_order.index(2)
-                idx_neutral = class_order.index(1)
-                scores = probs[:, idx_up] + 0.5 * probs[:, idx_neutral]
+            probs = calibrated.predict_proba(cand_features)
+            class_order = list(calibrated.classes_)
+            idx_up = class_order.index(2)
+            idx_neutral = class_order.index(1)
+            scores = probs[:, idx_up] + 0.5 * probs[:, idx_neutral]
         except Exception as e:
             logging.error(f"Failed to fit feedback SVM: {e}")
 

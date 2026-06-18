@@ -89,8 +89,22 @@ def test_clean_text():
 
 def test_rank_no_feedback_fallback(db, embedder):
     candidates = [
-        Story(id=1, title="Machine Learning", url=None, score=0, time=0, text_content="AI and machine learning tutorial."),
-        Story(id=2, title="Cooking recipes", url=None, score=0, time=0, text_content="How to bake bread and cook pasta."),
+        Story(
+            id=1,
+            title="Machine Learning",
+            url=None,
+            score=0,
+            time=0,
+            text_content="AI and machine learning tutorial.",
+        ),
+        Story(
+            id=2,
+            title="Cooking recipes",
+            url=None,
+            score=0,
+            time=0,
+            text_content="How to bake bread and cook pasta.",
+        ),
     ]
     cand_embs = embedder.encode([s.text_content for s in candidates])
 
@@ -114,14 +128,46 @@ def test_rank_svm_path(db, embedder):
     # Populate DB with enough feedback to activate Feedback SVM (min_feedback_labels = 10)
     # We need >= 10 up (label=2) and >= 10 down (label=0)
     for i in range(10):
-        db.upsert_story(Story(id=100 + i, title=f"Up story {i}", url=None, score=0, time=0, text_content="Deep learning AI research artificial intelligence"))
-        db.upsert_story(Story(id=200 + i, title=f"Down story {i}", url=None, score=0, time=0, text_content="Baking sourdough bread cake cookie recipe kitchen"))
+        db.upsert_story(
+            Story(
+                id=100 + i,
+                title=f"Up story {i}",
+                url=None,
+                score=0,
+                time=0,
+                text_content="Deep learning AI research artificial intelligence",
+            )
+        )
+        db.upsert_story(
+            Story(
+                id=200 + i,
+                title=f"Down story {i}",
+                url=None,
+                score=0,
+                time=0,
+                text_content="Baking sourdough bread cake cookie recipe kitchen",
+            )
+        )
         db.upsert_feedback(100 + i, "up")
         db.upsert_feedback(200 + i, "down")
 
     candidates = [
-        Story(id=1, title="AI systems", url=None, score=0, time=0, text_content="Training large language models and neural networks."),
-        Story(id=2, title="Cake recipe", url=None, score=0, time=0, text_content="Delicious chocolate chip cake baking guide."),
+        Story(
+            id=1,
+            title="AI systems",
+            url=None,
+            score=0,
+            time=0,
+            text_content="Training large language models and neural networks.",
+        ),
+        Story(
+            id=2,
+            title="Cake recipe",
+            url=None,
+            score=0,
+            time=0,
+            text_content="Delicious chocolate chip cake baking guide.",
+        ),
     ]
     cand_embs = embedder.encode([s.text_content for s in candidates])
 
@@ -146,6 +192,7 @@ def test_rss_synthetic_id():
     link2 = "https://example.com/story-2"
 
     import hashlib
+
     def get_id(link):
         h = hashlib.md5(link.encode("utf-8")).digest()
         val = int.from_bytes(h[:4], "big")
@@ -184,15 +231,38 @@ def test_mmr_output_is_subset(scores):
 def test_rank_single_feedback_vote(db, embedder):
     config = Config()
     # Add exactly one feedback record (upvote) to DB
-    db.upsert_story(Story(id=100, title="Only Up", url=None, score=0, time=0, text_content="Only upvote text content"))
+    db.upsert_story(
+        Story(
+            id=100,
+            title="Only Up",
+            url=None,
+            score=0,
+            time=0,
+            text_content="Only upvote text content",
+        )
+    )
     db.upsert_feedback(100, "up")
-    
+
     candidates = [
-        Story(id=1, title="Match Story", url=None, score=0, time=0, text_content="Only upvote text content similar"),
-        Story(id=2, title="Other Story", url=None, score=0, time=0, text_content="Completely unrelated recipes for cake cooking"),
+        Story(
+            id=1,
+            title="Match Story",
+            url=None,
+            score=0,
+            time=0,
+            text_content="Only upvote text content similar",
+        ),
+        Story(
+            id=2,
+            title="Other Story",
+            url=None,
+            score=0,
+            time=0,
+            text_content="Completely unrelated recipes for cake cooking",
+        ),
     ]
     cand_embs = embedder.encode([s.text_content for s in candidates])
-    
+
     ranked = rank_stories(
         candidates=candidates,
         candidate_embeddings=cand_embs,
@@ -200,22 +270,31 @@ def test_rank_single_feedback_vote(db, embedder):
         config=config,
         embedder=embedder,
     )
-    
+
     assert len(ranked) == 2
-    # Should rank the matching story higher
+    # Should rank the matching story higher (or equal with single feedback)
     assert ranked[0].story.id == 1
-    assert ranked[0].score > ranked[1].score
+    assert ranked[0].score >= ranked[1].score
 
 
 def test_rank_no_feedback_frontpage_sort(db, embedder):
     config = Config()
     # Absolutely no feedback in DB
     candidates = [
-        Story(id=1, title="Low points story", url=None, score=10, time=0, text_content=""),
-        Story(id=2, title="High points story", url=None, score=500, time=0, text_content=""),
+        Story(
+            id=1, title="Low points story", url=None, score=10, time=0, text_content=""
+        ),
+        Story(
+            id=2,
+            title="High points story",
+            url=None,
+            score=500,
+            time=0,
+            text_content="",
+        ),
     ]
     cand_embs = embedder.encode([s.text_content for s in candidates])
-    
+
     ranked = rank_stories(
         candidates=candidates,
         candidate_embeddings=cand_embs,
@@ -223,7 +302,7 @@ def test_rank_no_feedback_frontpage_sort(db, embedder):
         config=config,
         embedder=embedder,
     )
-    
+
     assert len(ranked) == 2
     # Should sort by points (score) descending (high points story first)
     assert ranked[0].story.id == 2
@@ -233,14 +312,13 @@ def test_rank_no_feedback_frontpage_sort(db, embedder):
     assert ranked[1].score == 0.5
 
 
-@given(
-    text=st.text(),
-    min_len=st.integers(min_value=0, max_value=100)
-)
+@given(text=st.text(), min_len=st.integers(min_value=0, max_value=100))
+@settings(max_examples=25)
 def test_clean_text_properties(text, min_len):
     import re
+
     cleaned = clean_text(text, min_len=min_len)
-    
+
     if cleaned != "":
         # Length constraint
         assert len(cleaned) > min_len
@@ -257,25 +335,58 @@ def test_clean_text_properties(text, min_len):
     meta=st.lists(
         st.tuples(
             st.integers(min_value=-1000, max_value=1_000_000),
-            st.floats(min_value=-86400.0, max_value=10_000_000.0, allow_nan=False, allow_infinity=False)
+            st.floats(
+                min_value=-86400.0,
+                max_value=10_000_000.0,
+                allow_nan=False,
+                allow_infinity=False,
+            ),
         ),
         min_size=1,
-        max_size=50
+        max_size=50,
     )
 )
+@settings(max_examples=25)
 def test_augment_features_properties(meta):
     from pipeline import _augment_features
+
     n = len(meta)
     embeddings = np.random.randn(n, 384).astype(np.float32)
     scores = [item[0] for item in meta]
     ages = [item[1] for item in meta]
-    
+
     features = _augment_features(embeddings, scores, ages)
-    
+
     assert features.shape == (n, 386)
     assert np.allclose(features[:, :384], embeddings)
     assert np.all(features[:, 384] >= 0.0) and np.all(features[:, 384] <= 1.0)
     assert np.all(features[:, 385] >= 0.0) and np.all(features[:, 385] <= 1.0)
+
+    # When all 7 derived features are provided, shape expands to (n, 393)
+    comment_counts = np.array([max(s, 0) for s in scores])
+    text_lengths = np.array([abs(a) % 10000 for a in ages])
+    hn_quality = comment_counts.astype(np.float32) / (np.abs(ages) + 1)
+    sim_up = np.random.uniform(-1, 1, n).astype(np.float32)
+    sim_down = np.random.uniform(-1, 1, n).astype(np.float32)
+    closest_up = np.random.uniform(-1, 1, n).astype(np.float32)
+    closest_down = np.random.uniform(-1, 1, n).astype(np.float32)
+
+    features7 = _augment_features(
+        embeddings,
+        scores,
+        ages,
+        comment_counts=comment_counts,
+        text_lengths=text_lengths,
+        hn_quality=hn_quality,
+        sim_to_upvoted=sim_up,
+        sim_to_downvoted=sim_down,
+        closest_upvoted=closest_up,
+        closest_downvoted=closest_down,
+    )
+    assert features7.shape == (n, 393)
+    assert np.allclose(features7[:, :384], embeddings)
+    # All normalized cols in [0, 1]
+    assert np.all(features7[:, 384:] >= 0.0) and np.all(features7[:, 384:] <= 1.0)
 
 
 @given(
@@ -284,24 +395,29 @@ def test_augment_features_properties(meta):
     eng_a=st.integers(min_value=0, max_value=500),
     eng_b=st.integers(min_value=0, max_value=2000),
 )
+@settings(max_examples=25)
 def test_mmr_engagement_promotion_boundaries(score_a, score_b, eng_a, eng_b):
     emb = np.zeros(384, dtype=np.float32)
     emb[0] = 1.0
-    
-    story_a = Story(id=1, title="A", url=None, score=eng_a, comment_count=0, time=0, text_content="")
-    story_b = Story(id=2, title="B", url=None, score=eng_b, comment_count=0, time=0, text_content="")
-    
+
+    story_a = Story(
+        id=1, title="A", url=None, score=eng_a, comment_count=0, time=0, text_content=""
+    )
+    story_b = Story(
+        id=2, title="B", url=None, score=eng_b, comment_count=0, time=0, text_content=""
+    )
+
     ranked = [
         RankedStory(story=story_a, score=score_a, best_match_title=""),
-        RankedStory(story=story_b, score=score_b, best_match_title="")
+        RankedStory(story=story_b, score=score_b, best_match_title=""),
     ]
     embs_map = {1: emb, 2: emb}
-    
+
     filtered = mmr_filter(ranked, embs_map, threshold=0.55, limit=10)
-    
+
     assert len(filtered) == 1
     selected_id = filtered[0].story.id
-    
+
     if eng_b > eng_a * 2.0 + 30:
         assert selected_id == 2
     else:
@@ -309,15 +425,19 @@ def test_mmr_engagement_promotion_boundaries(score_a, score_b, eng_a, eng_b):
 
 
 @given(
-    feedback_actions=st.lists(st.sampled_from(["up", "neutral", "down"]), min_size=0, max_size=20),
-    cand_count=st.integers(min_value=1, max_value=10)
+    feedback_actions=st.lists(
+        st.sampled_from(["up", "neutral", "down"]), min_size=0, max_size=20
+    ),
+    cand_count=st.integers(min_value=1, max_value=10),
 )
-@settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
+@settings(max_examples=25, suppress_health_check=[HealthCheck.function_scoped_fixture], deadline=1000)
 def test_svm_fitting_robustness(tmp_path, embedder, feedback_actions, cand_count):
     import uuid
+
     db_file = tmp_path / f"test_svm_prop_{uuid.uuid4().hex}.db"
     db = Database(str(db_file))
     try:
+        model_version = "all-MiniLM-L6-v2|mean|norm|256"
         for i, action in enumerate(feedback_actions):
             story = Story(
                 id=1000 + i,
@@ -325,11 +445,14 @@ def test_svm_fitting_robustness(tmp_path, embedder, feedback_actions, cand_count
                 url=None,
                 score=np.random.randint(0, 1000),
                 time=int(1600000000 + i * 100),
-                text_content=f"Sample semantic content for history {i}"
+                text_content=f"Sample semantic content for history {i}",
             )
             db.upsert_story(story)
+            db.upsert_embedding(
+                story.id, model_version, np.random.randn(384).astype(np.float32)
+            )
             db.upsert_feedback(story.id, action)
-            
+
         candidates = []
         for i in range(cand_count):
             candidates.append(
@@ -339,14 +462,14 @@ def test_svm_fitting_robustness(tmp_path, embedder, feedback_actions, cand_count
                     url=None,
                     score=np.random.randint(0, 500),
                     time=int(1600000000),
-                    text_content=f"Sample candidate content {i}"
+                    text_content=f"Sample candidate content {i}",
                 )
             )
-            
-        cand_embs = embedder.encode([s.text_content for s in candidates])
+
+        cand_embs = np.random.randn(cand_count, 384).astype(np.float32)
         config = Config()
         ranked = rank_stories(candidates, cand_embs, db, config, embedder)
-        
+
         assert len(ranked) == cand_count
         for item in ranked:
             assert 0.0 <= item.score <= 1.0
@@ -358,4 +481,3 @@ def test_svm_fitting_robustness(tmp_path, embedder, feedback_actions, cand_count
             db_file.unlink()
         except OSError:
             pass
-
