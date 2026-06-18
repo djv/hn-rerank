@@ -25,3 +25,4 @@ dev = [
 [tool.pytest.ini_options]
 pythonpath = ["."]
 asyncio_mode = "auto"
+markers = ["slow: slow tests (~60s); run with `pytest -m slow`"]
