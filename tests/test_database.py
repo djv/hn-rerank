@@ -1,5 +1,7 @@
+import time
 import numpy as np
 import pytest
+from hypothesis import given, strategies as st, settings, HealthCheck
 from database import Database, Story
 
 
@@ -184,3 +186,69 @@ def test_feedback_training_data(db):
     assert id_to_label[1] == 2  # up
     assert id_to_label[2] == 0  # down
     assert id_to_label[3] == 1  # neutral
+
+
+@given(
+    # Timestamps relative to now (in days offset around the threshold)
+    fetched_offsets=st.lists(st.integers(min_value=-100, max_value=100).filter(lambda x: x != 0), min_size=5, max_size=50),
+    # Indices of stories to attach feedback to
+    feedback_indices=st.sets(st.integers(min_value=0, max_value=49))
+)
+@settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
+def test_story_pruning_integrity_invariants(tmp_path, fetched_offsets, feedback_indices):
+    import uuid
+    db_file = tmp_path / f"test_prune_{uuid.uuid4().hex}.db"
+    db = Database(str(db_file))
+    try:
+        now = time.time()
+        max_age_days = 30
+        cutoff = now - (max_age_days * 86400)
+        
+        stories_meta = []
+        # Insert stories with variable ages
+        for i, offset_days in enumerate(fetched_offsets):
+            # fetched_at is offset around the threshold
+            fetched_at = cutoff + (offset_days * 86400)
+            story = Story(
+                id=i,
+                title=f"Story {i}",
+                url=None,
+                score=100,
+                time=int(now),
+                text_content="Content"
+            )
+            db.upsert_story(story)
+            
+            # Override fetched_at directly in DB to simulate temporal aging
+            db.conn.execute("UPDATE stories SET fetched_at = ? WHERE id = ?", (fetched_at, i))
+            
+            # Apply feedback if indexed
+            has_feedback = i in feedback_indices and i < len(fetched_offsets)
+            if has_feedback:
+                db.upsert_feedback(i, "up")
+                
+            stories_meta.append((i, fetched_at, has_feedback))
+            
+        db.prune_stories(max_age_days=max_age_days)
+        
+        # Assert temporal and referential invariants
+        for sid, fetched_at, has_feedback in stories_meta:
+            story = db.get_story(sid)
+            is_older = fetched_at < cutoff
+            
+            if is_older:
+                if has_feedback:
+                    # Invariant: Must survive despite age due to referential link
+                    assert story is not None, f"Story {sid} with feedback was pruned despite relative age."
+                else:
+                    # Invariant: Must be deleted
+                    assert story is None, f"Old story {sid} without feedback survived pruning."
+            else:
+                # Invariant: Young stories always survive
+                assert story is not None, f"Young story {sid} was incorrectly pruned."
+    finally:
+        db.close()
+        try:
+            db_file.unlink()
+        except OSError:
+            pass

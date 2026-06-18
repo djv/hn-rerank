@@ -41,6 +41,7 @@ class Database:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
         self._create_tables()
+        self._migrate_feedback_table()
 
     def _create_tables(self) -> None:
         with self.conn:
@@ -58,8 +59,12 @@ class Database:
                     fetched_at     REAL NOT NULL
                 )
             """)
-            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_stories_time ON stories(time)")
-            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_stories_source ON stories(source)")
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_stories_time ON stories(time)"
+            )
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_stories_source ON stories(source)"
+            )
 
             self.conn.execute("""
                 CREATE TABLE IF NOT EXISTS embeddings (
@@ -79,35 +84,34 @@ class Database:
                 )
             """)
 
-            # Check if feedback table exists and has old columns
-            cursor = self.conn.execute("PRAGMA table_info(feedback)")
-            columns = [row[1] for row in cursor.fetchall()]
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS feedback (
+                    story_id     INTEGER PRIMARY KEY,
+                    action       TEXT NOT NULL CHECK(action IN ('up', 'neutral', 'down')),
+                    updated_at   REAL NOT NULL,
+                    FOREIGN KEY (story_id) REFERENCES stories(id)
+                )
+            """)
 
-            if columns:
-                if "title" in columns:
-                    self.conn.execute("""
-                        CREATE TABLE feedback_new (
-                            story_id     INTEGER PRIMARY KEY,
-                            action       TEXT NOT NULL CHECK(action IN ('up', 'neutral', 'down')),
-                            updated_at   REAL NOT NULL,
-                            FOREIGN KEY (story_id) REFERENCES stories(id)
-                        )
-                    """)
-                    self.conn.execute("""
-                        INSERT INTO feedback_new (story_id, action, updated_at)
-                        SELECT story_id, action, updated_at FROM feedback
-                    """)
-                    self.conn.execute("DROP TABLE feedback")
-                    self.conn.execute("ALTER TABLE feedback_new RENAME TO feedback")
-            else:
+    def _migrate_feedback_table(self) -> None:
+        cursor = self.conn.execute("PRAGMA table_info(feedback)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if "title" in columns:
+            with self.conn:
                 self.conn.execute("""
-                    CREATE TABLE IF NOT EXISTS feedback (
+                    CREATE TABLE feedback_new (
                         story_id     INTEGER PRIMARY KEY,
                         action       TEXT NOT NULL CHECK(action IN ('up', 'neutral', 'down')),
                         updated_at   REAL NOT NULL,
                         FOREIGN KEY (story_id) REFERENCES stories(id)
                     )
                 """)
+                self.conn.execute("""
+                    INSERT INTO feedback_new (story_id, action, updated_at)
+                    SELECT story_id, action, updated_at FROM feedback
+                """)
+                self.conn.execute("DROP TABLE feedback")
+                self.conn.execute("ALTER TABLE feedback_new RENAME TO feedback")
 
     def close(self) -> None:
         self.conn.close()
@@ -146,17 +150,8 @@ class Database:
                 ),
             )
 
-    def get_story(self, story_id: int) -> Story | None:
-        cursor = self.conn.execute(
-            """
-            SELECT id, title, url, score, time, text_content, source, comment_count, discussion_url
-            FROM stories WHERE id = ?
-            """,
-            (story_id,),
-        )
-        row = cursor.fetchone()
-        if not row:
-            return None
+    @staticmethod
+    def _row_to_story(row: tuple) -> Story:
         return Story(
             id=row[0],
             title=row[1],
@@ -169,6 +164,19 @@ class Database:
             discussion_url=row[8],
         )
 
+    def get_story(self, story_id: int) -> Story | None:
+        cursor = self.conn.execute(
+            """
+            SELECT id, title, url, score, time, text_content, source, comment_count, discussion_url
+            FROM stories WHERE id = ?
+            """,
+            (story_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return self._row_to_story(row)
+
     def get_stories(self, ids: list[int]) -> list[Story]:
         if not ids:
             return []
@@ -178,20 +186,7 @@ class Database:
             FROM stories WHERE id IN ({placeholders})
         """
         cursor = self.conn.execute(query, ids)
-        return [
-            Story(
-                id=row[0],
-                title=row[1],
-                url=row[2],
-                score=row[3],
-                time=row[4],
-                text_content=row[5],
-                source=row[6],
-                comment_count=row[7],
-                discussion_url=row[8],
-            )
-            for row in cursor.fetchall()
-        ]
+        return [self._row_to_story(row) for row in cursor.fetchall()]
 
     def prune_stories(self, max_age_days: int = 60) -> int:
         cutoff = time.time() - (max_age_days * 86400)
@@ -203,7 +198,9 @@ class Database:
             return cursor.rowcount
 
     # Embeddings
-    def upsert_embedding(self, story_id: int, model_version: str, vec: NDArray[np.float32]) -> None:
+    def upsert_embedding(
+        self, story_id: int, model_version: str, vec: NDArray[np.float32]
+    ) -> None:
         blob = vec.astype(np.float32).tobytes()
         with self.conn:
             self.conn.execute(
@@ -217,7 +214,9 @@ class Database:
                 (story_id, model_version, blob),
             )
 
-    def get_embedding(self, story_id: int, model_version: str) -> NDArray[np.float32] | None:
+    def get_embedding(
+        self, story_id: int, model_version: str
+    ) -> NDArray[np.float32] | None:
         cursor = self.conn.execute(
             "SELECT embedding FROM embeddings WHERE story_id = ? AND model_version = ?",
             (story_id, model_version),
@@ -227,7 +226,9 @@ class Database:
             return None
         return np.frombuffer(row[0], dtype=np.float32)
 
-    def get_embeddings_batch(self, ids: list[int], model_version: str) -> dict[int, NDArray[np.float32]]:
+    def get_embeddings_batch(
+        self, ids: list[int], model_version: str
+    ) -> dict[int, NDArray[np.float32]]:
         if not ids:
             return {}
         placeholders = ",".join("?" for _ in ids)
@@ -238,14 +239,15 @@ class Database:
         params = [model_version] + ids
         cursor = self.conn.execute(query, params)
         return {
-            row[0]: np.frombuffer(row[1], dtype=np.float32)
-            for row in cursor.fetchall()
+            row[0]: np.frombuffer(row[1], dtype=np.float32) for row in cursor.fetchall()
         }
 
     # User signals
     def set_user_signals(self, signal_type: str, ids: set[int]) -> None:
         with self.conn:
-            self.conn.execute("DELETE FROM user_signals WHERE signal_type = ?", (signal_type,))
+            self.conn.execute(
+                "DELETE FROM user_signals WHERE signal_type = ?", (signal_type,)
+            )
             now = time.time()
             self.conn.executemany(
                 "INSERT INTO user_signals (story_id, signal_type, scraped_at) VALUES (?, ?, ?)",
@@ -317,7 +319,17 @@ class Database:
         labels: list[int] = []
         vote_times: list[float] = []
         action_to_label = {"down": 0, "neutral": 1, "up": 2}
-        for story_id, action, title, url, text_content, source, updated_at, score, story_time in cursor.fetchall():
+        for (
+            story_id,
+            action,
+            title,
+            url,
+            text_content,
+            source,
+            updated_at,
+            score,
+            story_time,
+        ) in cursor.fetchall():
             if action not in action_to_label:
                 continue
             stories.append(

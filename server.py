@@ -79,7 +79,6 @@ Article text: {text_content[:30000]}
 class Handler(BaseHTTPRequestHandler):
     server_version = "HNRewrite/1.0"
     config: Config
-    db: Database
     regen_event: threading.Event
 
     def do_GET(self) -> None:
@@ -101,7 +100,10 @@ class Handler(BaseHTTPRequestHandler):
                     break
 
         if not target_file.exists():
-            self.send_error(HTTPStatus.SERVICE_UNAVAILABLE, "Dashboard is generating, please refresh in a moment.")
+            self.send_error(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                "Dashboard is generating, please refresh in a moment.",
+            )
             return
 
         try:
@@ -156,14 +158,20 @@ class Handler(BaseHTTPRequestHandler):
                     db.close()
 
                 if not story:
-                    self._json_response({"error": "Story not found in database"}, status=404)
+                    self._json_response(
+                        {"error": "Story not found in database"}, status=404
+                    )
                     return
 
-                tldr = asyncio.run(generate_detailed_tldr(story.title, story.text_content))
+                tldr = asyncio.run(
+                    generate_detailed_tldr(story.title, story.text_content)
+                )
                 if tldr:
                     self._json_response({"ok": True, "tldr": tldr})
                 else:
-                    self._json_response({"error": "Failed to generate TLDR"}, status=500)
+                    self._json_response(
+                        {"error": "Failed to generate TLDR"}, status=500
+                    )
             except Exception as e:
                 logging.error(f"Error handling tldr-detail: {e}")
                 self._json_response({"error": str(e)}, status=400)
@@ -217,11 +225,9 @@ def main() -> None:
     )
     load_env()
     config = Config.load()
-    db = Database(config.db_path)
 
     regen_event = threading.Event()
     Handler.config = config
-    Handler.db = db
     Handler.regen_event = regen_event
 
     # Start regen thread
@@ -237,7 +243,6 @@ def main() -> None:
         logging.info("Shutting down...")
     finally:
         server.server_close()
-        db.close()
 
 
 if __name__ == "__main__":

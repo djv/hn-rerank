@@ -3,10 +3,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import html
-import json
 import logging
 import re
-import threading
 import time
 import tomllib
 from collections import Counter
@@ -33,10 +31,7 @@ class ModelConfig:
     svm_c: float = 0.3
     svm_gamma: float | str = 0.1
     svm_kernel: str = "rbf"
-    min_feedback_labels: int = 10
-    min_signal_examples: int = 5
     diversity_threshold: float = 0.55
-
 
 
 @dataclass(frozen=True)
@@ -84,8 +79,6 @@ class Config:
                 svm_c=model_cfg.get("svm_c", 0.3),
                 svm_gamma=model_cfg.get("svm_gamma", 0.1),
                 svm_kernel=model_cfg.get("svm_kernel", "rbf"),
-                min_feedback_labels=model_cfg.get("min_feedback_labels", 10),
-                min_signal_examples=model_cfg.get("min_signal_examples", 5),
                 diversity_threshold=model_cfg.get("diversity_threshold", 0.55),
             ),
             rss=RssConfig(
@@ -179,70 +172,16 @@ def compose_story_text(
     return " ".join(parts).strip()
 
 
-# HN Scraping
-async def fetch_user_signals(username: str, db: Database, config: Config) -> dict[str, set[int]]:
-    cookies = {}
-    cookie_paths = [
-        Path(config.db_path).parent / "cookies.json",
-        Path.home() / "hn_rerank/.cache/user/cookies.json",
-    ]
-    for p in cookie_paths:
-        if p.exists():
-            try:
-                with open(p) as f:
-                    cookies = json.load(f)
-                break
-            except Exception:
-                pass
-
-    headers = {"User-Agent": "Mozilla/5.0"}
-    async with httpx.AsyncClient(
-        base_url="https://news.ycombinator.com",
-        cookies=cookies,
-        headers=headers,
-        follow_redirects=True,
-        timeout=15.0,
-    ) as client:
-        resp = await client.get("/")
-        is_logged_in = "logout" in resp.text
-
-        favorites = await _scrape_ids(client, f"/favorites?id={username}", max_pages=15)
-
-        upvoted = set()
-        hidden = set()
-        if is_logged_in:
-            upvoted = await _scrape_ids(client, f"/upvoted?id={username}", max_pages=15)
-            hidden = await _scrape_ids(client, f"/hidden?id={username}", max_pages=20)
-
-    db.set_user_signals("favorite", favorites)
-    db.set_user_signals("upvote", upvoted)
-    db.set_user_signals("hidden", hidden)
-
-    return {"favorite": favorites, "upvote": upvoted, "hidden": hidden}
-
-
-async def _scrape_ids(client: httpx.AsyncClient, path: str, max_pages: int) -> set[int]:
-    ids = set()
-    for p in range(1, max_pages + 1):
-        url = f"{path}&p={p}" if "?" in path else f"{path}?p={p}"
-        resp = await client.get(url)
-        if resp.status_code != 200:
-            break
-        soup = BeautifulSoup(resp.text, "html.parser")
-        rows = soup.find_all("tr", class_="athing")
-        for r in rows:
-            sid_attr = r.get("id")
-            if isinstance(sid_attr, list):
-                sid_attr = sid_attr[0] if sid_attr else None
-            if isinstance(sid_attr, str) and sid_attr.isdigit():
-                ids.add(int(sid_attr))
-        if not soup.find("a", class_="morelink"):
-            break
-    return ids
-
-
 # Algolia Fetching
-async def fetch_story(client: httpx.AsyncClient, sid: int, db: Database) -> Story | None:
+def _empty_story(sid: int) -> Story:
+    return Story(
+        id=sid, title="", url=None, score=0, time=0, text_content="", source="hn"
+    )
+
+
+async def fetch_story(
+    client: httpx.AsyncClient, sid: int, db: Database
+) -> Story | None:
     story = db.get_story(sid)
     if story is not None:
         if story.text_content == "":
@@ -253,12 +192,12 @@ async def fetch_story(client: httpx.AsyncClient, sid: int, db: Database) -> Stor
     try:
         resp = await client.get(url)
         if resp.status_code != 200:
-            db.upsert_story(Story(id=sid, title="", url=None, score=0, time=0, text_content="", source="hn"))
+            db.upsert_story(_empty_story(sid))
             return None
 
         item = resp.json()
         if not item or item.get("type") != "story":
-            db.upsert_story(Story(id=sid, title="", url=None, score=0, time=0, text_content="", source="hn"))
+            db.upsert_story(_empty_story(sid))
             return None
 
         title = html.unescape(item.get("title", ""))
@@ -280,7 +219,17 @@ async def fetch_story(client: httpx.AsyncClient, sid: int, db: Database) -> Stor
         )
 
         if not text_content:
-            db.upsert_story(Story(id=sid, title="", url=None, score=0, time=0, text_content="", source="hn"))
+            db.upsert_story(
+                Story(
+                    id=sid,
+                    title="",
+                    url=None,
+                    score=0,
+                    time=0,
+                    text_content="",
+                    source="hn",
+                )
+            )
             return None
 
         story = Story(
@@ -291,7 +240,9 @@ async def fetch_story(client: httpx.AsyncClient, sid: int, db: Database) -> Stor
             time=created_at,
             text_content=text_content,
             source="hn",
-            comment_count=comment_count if comment_count is not None else len(all_comments),
+            comment_count=comment_count
+            if comment_count is not None
+            else len(all_comments),
             discussion_url=f"https://news.ycombinator.com/item?id={sid}",
         )
 
@@ -302,7 +253,9 @@ async def fetch_story(client: httpx.AsyncClient, sid: int, db: Database) -> Stor
         return None
 
 
-async def fetch_stories_by_id(ids: list[int], db: Database, client: httpx.AsyncClient | None = None) -> list[Story]:
+async def fetch_stories_by_id(
+    ids: list[int], db: Database, client: httpx.AsyncClient | None = None
+) -> list[Story]:
     if not ids:
         return []
 
@@ -383,7 +336,9 @@ async def fetch_candidates(
                     "page": page,
                 }
                 try:
-                    resp = await client.get("https://hn.algolia.com/api/v1/search", params=params)
+                    resp = await client.get(
+                        "https://hn.algolia.com/api/v1/search", params=params
+                    )
                     if resp.status_code != 200:
                         break
                     data = resp.json()
@@ -562,9 +517,13 @@ class Embedder:
             token_embeddings = outputs[0]
             attention_mask = inputs["attention_mask"]
 
-            input_mask_expanded = np.expand_dims(attention_mask, axis=-1).astype(np.float32)
+            input_mask_expanded = np.expand_dims(attention_mask, axis=-1).astype(
+                np.float32
+            )
             sum_embeddings = np.sum(token_embeddings * input_mask_expanded, axis=1)
-            sum_mask = np.clip(np.sum(input_mask_expanded, axis=1), a_min=1e-9, a_max=None)
+            sum_mask = np.clip(
+                np.sum(input_mask_expanded, axis=1), a_min=1e-9, a_max=None
+            )
             mean_embeddings = sum_embeddings / sum_mask
 
             norms = np.linalg.norm(mean_embeddings, axis=1, keepdims=True)
@@ -603,8 +562,8 @@ def get_or_compute_embeddings(
 # Ranking
 
 # Normalization constants for metadata features
-_LOG_POINTS_SCALE = 8.0    # log1p(~3000) ≈ 8
-_AGE_DAYS_SCALE = 30.0     # cap at 30 days
+_LOG_POINTS_SCALE = 8.0  # log1p(~3000) ≈ 8
+_AGE_DAYS_SCALE = 30.0  # cap at 30 days
 
 
 def _augment_features(
@@ -616,7 +575,9 @@ def _augment_features(
     n = len(scores)
     meta = np.zeros((n, 2), dtype=np.float32)
     for i in range(n):
-        meta[i, 0] = min(np.log1p(max(scores[i], 0)), _LOG_POINTS_SCALE) / _LOG_POINTS_SCALE
+        meta[i, 0] = (
+            min(np.log1p(max(scores[i], 0)), _LOG_POINTS_SCALE) / _LOG_POINTS_SCALE
+        )
         age_days = max(age_seconds[i], 0) / 86400.0
         meta[i, 1] = min(age_days, _AGE_DAYS_SCALE) / _AGE_DAYS_SCALE
     return np.concatenate([embeddings, meta], axis=1)
@@ -649,7 +610,15 @@ def rank_stories(
             # Ensure all three classes (0, 1, 2) are present
             missing = {0, 1, 2} - set(feedback_labels)
             if missing:
-                fb_features = np.concatenate([fb_features, np.zeros((len(missing), fb_features.shape[1]), dtype=np.float32)], axis=0)
+                fb_features = np.concatenate(
+                    [
+                        fb_features,
+                        np.zeros(
+                            (len(missing), fb_features.shape[1]), dtype=np.float32
+                        ),
+                    ],
+                    axis=0,
+                )
                 labels = list(feedback_labels) + list(missing)
             else:
                 labels = list(feedback_labels)
@@ -674,7 +643,9 @@ def rank_stories(
             # Augment candidate features: age_now = now - story_time
             cand_scores = [s.score for s in candidates]
             cand_ages = [now - s.time for s in candidates]
-            cand_features = _augment_features(candidate_embeddings, cand_scores, cand_ages)
+            cand_features = _augment_features(
+                candidate_embeddings, cand_scores, cand_ages
+            )
 
             # OVR decision_function → shape (n_candidates, 3) for classes [0, 1, 2]
             dec = svm.decision_function(cand_features)
@@ -726,7 +697,7 @@ def mmr_filter(
 
         # Find all remaining unselected items that are similar to this one
         similar_group = [item]
-        for other in ranked[idx + 1:]:
+        for other in ranked[idx + 1 :]:
             if other.story.id in discarded:
                 continue
             other_emb = embeddings_map.get(other.story.id)
@@ -754,7 +725,7 @@ def mmr_filter(
         # Discard everything in the group
         for other in similar_group:
             discarded.add(other.story.id)
-        
+
         # Also discard anything similar to the chosen representative
         rep_emb = embeddings_map.get(rep.story.id)
         if rep_emb is not None:
@@ -804,7 +775,9 @@ def generate_dashboard(
     env.filters["time_ago"] = time_ago_filter
 
     pico_css_path = Path("templates/pico.min.css")
-    pico_css = pico_css_path.read_text(encoding="utf-8") if pico_css_path.exists() else ""
+    pico_css = (
+        pico_css_path.read_text(encoding="utf-8") if pico_css_path.exists() else ""
+    )
 
     # Map user feedback in database for active UI state highlighting
     all_fb = db.get_all_feedback()
@@ -831,7 +804,11 @@ async def run_pipeline(config: Config) -> None:
 
     # Use cached signals for exclusion (no scraping)
     signals = db.get_user_signals()
-    signal_ids = signals.get("favorite", set()) | signals.get("upvote", set()) | signals.get("hidden", set())
+    signal_ids = (
+        signals.get("favorite", set())
+        | signals.get("upvote", set())
+        | signals.get("hidden", set())
+    )
 
     # Exclude stories that already have user feedback (voted on via dashboard)
     feedback_records = db.get_all_feedback()
@@ -856,7 +833,12 @@ async def run_pipeline(config: Config) -> None:
     )
 
     logging.info("Filtering with MMR...")
-    final = mmr_filter(ranked, embeddings_map, threshold=config.model.diversity_threshold, limit=config.count)
+    final = mmr_filter(
+        ranked,
+        embeddings_map,
+        threshold=config.model.diversity_threshold,
+        limit=config.count,
+    )
 
     logging.info("Generating dashboard...")
     generate_dashboard(
