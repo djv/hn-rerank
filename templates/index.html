@@ -307,9 +307,7 @@
         const card = btn.closest('.story-card');
         const action = btn.dataset.fb;
         const storyId = Number(card.dataset.storyId);
-        const title = card.querySelector('.story-title a')?.textContent || '';
-        const url = card.querySelector('.story-title a')?.href || null;
-        const source = card.dataset.source || 'hn';
+
 
         // Toggle logic: click on active button clears it
         const nextAction = btn.classList.contains('active') ? 'clear' : action;
@@ -322,9 +320,6 @@
             body: JSON.stringify({
               story_id: storyId,
               action: nextAction,
-              title: title.trim(),
-              url: url,
-              source: source
             })
           });
 

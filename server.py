@@ -79,6 +79,7 @@ Article text: {text_content[:30000]}
 class Handler(BaseHTTPRequestHandler):
     server_version = "HNRewrite/1.0"
     config: Config
+    db: Database
     regen_event: threading.Event
 
     def do_GET(self) -> None:
@@ -225,9 +226,11 @@ def main() -> None:
     )
     load_env()
     config = Config.load()
+    db = Database(config.db_path)
 
     regen_event = threading.Event()
     Handler.config = config
+    Handler.db = db
     Handler.regen_event = regen_event
 
     # Start regen thread
@@ -243,6 +246,7 @@ def main() -> None:
         logging.info("Shutting down...")
     finally:
         server.server_close()
+        db.close()
 
 
 if __name__ == "__main__":

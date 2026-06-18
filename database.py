@@ -41,7 +41,6 @@ class Database:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
         self._create_tables()
-        self._migrate_feedback_table()
 
     def _create_tables(self) -> None:
         with self.conn:
@@ -84,34 +83,34 @@ class Database:
                 )
             """)
 
-            self.conn.execute("""
-                CREATE TABLE IF NOT EXISTS feedback (
-                    story_id     INTEGER PRIMARY KEY,
-                    action       TEXT NOT NULL CHECK(action IN ('up', 'neutral', 'down')),
-                    updated_at   REAL NOT NULL,
-                    FOREIGN KEY (story_id) REFERENCES stories(id)
-                )
-            """)
+            cursor = self.conn.execute("PRAGMA table_info(feedback)")
+            columns = [row[1] for row in cursor.fetchall()]
 
-    def _migrate_feedback_table(self) -> None:
-        cursor = self.conn.execute("PRAGMA table_info(feedback)")
-        columns = [row[1] for row in cursor.fetchall()]
-        if "title" in columns:
-            with self.conn:
+            if columns:
+                if "title" in columns:
+                    self.conn.execute("""
+                        CREATE TABLE feedback_new (
+                            story_id     INTEGER PRIMARY KEY,
+                            action       TEXT NOT NULL CHECK(action IN ('up', 'neutral', 'down')),
+                            updated_at   REAL NOT NULL,
+                            FOREIGN KEY (story_id) REFERENCES stories(id)
+                        )
+                    """)
+                    self.conn.execute("""
+                        INSERT INTO feedback_new (story_id, action, updated_at)
+                        SELECT story_id, action, updated_at FROM feedback
+                    """)
+                    self.conn.execute("DROP TABLE feedback")
+                    self.conn.execute("ALTER TABLE feedback_new RENAME TO feedback")
+            else:
                 self.conn.execute("""
-                    CREATE TABLE feedback_new (
+                    CREATE TABLE IF NOT EXISTS feedback (
                         story_id     INTEGER PRIMARY KEY,
                         action       TEXT NOT NULL CHECK(action IN ('up', 'neutral', 'down')),
                         updated_at   REAL NOT NULL,
                         FOREIGN KEY (story_id) REFERENCES stories(id)
                     )
                 """)
-                self.conn.execute("""
-                    INSERT INTO feedback_new (story_id, action, updated_at)
-                    SELECT story_id, action, updated_at FROM feedback
-                """)
-                self.conn.execute("DROP TABLE feedback")
-                self.conn.execute("ALTER TABLE feedback_new RENAME TO feedback")
 
     def close(self) -> None:
         self.conn.close()

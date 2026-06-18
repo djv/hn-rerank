@@ -68,10 +68,6 @@ def test_feedback_post(test_env):
     feedback_payload = {
         "story_id": 999,
         "action": "up",
-        "title": "Feedback story",
-        "url": "https://example.com",
-        "text_content": "Feedback body text",
-        "source": "hn",
     }
     resp = httpx.post(f"http://127.0.0.1:{port}/api/feedback", json=feedback_payload)
     assert resp.status_code == 200
