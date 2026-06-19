@@ -5,9 +5,13 @@ import logging
 import sys
 import threading
 import time
+
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+import trafilatura
+from bs4 import BeautifulSoup
 import httpx
 
 from database import Database
@@ -27,7 +31,53 @@ def load_env() -> None:
                 os.environ[k.strip()] = v.strip().strip("'\"")
 
 
-async def generate_detailed_tldr(title: str, text_content: str) -> str | None:
+async def _fetch_article_body(url: str) -> str | None:
+    headers = {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate",
+        "Cache-Control": "no-cache",
+    }
+
+    for attempt in range(2):
+        try:
+            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+                resp = await client.get(url, headers=headers)
+                if resp.status_code in (429, 503) and attempt == 0:
+                    await asyncio.sleep(1)
+                    continue
+                if resp.status_code != 200:
+                    return None
+                html = resp.text
+        except Exception:
+            return None
+
+        text = trafilatura.extract(html, include_comments=False, include_tables=False)
+        if text and len(text) > 200:
+            return text[:10000]
+
+        soup = BeautifulSoup(html, "html.parser")
+        for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
+            tag.decompose()
+        for tag in soup.find_all(["article", "main"]):
+            text = tag.get_text(separator=" ", strip=True)
+            if len(text) > 200:
+                return text[:10000]
+        text = soup.get_text(separator=" ", strip=True)
+        return text[:10000] if len(text) > 200 else None
+
+    return None
+
+
+async def generate_detailed_tldr(
+    title: str,
+    text_content: str,
+    points: int = 0,
+    comment_count: int = 0,
+    age_hours: float = 0.0,
+    article_body: str = "",
+) -> str | None:
     provider = os.environ.get("LLM_PROVIDER", "mistral").lower()
     if provider == "mistral":
         api_key = os.environ.get("MISTRAL_API_KEY")
@@ -41,13 +91,23 @@ async def generate_detailed_tldr(title: str, text_content: str) -> str | None:
     if not api_key:
         return "Error: LLM API key not configured in environment."
 
+    source_label = "HN discussion text" if article_body else "Article text"
+    content_section = f"Title: {title}\nEngagement context: {points} points, {comment_count} comments, {age_hours:.0f} hours old\n{source_label}: {text_content[:30000]}"
+    if article_body:
+        content_section = f"Article body: {article_body[:15000]}\n\n" + content_section
+
     prompt = f"""Summarize the article and the discussion for a knowledgeable reader.
-Use ONLY information from the article text below (which includes comments).
+Use ONLY information from the text below (which includes the article body and comments).
 Write a short 3-4 paragraph summary (under 400 words). Use Markdown formatting:
 headings (###), **bold** for key terms, and - for lists where appropriate.
 
-Title: {title}
-Article text: {text_content[:30000]}
+{content_section}
+
+IMPORTANT:
+- Use ONLY information from the article text. Do not expand on the topic with outside knowledge.
+- If the article has very few or no comments, say so explicitly. Do not invent discussion.
+- If engagement is low (under 20 points or under 5 comments), use hedging language like "the article describes...", "the author claims...", and note that the discussion is sparse.
+- If the article text appears to be just a title and no body, say "The article body was not available."
 """
 
     payload = {
@@ -151,21 +211,43 @@ class Handler(BaseHTTPRequestHandler):
                 data = json.loads(body)
 
                 story_id = data["story_id"]
+                now = time.time()
 
                 db = Database(self.config.db_path)
                 try:
                     story = db.get_story(story_id)
+                    if not story:
+                        self._json_response(
+                            {"error": "Story not found in database"}, status=404
+                        )
+                        return
+
+                    age_hours = max(0.0, (now - story.time) / 3600.0)
+                    article_body = (
+                        db.get_cached_article(story_id, story.url)
+                        if story.url
+                        else None
+                    )
                 finally:
                     db.close()
 
-                if not story:
-                    self._json_response(
-                        {"error": "Story not found in database"}, status=404
-                    )
-                    return
-
+                if article_body is None and story.url and len(story.text_content) < 500:
+                    article_body = asyncio.run(_fetch_article_body(story.url))
+                    if article_body:
+                        db2 = Database(self.config.db_path)
+                        try:
+                            db2.set_cached_article(story_id, story.url, article_body)
+                        finally:
+                            db2.close()
                 tldr = asyncio.run(
-                    generate_detailed_tldr(story.title, story.text_content)
+                    generate_detailed_tldr(
+                        story.title,
+                        story.text_content,
+                        points=story.score,
+                        comment_count=story.comment_count or 0,
+                        age_hours=age_hours,
+                        article_body=article_body or "",
+                    )
                 )
                 if tldr:
                     self._json_response({"ok": True, "tldr": tldr})
