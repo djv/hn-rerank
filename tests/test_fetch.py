@@ -1,5 +1,12 @@
 import pytest
+import asyncio
 from server import _fetch_article_body
+
+@pytest.fixture(autouse=True)
+def mock_asyncio_sleep(monkeypatch):
+    async def mock_sleep(delay):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", mock_sleep)
 
 _ARTICLE_HTML = """\
 <!DOCTYPE html>

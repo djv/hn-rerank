@@ -16,9 +16,8 @@ from pipeline import (
 
 
 @pytest.fixture
-def db(tmp_path):
-    db_file = tmp_path / "test.db"
-    db_instance = Database(str(db_file))
+def db():
+    db_instance = Database(":memory:")
     yield db_instance
     db_instance.close()
 
@@ -386,11 +385,8 @@ def test_mmr_engagement_promotion_boundaries(score_a, score_b, eng_a, eng_b):
     suppress_health_check=[HealthCheck.function_scoped_fixture],
     deadline=1000,
 )
-def test_svm_fitting_robustness(tmp_path, embedder, feedback_actions, cand_count):
-    import uuid
-
-    db_file = tmp_path / f"test_svm_prop_{uuid.uuid4().hex}.db"
-    db = Database(str(db_file))
+def test_svm_fitting_robustness(embedder, feedback_actions, cand_count):
+    db = Database(":memory:")
     try:
         model_version = "all-MiniLM-L6-v2|mean|norm|256"
         for i, action in enumerate(feedback_actions):
@@ -432,10 +428,6 @@ def test_svm_fitting_robustness(tmp_path, embedder, feedback_actions, cand_count
                 assert item.score == 0.5
     finally:
         db.close()
-        try:
-            db_file.unlink()
-        except OSError:
-            pass
 
 
 @pytest.mark.asyncio
@@ -717,3 +709,175 @@ async def test_refetch_updates_comment_count_at_fetch_on_success(db, embedder):
     persisted = db.get_story(sid)
     assert persisted.comment_count_at_fetch == 16
     assert persisted.text_content != ""  # recomposed
+
+
+async def test_run_pipeline_badge_assignment(tmp_path, monkeypatch):
+    """Verify that badges are only assigned to extra stories and excluded from default ones."""
+    from pipeline import Config, run_pipeline, RankedStory
+    from database import Database, Story
+    import numpy as np
+    import time
+
+    db_file = tmp_path / "test.db"
+    db = Database(str(db_file))
+    
+    # 1. Create candidates list
+    now = time.time()
+    candidates = []
+    # Default path candidates: IDs 1-7
+    for i in range(1, 8):
+        candidates.append(
+            Story(
+                id=i,
+                title=f"Default Story {i}",
+                url=None,
+                score=100 - i,
+                time=now,
+                text_content=f"content {i}",
+                comment_count=0,
+            )
+        )
+    # Extra/discovery candidates:
+    # ID 8: high comments -> discussion rich
+    candidates.append(
+        Story(
+            id=8,
+            title="Discussion Rich Story",
+            url=None,
+            score=10,
+            time=now,
+            text_content="content 8",
+            comment_count=100,
+        )
+    )
+    # ID 9: high score -> high engagement
+    candidates.append(
+        Story(
+            id=9,
+            title="High Engagement Story",
+            url=None,
+            score=500,
+            time=now,
+            text_content="content 9",
+            comment_count=0,
+        )
+    )
+    # ID 10: high similarity -> similar
+    candidates.append(
+        Story(
+            id=10,
+            title="Similar Story",
+            url=None,
+            score=10,
+            time=now,
+            text_content="content 10",
+            comment_count=0,
+        )
+    )
+    # ID 11: seed for novel story (we will set its max sim low)
+    candidates.append(
+        Story(
+            id=11,
+            title="Novel Story",
+            url=None,
+            score=6,
+            time=now,
+            text_content="content 11",
+            comment_count=0,
+        )
+    )
+
+    # Persist feedback in DB to train / simulate closest up
+    db.upsert_story(Story(id=999, title="Upvoted Story", url=None, score=100, time=now, text_content="upvoted text"))
+    db.upsert_feedback(999, "up")
+
+    # 2. Config setup
+    config = Config(
+        db_path=str(db_file),
+        output=str(tmp_path / "index.html"),
+        count=10,  # 7 default path, 3 uncertain slots
+    )
+
+    # 3. Mock dependencies
+    async def mock_fetch_candidates(*args, **kwargs):
+        return candidates, len(candidates)
+    monkeypatch.setattr("pipeline.fetch_candidates", mock_fetch_candidates)
+
+    class DummyEmbedder:
+        def __init__(self, *args, **kwargs):
+            pass
+    monkeypatch.setattr("pipeline.Embedder", DummyEmbedder)
+
+    def mock_get_or_compute_embeddings(stories, embedder, db_inst):
+        # We return unit embeddings.
+        # ID 999 has embedding [1, 0, 0...]
+        # ID 10 (sleeper) has embedding [0.6, 0...] to ensure closest_up > 0.55
+        # ID 11 (novel) has embedding [0.0, 0...] to ensure closest_up/closest_down <= sim_threshold
+        # others have [0.3, 0...]
+        embs = []
+        for s in stories:
+            vec = np.zeros(384, dtype=np.float32)
+            if s.id == 999:
+                vec[0] = 1.0
+            elif s.id == 10:
+                vec[0] = 0.6
+            elif s.id == 11:
+                vec[0] = 0.0
+            else:
+                vec[0] = 0.3
+            embs.append(vec)
+        return np.array(embs)
+    monkeypatch.setattr("pipeline.get_or_compute_embeddings", mock_get_or_compute_embeddings)
+
+    # Mock rank_stories to return a pre-sorted list (fallback score/probability behavior)
+    def mock_rank_stories(candidates_list, *args, **kwargs):
+        res = []
+        for s in candidates_list:
+            if s.id <= 7:
+                score = 0.9 - s.id * 0.05
+            else:
+                score = 0.2
+            res.append(
+                RankedStory(
+                    story=s,
+                    score=score,
+                    best_match_title="",
+                    prob_down=0.1,
+                    prob_neutral=0.1,
+                    prob_up=0.8,
+                )
+            )
+        return sorted(res, key=lambda x: x.score, reverse=True)
+    monkeypatch.setattr("pipeline.rank_stories", mock_rank_stories)
+
+    # Capture final stories passed to generate_dashboard
+    captured_final = []
+    def mock_generate_dashboard(final_list, *args, **kwargs):
+        nonlocal captured_final
+        captured_final = list(final_list)
+    monkeypatch.setattr("pipeline.generate_dashboard", mock_generate_dashboard)
+
+    await run_pipeline(config)
+
+    # Assertions
+    # We expect default stories (1-7) and at least some extra decorated stories
+    assert len(captured_final) > 7
+    
+    for r in captured_final:
+        if r.story.id <= 7:
+            # Default path stories MUST NOT have any badges assigned
+            assert not r.is_uncertain, f"Story {r.story.id} has uncertain badge"
+            assert not r.is_novel, f"Story {r.story.id} has novel badge"
+            assert not r.is_similar, f"Story {r.story.id} has similar badge"
+            assert not r.is_discussion_rich, f"Story {r.story.id} has discussion badge"
+            assert not r.is_high_engagement, f"Story {r.story.id} has engagement badge"
+        else:
+            # Extra discovery stories can have badges
+            if r.story.id == 8:
+                assert r.is_discussion_rich
+            if r.story.id == 9:
+                assert r.is_high_engagement
+            if r.story.id == 10:
+                assert r.is_similar
+            if r.story.id == 11:
+                assert r.is_novel

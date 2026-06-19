@@ -6,9 +6,8 @@ from database import Database, Story
 
 
 @pytest.fixture
-def db(tmp_path):
-    db_file = tmp_path / "test.db"
-    db_instance = Database(str(db_file))
+def db():
+    db_instance = Database(":memory:")
     yield db_instance
     db_instance.close()
 
@@ -185,10 +184,8 @@ def test_feedback_training_data(db):
     feedback_indices=st.sets(st.integers(min_value=0, max_value=49))
 )
 @settings(max_examples=25, suppress_health_check=[HealthCheck.function_scoped_fixture])
-def test_story_pruning_integrity_invariants(tmp_path, fetched_offsets, feedback_indices):
-    import uuid
-    db_file = tmp_path / f"test_prune_{uuid.uuid4().hex}.db"
-    db = Database(str(db_file))
+def test_story_pruning_integrity_invariants(fetched_offsets, feedback_indices):
+    db = Database(":memory:")
     try:
         now = time.time()
         max_age_days = 30
@@ -238,7 +235,3 @@ def test_story_pruning_integrity_invariants(tmp_path, fetched_offsets, feedback_
                 assert story is not None, f"Young story {sid} was incorrectly pruned."
     finally:
         db.close()
-        try:
-            db_file.unlink()
-        except OSError:
-            pass
