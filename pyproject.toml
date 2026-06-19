@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 dependencies = [
     "httpx>=0.28",
     "beautifulsoup4>=4.14",
+    "trafilatura>=1.6",
     "numpy<2.4",
     "onnxruntime>=1.23",
     "transformers>=4.57",

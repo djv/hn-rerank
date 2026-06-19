@@ -83,6 +83,16 @@ class Database:
                 )
             """)
 
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS article_cache (
+                    story_id    INTEGER PRIMARY KEY,
+                    url         TEXT NOT NULL,
+                    article_text TEXT NOT NULL,
+                    fetched_at  REAL NOT NULL,
+                    FOREIGN KEY (story_id) REFERENCES stories(id) ON DELETE CASCADE
+                )
+            """)
+
             cursor = self.conn.execute("PRAGMA table_info(feedback)")
             columns = [row[1] for row in cursor.fetchall()]
 
@@ -260,6 +270,31 @@ class Database:
             if signal_type in res:
                 res[signal_type].add(story_id)
         return res
+
+    # Article body cache
+    def get_cached_article(self, story_id: int, url: str) -> str | None:
+        cursor = self.conn.execute(
+            "SELECT url, article_text FROM article_cache WHERE story_id = ?",
+            (story_id,),
+        )
+        row = cursor.fetchone()
+        if row and row[0] == url:
+            return row[1]
+        return None
+
+    def set_cached_article(self, story_id: int, url: str, article_text: str) -> None:
+        with self.conn:
+            self.conn.execute(
+                """
+                INSERT INTO article_cache (story_id, url, article_text, fetched_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(story_id) DO UPDATE SET
+                    url=excluded.url,
+                    article_text=excluded.article_text,
+                    fetched_at=excluded.fetched_at
+                """,
+                (story_id, url, article_text, time.time()),
+            )
 
     # Feedback
     def upsert_feedback(
