@@ -61,14 +61,23 @@ Rather than mixing semantic matches with engagement counts using arbitrary manua
   * Maximum cosine similarity to any upvoted story embedding.
   * Maximum cosine similarity to any downvoted story embedding.
 
-### 3.3 Engagement-Aware MMR Filtering
+To prevent train-test covariate shift / feature leakage, when computing the similarity features for training stories, we explicitly exclude each story itself from its class centroid/reference set (e.g. subtracting its contribution from the mean vector and setting its entry in the similarity matrix to `-1.0` before maximum reduction).
+
+### 3.3 Engagement-Aware MMR & Surfacing Passes
 Standard MMR (Maximal Marginal Relevance) strictly penalizes topic duplication based on similarity. If two stories are similar, the lower-ranked one is discarded. We modified `mmr_filter` to identify similarity groups. If an alternative candidate has significantly higher engagement than the group leader:
 ```python
 other_engagement > leader_engagement * 2.0 + 30
 ```
 the higher-engagement candidate is promoted as the representative for the cluster. The final set is sorted back to match original SVM relative rank order.
 
-After MMR, three surfacing passes append stories beyond the `limit` following the same pattern (boolean flag on `RankedStory`, threshold during `rank_stories`, surfacing loop in `run_pipeline`): **Novel** (top 15% least similar to feedback, SVM score > 0.5, `✨ Novel`, 5 slots, sorted by SVM score), **Discussion-rich** (top 10% by `comment_count`, badge `💬 Talk-worthy`, 5 slots, sorted by comment_count descending), and **High-engagement** (top 10% by `story.score`, badge `🔥 Trending`, 5 slots, sorted by score descending). Each deduplicates against previously surfaced IDs before appending.
+After the default MMR path (which selects stories without badges), the remaining candidates are evaluated for discovery badges in a single decoration pass. Top stories selected through the default path never receive badges. The orchestrator then surfaces extra recommending slots from these decorated, remaining candidates:
+* **Uncertainty/Entropy Surfacing**: We compute the Shannon Entropy of the model's predicted probability distribution (Down, Neutral, Up). The orchestrator reserves up to 3 slots *within* the count limit for the remaining candidates with the highest entropy, flagging them as `is_uncertain=True` (badge `🤔 Unsure`) to prompt active feedback.
+* **Novel**: Top 15% least similar to feedback with SVM score > 0.5, flagged as `is_novel=True` (badge `✨ Novel`), up to 5 slots sorted by SVM score.
+* **Similar**: Stories with high semantic match to upvotes (`closest_upvoted > 0.55`), flagged as `is_similar=True` (badge `🎯 Similar`), up to 5 slots sorted by similarity score descending.
+* **Discussion-rich**: Top 10% by `comment_count` and comments > 0, flagged as `is_discussion_rich=True` (badge `💬 Talk-worthy`), up to 5 slots sorted by comment count descending.
+* **High-engagement**: Top 10% by `story.score`, flagged as `is_high_engagement=True` (badge `🔥 Trending`), up to 5 slots sorted by SVM score descending.
+
+Each discovery pass selects from the remaining decorated candidates and deduplicates against previously selected IDs before appending.
 
 ### 3.4 Client-side Autohide
 When a user upvotes/downvotes a card, the UI writes the current card height inline, triggers a CSS collapse transition (`max-height: 0 !important; opacity: 0;`), and removes the card from the DOM after 400ms. The background thread updates the actual static page asynchronously.

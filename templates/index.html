@@ -209,6 +209,18 @@
       line-height: 1.2;
     }
 
+    .similar-badge {
+      display: inline-block;
+      padding: 0.05rem 0.35rem;
+      border-radius: 3px;
+      font-weight: 600;
+      font-size: 0.7rem;
+      background: hsl(210, 50%, 25%); /* Steel/Slate Blue for similar stories */
+      color: hsl(210, 80%, 90%);
+      border: 1px solid hsl(210, 50%, 35%);
+      line-height: 1.2;
+    }
+
     .story-title {
       font-size: 1.05rem;
       margin-bottom: 0.2rem;
@@ -354,6 +366,9 @@
           {% endif %}
           {% if item.is_high_engagement %}
           <span class="high-engagement-badge" title="Crowd favorite (top 10% by HN points)">🔥 Trending</span>
+          {% endif %}
+          {% if item.is_similar %}
+          <span class="similar-badge" title="Highly similar to your upvoted stories">🎯 Similar</span>
           {% endif %}
           
           {% if item.story.source != "hn" %}

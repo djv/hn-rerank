@@ -108,6 +108,7 @@ class RankedStory:
     is_novel: bool = False
     is_discussion_rich: bool = False
     is_high_engagement: bool = False
+    is_similar: bool = False
 
 
 # Text processing helpers
@@ -1035,9 +1036,6 @@ def rank_stories(
             idx_up = class_order.index(2)
             idx_neutral = class_order.index(1)
             scores = probs[:, idx_up] + 0.5 * probs[:, idx_neutral]
-            cand_max_sim = np.maximum(cand_closest_up, cand_closest_down)
-            sim_threshold = np.percentile(cand_max_sim, 15)
-            cand_is_novel = (cand_max_sim <= sim_threshold) & (scores > 0.5)
         except Exception as e:
             logging.error(f"Failed to fit feedback SVM: {e}")
 
@@ -1059,7 +1057,6 @@ def rank_stories(
                         prob_down=float(probs[idx, idx_down]),
                         prob_neutral=float(probs[idx, idx_neutral]),
                         prob_up=float(probs[idx, idx_up]),
-                        is_novel=bool(cand_is_novel[idx]),
                     )
                 )
         except (ValueError, IndexError, NameError) as e:
@@ -1237,8 +1234,8 @@ async def run_pipeline(config: Config) -> None:
     top_score = max((r.score for r in ranked), default=0.0)
     logging.info(f"Ranked {len(ranked)} stories, top_score={top_score:.3f}")
 
-    num_uncertain = 5 if config.count >= 10 else 0
-    limit = config.count
+    num_uncertain = 3 if config.count >= 10 else 0
+    limit = max(1, config.count - num_uncertain)
     final = mmr_filter(
         ranked,
         embeddings_map,
@@ -1248,71 +1245,117 @@ async def run_pipeline(config: Config) -> None:
 
     selected_ids = {item.story.id for item in final}
     remaining = [
-        r for r in ranked if r.story.id not in selected_ids and r.prob_down is not None
+        r for r in ranked if r.story.id not in selected_ids
     ]
+
+    # Calculate parameters for remaining discovery passes
+    feedback_stories, feedback_labels, _ = db.get_feedback_for_training()
+    fb_labels_arr = np.array(feedback_labels)
+    up_mask = fb_labels_arr == 2
+    down_mask = fb_labels_arr == 0
+    fb_embeddings = get_or_compute_embeddings(feedback_stories, embedder, db)
+    fb_up_embs = fb_embeddings[up_mask]
+    fb_down_embs = fb_embeddings[down_mask]
+
+    cand_closest_up = (
+        np.max(cand_embeddings @ fb_up_embs.T, axis=1)
+        if up_mask.any()
+        else np.zeros(len(candidates))
+    )
+    cand_closest_down = (
+        np.max(cand_embeddings @ fb_down_embs.T, axis=1)
+        if down_mask.any()
+        else np.zeros(len(candidates))
+    )
+    cand_max_sim = np.maximum(cand_closest_up, cand_closest_down)
+    sim_threshold = np.percentile(cand_max_sim, 15) if len(cand_max_sim) else 0.0
+
+    cand_comment_counts = np.array([s.comment_count or 0 for s in candidates])
+    cand_scores = np.array([s.score for s in candidates])
+
+    story_id_to_idx = {s.id: idx for idx, s in enumerate(candidates)}
+
+    # Determine uncertainty IDs among remaining candidates
+    def get_entropy(r: RankedStory) -> float:
+        ent = 0.0
+        for p in (r.prob_down, r.prob_neutral, r.prob_up):
+            if p is not None and p > 1e-9:
+                ent -= p * np.log2(p)
+        return ent
+
     if remaining and num_uncertain > 0:
+        uncertain_candidates = [r for r in remaining if r.prob_down is not None]
+        uncertain_candidates.sort(key=get_entropy, reverse=True)
+        uncertain_ids = {r.story.id for r in uncertain_candidates[:num_uncertain]}
+    else:
+        uncertain_ids = set()
 
-        def get_entropy(r: RankedStory) -> float:
-            ent = 0.0
-            for p in (r.prob_down, r.prob_neutral, r.prob_up):
-                if p is not None and p > 1e-9:
-                    ent -= p * np.log2(p)
-            return ent
+    # Assign badges to remaining candidates
+    discussion_threshold = np.percentile(cand_comment_counts, 90) if len(cand_comment_counts) else 0
+    engagement_threshold = np.percentile(cand_scores, 90) if len(cand_scores) else 0
 
-        remaining.sort(key=get_entropy, reverse=True)
-        high_entropy_items = [
-            replace(item, is_uncertain=True) for item in remaining[:num_uncertain]
-        ]
-        final.extend(high_entropy_items)
-        selected_ids |= {item.story.id for item in high_entropy_items}
+    remaining_decorated = []
+    for r in remaining:
+        idx = story_id_to_idx[r.story.id]
+        is_uncertain = r.story.id in uncertain_ids
+        is_novel = bool(cand_max_sim[idx] <= sim_threshold and r.score > 0.5)
+        is_similar = bool(
+            cand_closest_up[idx] > 0.55
+        )
+        is_discussion_rich = bool(
+            cand_comment_counts[idx] >= discussion_threshold
+            and cand_comment_counts[idx] > 0
+        )
+        is_high_engagement = bool(
+            cand_scores[idx] >= engagement_threshold
+        )
+        remaining_decorated.append(
+            replace(
+                r,
+                is_uncertain=is_uncertain,
+                is_novel=is_novel,
+                is_similar=is_similar,
+                is_discussion_rich=is_discussion_rich,
+                is_high_engagement=is_high_engagement,
+            )
+        )
 
-    # Surface up to 5 novel stories on top of the normal count
-    novel_pool = [r for r in ranked if r.story.id not in selected_ids and r.is_novel]
-    if novel_pool:
-        novel_pool.sort(key=lambda r: r.score, reverse=True)
-        novel_items = [replace(item, is_novel=True) for item in novel_pool[:5]]
-        final.extend(novel_items)
-        selected_ids |= {item.story.id for item in novel_items}
+    # 1. Surface uncertainty items
+    uncertain_items = [r for r in remaining_decorated if r.is_uncertain]
+    final.extend(uncertain_items)
+    selected_ids |= {item.story.id for item in uncertain_items}
+    remaining_decorated = [r for r in remaining_decorated if r.story.id not in selected_ids]
 
-    # Surface up to 5 discussion-rich stories on top of the normal count
-    cand_comment_counts_for_thr = np.array([r.story.comment_count or 0 for r in ranked])
-    discussion_threshold = (
-        np.percentile(cand_comment_counts_for_thr, 90)
-        if len(cand_comment_counts_for_thr)
-        else 0
-    )
-    discussion_pool = [
-        r
-        for r in ranked
-        if r.story.id not in selected_ids
-        and (r.story.comment_count or 0) >= discussion_threshold
-        and (r.story.comment_count or 0) > 0
-    ]
-    if discussion_pool:
-        discussion_pool.sort(key=lambda r: r.story.comment_count or 0, reverse=True)
-        discussion_items = [
-            replace(item, is_discussion_rich=True) for item in discussion_pool[:5]
-        ]
-        final.extend(discussion_items)
-        selected_ids |= {item.story.id for item in discussion_items}
+    # 2. Surface up to 5 novel stories
+    novel_pool = [r for r in remaining_decorated if r.is_novel]
+    novel_pool.sort(key=lambda r: r.score, reverse=True)
+    novel_items = novel_pool[:5]
+    final.extend(novel_items)
+    selected_ids |= {item.story.id for item in novel_items}
+    remaining_decorated = [r for r in remaining_decorated if r.story.id not in selected_ids]
 
-    # Surface up to 5 high-engagement stories on top of the normal count
-    cand_scores_for_thr = np.array([r.story.score for r in ranked])
-    engagement_threshold = (
-        np.percentile(cand_scores_for_thr, 90) if len(cand_scores_for_thr) else 0
-    )
-    engagement_pool = [
-        r
-        for r in ranked
-        if r.story.id not in selected_ids and r.story.score >= engagement_threshold
-    ]
-    if engagement_pool:
-        engagement_pool.sort(key=lambda r: r.story.score, reverse=True)
-        engagement_items = [
-            replace(item, is_high_engagement=True) for item in engagement_pool[:5]
-        ]
-        final.extend(engagement_items)
-        selected_ids |= {item.story.id for item in engagement_items}
+    # 3. Surface up to 5 most similar stories
+    similar_pool = [r for r in remaining_decorated if r.is_similar]
+    similar_pool.sort(key=lambda r: cand_closest_up[story_id_to_idx[r.story.id]], reverse=True)
+    similar_items = similar_pool[:5]
+    final.extend(similar_items)
+    selected_ids |= {item.story.id for item in similar_items}
+    remaining_decorated = [r for r in remaining_decorated if r.story.id not in selected_ids]
+
+    # 4. Surface up to 5 discussion-rich stories
+    discussion_pool = [r for r in remaining_decorated if r.is_discussion_rich]
+    discussion_pool.sort(key=lambda r: r.story.comment_count or 0, reverse=True)
+    discussion_items = discussion_pool[:5]
+    final.extend(discussion_items)
+    selected_ids |= {item.story.id for item in discussion_items}
+    remaining_decorated = [r for r in remaining_decorated if r.story.id not in selected_ids]
+
+    # 5. Surface up to 5 high-engagement stories
+    engagement_pool = [r for r in remaining_decorated if r.is_high_engagement]
+    engagement_pool.sort(key=lambda r: r.score, reverse=True)
+    engagement_items = engagement_pool[:5]
+    final.extend(engagement_items)
+    selected_ids |= {item.story.id for item in engagement_items}
 
     final.sort(key=lambda r: r.score, reverse=True)
 
