@@ -150,6 +150,17 @@ def _evaluate_fold(
         raw_rank_map, test_stories, test_actions, test_rel, all_test_rels
     )
 
+    # Calculate median rank of upvoted test stories in overall ranked candidates
+    test_upvote_ids = {s.id for i, s in enumerate(test_stories) if test_actions[i] == 2}
+    upvote_ranks = [
+        pos for pos, idx in enumerate(order)
+        if candidates[idx].id in test_upvote_ids
+    ]
+    median_rank = float(np.median(upvote_ranks)) if upvote_ranks else 0.0
+
+    mmr_metrics["median_rank"] = median_rank
+    raw_metrics["median_rank"] = median_rank
+
     return {"mmr": mmr_metrics, "raw": raw_metrics}
 
 
@@ -359,6 +370,7 @@ def main() -> None:
         "ndcg_at_40",
         "hit_at_40",
         "mrr",
+        "median_rank",
     )
 
     report = {
@@ -402,7 +414,7 @@ def main() -> None:
     REPORT_PATH.write_text(json.dumps(report, indent=2))
     print(f"\nWritten {REPORT_PATH}")
 
-    for metric in ("ndcg_at_10", "hit_at_40", "mrr"):
+    for metric in ("ndcg_at_10", "hit_at_40", "mrr", "median_rank"):
         print(f"\n{metric} by formula (mean ± std):")
         for f, data in report["formulas"].items():  # type: ignore[union-attr]
             for variant in ("mmr", "raw"):
