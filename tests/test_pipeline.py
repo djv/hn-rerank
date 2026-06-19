@@ -340,41 +340,6 @@ def test_augment_features_properties(meta):
 
 
 @given(
-    score_a=st.floats(0.5, 1.0, allow_nan=False),
-    score_b=st.floats(0.0, 0.49, allow_nan=False),
-    eng_a=st.integers(min_value=0, max_value=500),
-    eng_b=st.integers(min_value=0, max_value=2000),
-)
-@settings(max_examples=25)
-def test_mmr_engagement_promotion_boundaries(score_a, score_b, eng_a, eng_b):
-    emb = np.zeros(384, dtype=np.float32)
-    emb[0] = 1.0
-
-    story_a = Story(
-        id=1, title="A", url=None, score=eng_a, comment_count=0, time=0, text_content=""
-    )
-    story_b = Story(
-        id=2, title="B", url=None, score=eng_b, comment_count=0, time=0, text_content=""
-    )
-
-    ranked = [
-        RankedStory(story=story_a, score=score_a, best_match_title=""),
-        RankedStory(story=story_b, score=score_b, best_match_title=""),
-    ]
-    embs_map = {1: emb, 2: emb}
-
-    filtered = mmr_filter(ranked, embs_map, threshold=0.55, limit=10)
-
-    assert len(filtered) == 1
-    selected_id = filtered[0].story.id
-
-    if eng_b > eng_a * 2.0 + 30:
-        assert selected_id == 2
-    else:
-        assert selected_id == 1
-
-
-@given(
     feedback_actions=st.lists(
         st.sampled_from(["up", "neutral", "down"]), min_size=0, max_size=20
     ),
@@ -720,7 +685,7 @@ async def test_run_pipeline_badge_assignment(tmp_path, monkeypatch):
 
     db_file = tmp_path / "test.db"
     db = Database(str(db_file))
-    
+
     # 1. Create candidates list
     now = time.time()
     candidates = []
@@ -788,7 +753,16 @@ async def test_run_pipeline_badge_assignment(tmp_path, monkeypatch):
     )
 
     # Persist feedback in DB to train / simulate closest up
-    db.upsert_story(Story(id=999, title="Upvoted Story", url=None, score=100, time=now, text_content="upvoted text"))
+    db.upsert_story(
+        Story(
+            id=999,
+            title="Upvoted Story",
+            url=None,
+            score=100,
+            time=now,
+            text_content="upvoted text",
+        )
+    )
     db.upsert_feedback(999, "up")
 
     # 2. Config setup
@@ -801,11 +775,13 @@ async def test_run_pipeline_badge_assignment(tmp_path, monkeypatch):
     # 3. Mock dependencies
     async def mock_fetch_candidates(*args, **kwargs):
         return candidates, len(candidates)
+
     monkeypatch.setattr("pipeline.fetch_candidates", mock_fetch_candidates)
 
     class DummyEmbedder:
         def __init__(self, *args, **kwargs):
             pass
+
     monkeypatch.setattr("pipeline.Embedder", DummyEmbedder)
 
     def mock_get_or_compute_embeddings(stories, embedder, db_inst):
@@ -827,7 +803,10 @@ async def test_run_pipeline_badge_assignment(tmp_path, monkeypatch):
                 vec[0] = 0.3
             embs.append(vec)
         return np.array(embs)
-    monkeypatch.setattr("pipeline.get_or_compute_embeddings", mock_get_or_compute_embeddings)
+
+    monkeypatch.setattr(
+        "pipeline.get_or_compute_embeddings", mock_get_or_compute_embeddings
+    )
 
     # Mock rank_stories to return a pre-sorted list (fallback score/probability behavior)
     def mock_rank_stories(candidates_list, *args, **kwargs):
@@ -848,13 +827,16 @@ async def test_run_pipeline_badge_assignment(tmp_path, monkeypatch):
                 )
             )
         return sorted(res, key=lambda x: x.score, reverse=True)
+
     monkeypatch.setattr("pipeline.rank_stories", mock_rank_stories)
 
     # Capture final stories passed to generate_dashboard
     captured_final = []
+
     def mock_generate_dashboard(final_list, *args, **kwargs):
         nonlocal captured_final
         captured_final = list(final_list)
+
     monkeypatch.setattr("pipeline.generate_dashboard", mock_generate_dashboard)
 
     await run_pipeline(config)
@@ -862,7 +844,7 @@ async def test_run_pipeline_badge_assignment(tmp_path, monkeypatch):
     # Assertions
     # We expect default stories (1-7) and at least some extra decorated stories
     assert len(captured_final) > 7
-    
+
     for r in captured_final:
         if r.story.id <= 7:
             # Default path stories MUST NOT have any badges assigned

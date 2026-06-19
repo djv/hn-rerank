@@ -1094,52 +1094,15 @@ def mmr_filter(
             continue
 
         emb = embeddings_map.get(item.story.id)
-        if emb is None:
-            selected.append(item)
-            if len(selected) >= limit:
-                break
-            continue
+        selected.append(item)
 
-        # Find all remaining unselected items that are similar to this one
-        similar_group = [item]
-        for other in ranked[idx + 1 :]:
-            if other.story.id in discarded:
-                continue
-            other_emb = embeddings_map.get(other.story.id)
-            if other_emb is not None:
-                sim = float(np.dot(emb, other_emb))
-                if sim > threshold:
-                    similar_group.append(other)
-
-        # Select the one with the best engagement if it is significantly higher
-        def get_engagement(r: RankedStory) -> int:
-            pts = r.story.score or 0
-            coms = r.story.comment_count or 0
-            return pts + coms
-
-        rep = item
-        item_eng = get_engagement(item)
-        for other in similar_group:
-            other_eng = get_engagement(other)
-            if other_eng > item_eng * 2.0 + 30:
-                rep = other
-                item_eng = other_eng
-
-        selected.append(rep)
-
-        # Discard everything in the group
-        for other in similar_group:
-            discarded.add(other.story.id)
-
-        # Also discard anything similar to the chosen representative
-        rep_emb = embeddings_map.get(rep.story.id)
-        if rep_emb is not None:
-            for other in ranked[idx:]:
+        if emb is not None:
+            for other in ranked[idx + 1 :]:
                 if other.story.id in discarded:
                     continue
                 other_emb = embeddings_map.get(other.story.id)
                 if other_emb is not None:
-                    sim = float(np.dot(rep_emb, other_emb))
+                    sim = float(np.dot(emb, other_emb))
                     if sim > threshold:
                         discarded.add(other.story.id)
 
