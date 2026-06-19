@@ -688,22 +688,12 @@ def rank_stories(
     probs = None
     feedback_stories, feedback_labels, vote_times = db.get_feedback_for_training()
 
-    # Surface flag thresholds — computed once, independent of feedback fitting.
-    # These stay defined if the SVM `try` below fails, so the fallback path
-    # can still set is_discussion_rich / is_high_engagement.
-    cand_scores = np.array([s.score for s in candidates])
-    cand_ages = np.array([now - s.time for s in candidates])
-    cand_comment_counts = np.array([s.comment_count or 0 for s in candidates])
-    discussion_rich_count_threshold = (
-        np.percentile(cand_comment_counts, 90) if len(cand_comment_counts) else 0
-    )
-    high_engagement_score_threshold = (
-        np.percentile(cand_scores, 90) if len(cand_scores) else 0
-    )
-
     # Multiclass SVM: 0=down, 1=neutral, 2=up
     if len(feedback_labels) >= 1:
         try:
+            cand_scores = np.array([s.score for s in candidates])
+            cand_ages = np.array([now - s.time for s in candidates])
+            cand_comment_counts = np.array([s.comment_count or 0 for s in candidates])
             fb_embeddings = get_or_compute_embeddings(feedback_stories, embedder, db)
 
             # Personalization: mean/closest per class from ALL real feedback
@@ -842,8 +832,6 @@ def rank_stories(
             svm.fit(fb_features_scaled, labels, sample_weight=sample_weights)
 
             # Augment candidate features: age_now = now - story_time
-            # (cand_scores, cand_ages, cand_comment_counts hoisted above to
-            #  keep surface flag thresholds defined if this try block fails.)
             cand_text_lengths = np.array([len(s.text_content) for s in candidates])
             cand_quality = cand_scores / (np.maximum(cand_ages / 3600.0, 0) + 1)
 
@@ -894,11 +882,6 @@ def rank_stories(
                         prob_neutral=float(probs[idx, idx_neutral]),
                         prob_up=float(probs[idx, idx_up]),
                         is_novel=bool(cand_is_novel[idx]),
-                        is_discussion_rich=(s.comment_count or 0)
-                        >= discussion_rich_count_threshold
-                        and (s.comment_count or 0) > 0,
-                        is_high_engagement=int(s.score)
-                        >= high_engagement_score_threshold,
                     )
                 )
         except (ValueError, IndexError, NameError) as e:
@@ -912,10 +895,6 @@ def rank_stories(
                     story=s,
                     score=float(score),
                     best_match_title="",
-                    is_discussion_rich=(s.comment_count or 0)
-                    >= discussion_rich_count_threshold
-                    and (s.comment_count or 0) > 0,
-                    is_high_engagement=int(s.score) >= high_engagement_score_threshold,
                 )
             )
 
@@ -1126,8 +1105,18 @@ async def run_pipeline(config: Config) -> None:
         selected_ids |= {item.story.id for item in novel_items}
 
     # Surface up to 5 discussion-rich stories on top of the normal count
+    cand_comment_counts_for_thr = np.array([r.story.comment_count or 0 for r in ranked])
+    discussion_threshold = (
+        np.percentile(cand_comment_counts_for_thr, 90)
+        if len(cand_comment_counts_for_thr)
+        else 0
+    )
     discussion_pool = [
-        r for r in ranked if r.story.id not in selected_ids and r.is_discussion_rich
+        r
+        for r in ranked
+        if r.story.id not in selected_ids
+        and (r.story.comment_count or 0) >= discussion_threshold
+        and (r.story.comment_count or 0) > 0
     ]
     if discussion_pool:
         discussion_pool.sort(key=lambda r: r.story.comment_count or 0, reverse=True)
@@ -1138,8 +1127,14 @@ async def run_pipeline(config: Config) -> None:
         selected_ids |= {item.story.id for item in discussion_items}
 
     # Surface up to 5 high-engagement stories on top of the normal count
+    cand_scores_for_thr = np.array([r.story.score for r in ranked])
+    engagement_threshold = (
+        np.percentile(cand_scores_for_thr, 90) if len(cand_scores_for_thr) else 0
+    )
     engagement_pool = [
-        r for r in ranked if r.story.id not in selected_ids and r.is_high_engagement
+        r
+        for r in ranked
+        if r.story.id not in selected_ids and r.story.score >= engagement_threshold
     ]
     if engagement_pool:
         engagement_pool.sort(key=lambda r: r.story.score, reverse=True)
