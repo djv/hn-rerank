@@ -417,6 +417,42 @@
   </main>
 
   <script>
+    // Restore temporary client feedback state before regeneration updates the static file.
+    // Also clean up keys that have been persisted on the server or relate to discarded cards.
+    const presentStoryIds = new Set();
+    document.querySelectorAll('.story-card').forEach(card => {
+      const storyId = card.dataset.storyId;
+      presentStoryIds.add(storyId);
+      
+      const storedAction = localStorage.getItem('feedback_' + storyId);
+      if (storedAction) {
+        const htmlActiveBtn = card.querySelector('.feedback-btn.active');
+        const htmlActiveAction = htmlActiveBtn ? htmlActiveBtn.dataset.fb : null;
+        
+        if (htmlActiveAction === storedAction) {
+          // Server-side regeneration has completed and persisted this state; clear local cache.
+          localStorage.removeItem('feedback_' + storyId);
+        } else {
+          // Server hasn't updated yet; force UI to match local stored action
+          card.querySelectorAll('[data-fb]').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.fb === storedAction);
+          });
+        }
+      }
+    });
+
+    // Garbage collect stale localStorage entries for stories no longer on the page
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith('feedback_')) {
+        const storyId = key.replace('feedback_', '');
+        if (!presentStoryIds.has(storyId)) {
+          localStorage.removeItem(key);
+          i--; // adjust index since we removed a key
+        }
+      }
+    }
+
     // Client-side dynamic sorting
     const sortSelect = document.getElementById('sort-mode');
     const storiesContainer = document.getElementById('stories');
@@ -456,6 +492,13 @@
           });
 
           if (resp.ok) {
+            // Update localStorage state
+            if (nextAction === 'clear') {
+              localStorage.removeItem('feedback_' + storyId);
+            } else {
+              localStorage.setItem('feedback_' + storyId, nextAction);
+            }
+
             // Update active state in UI
             card.querySelectorAll('[data-fb]').forEach(b => {
               if (nextAction === 'clear') {
