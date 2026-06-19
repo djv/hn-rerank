@@ -75,15 +75,6 @@ class Database:
             """)
 
             self.conn.execute("""
-                CREATE TABLE IF NOT EXISTS user_signals (
-                    story_id    INTEGER NOT NULL,
-                    signal_type TEXT NOT NULL,
-                    scraped_at  REAL NOT NULL,
-                    PRIMARY KEY (story_id, signal_type)
-                )
-            """)
-
-            self.conn.execute("""
                 CREATE TABLE IF NOT EXISTS article_cache (
                     story_id    INTEGER PRIMARY KEY,
                     url         TEXT NOT NULL,
@@ -250,26 +241,6 @@ class Database:
         return {
             row[0]: np.frombuffer(row[1], dtype=np.float32) for row in cursor.fetchall()
         }
-
-    # User signals
-    def set_user_signals(self, signal_type: str, ids: set[int]) -> None:
-        with self.conn:
-            self.conn.execute(
-                "DELETE FROM user_signals WHERE signal_type = ?", (signal_type,)
-            )
-            now = time.time()
-            self.conn.executemany(
-                "INSERT INTO user_signals (story_id, signal_type, scraped_at) VALUES (?, ?, ?)",
-                [(story_id, signal_type, now) for story_id in ids],
-            )
-
-    def get_user_signals(self) -> dict[str, set[int]]:
-        cursor = self.conn.execute("SELECT story_id, signal_type FROM user_signals")
-        res: dict[str, set[int]] = {"favorite": set(), "upvote": set(), "hidden": set()}
-        for story_id, signal_type in cursor.fetchall():
-            if signal_type in res:
-                res[signal_type].add(story_id)
-        return res
 
     # Article body cache
     def get_cached_article(self, story_id: int, url: str) -> str | None:

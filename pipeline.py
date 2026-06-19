@@ -1032,20 +1032,12 @@ async def run_pipeline(config: Config) -> None:
     db = Database(config.db_path)
     embedder = Embedder(config.onnx_model_dir)
 
-    # Use cached signals for exclusion (no scraping)
-    signals = db.get_user_signals()
-    signal_ids = (
-        signals.get("favorite", set())
-        | signals.get("upvote", set())
-        | signals.get("hidden", set())
-    )
-
     # Exclude stories that already have user feedback (voted on via dashboard)
     feedback_records = db.get_all_feedback()
     feedback_ids = {f.story_id for f in feedback_records}
     feedback_urls = {f.url for f in feedback_records if f.url}
 
-    exclude_ids = signal_ids | feedback_ids
+    exclude_ids = feedback_ids
     candidates, n_fetched = await fetch_candidates(
         config, exclude_ids, feedback_urls, db
     )
