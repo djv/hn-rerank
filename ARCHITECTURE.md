@@ -31,7 +31,7 @@ graph TD
 
 The codebase consists of five primary modules:
 
-1. **[database.py](file:///home/dev/hn-rewrite/database.py)**: Encapsulates all SQLite interactions. Manages schemas (`stories`, `embeddings`, `feedback`, `user_signals`, `article_cache`), cascade-deletes, pruned retention rules, and automatic schema migrations. The `article_cache` table stores fetched article bodies for LLM enrichment, keyed by `story_id` with a 7-day TTL.
+1. **[database.py](file:///home/dev/hn-rewrite/database.py)**: Encapsulates all SQLite interactions. Manages schemas (`stories`, `embeddings`, `feedback`, `article_cache`), cascade-deletes, pruned retention rules, and automatic schema migrations. The `article_cache` table stores fetched article bodies for LLM enrichment, keyed by `story_id` with a 7-day TTL.
 2. **[pipeline.py](file:///home/dev/hn-rewrite/pipeline.py)**: Orchestrates the background update sequence. Integrates RSS parsed feeds, computes text embeddings using ONNX, fits the SVM, and generates the final dashboard.
 3. **[server.py](file:///home/dev/hn-rewrite/server.py)**: A multi-threaded web server serving the static dashboard, handling feedback writes, proxying detailed TLDR summaries to LLM APIs, and housing the background regeneration event thread.
 4. **[templates/index.html](file:///home/dev/hn-rewrite/templates/index.html)**: Jinja2 dashboard template styled with a compact dark-theme Pico CSS layout. Includes client-side sorting, autohide transitions, and asynchronous detailed analysis rendering.
@@ -61,10 +61,7 @@ Rather than mixing semantic matches with engagement counts using arbitrary manua
   * Maximum cosine similarity to any upvoted story embedding.
   * Maximum cosine similarity to any downvoted story embedding.
 
-### 3.3 Removal of HN Profile Scraping
-Periodic scraping of a user's HN profile (upvoted, favorited, hidden lists) was a bottleneck, taking ~10 seconds of network calls. We bypassed profile scraping during dashboard regeneration, querying cached exclusions from `user_signals` and active feedback instead.
-
-### 3.4 Engagement-Aware MMR Filtering
+### 3.3 Engagement-Aware MMR Filtering
 Standard MMR (Maximal Marginal Relevance) strictly penalizes topic duplication based on similarity. If two stories are similar, the lower-ranked one is discarded. We modified `mmr_filter` to identify similarity groups. If an alternative candidate has significantly higher engagement than the group leader:
 ```python
 other_engagement > leader_engagement * 2.0 + 30
@@ -73,10 +70,10 @@ the higher-engagement candidate is promoted as the representative for the cluste
 
 After MMR, three surfacing passes append stories beyond the `limit` following the same pattern (boolean flag on `RankedStory`, threshold during `rank_stories`, surfacing loop in `run_pipeline`): **Novel** (top 15% least similar to feedback, SVM score > 0.5, `✨ Novel`, 5 slots, sorted by SVM score), **Discussion-rich** (top 10% by `comment_count`, badge `💬 Talk-worthy`, 5 slots, sorted by comment_count descending), and **High-engagement** (top 10% by `story.score`, badge `🔥 Trending`, 5 slots, sorted by score descending). Each deduplicates against previously surfaced IDs before appending.
 
-### 3.5 Client-side Autohide
+### 3.4 Client-side Autohide
 When a user upvotes/downvotes a card, the UI writes the current card height inline, triggers a CSS collapse transition (`max-height: 0 !important; opacity: 0;`), and removes the card from the DOM after 400ms. The background thread updates the actual static page asynchronously.
 
-### 3.6 Algolia Candidate Fetch Window
+### 3.5 Algolia Candidate Fetch Window
 The live-window fetch (`pipeline.py:336`) queries the Algolia HN search API in 7 daily chunks. Each day's fetch collects up to **350 hits** (5 pages of 100, minus stories with `points <= 5`). This cap was raised from 150 to capture the majority of high-score stories on busy days; previously, stories on high-volume days could be dropped before the reranker evaluated them.
 
 ---

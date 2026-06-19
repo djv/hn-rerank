@@ -247,13 +247,6 @@ CREATE TABLE IF NOT EXISTS embeddings (
     embedding     BLOB NOT NULL  -- 384 × float32 = 1536 bytes
 );
 
-CREATE TABLE IF NOT EXISTS user_signals (
-    story_id    INTEGER NOT NULL,
-    signal_type TEXT NOT NULL,  -- 'favorite', 'upvote', 'hidden'
-    scraped_at  REAL NOT NULL,
-    PRIMARY KEY (story_id, signal_type)
-);
-
 CREATE TABLE IF NOT EXISTS feedback (
     story_id   INTEGER PRIMARY KEY,
     action     TEXT NOT NULL CHECK(action IN ('up', 'neutral', 'down')),
@@ -290,10 +283,6 @@ class Database:
     def upsert_embedding(self, story_id: int, model_version: str, vec: NDArray) -> None: ...
     def get_embedding(self, story_id: int, model_version: str) -> NDArray | None: ...
     def get_embeddings_batch(self, ids: list[int], model_version: str) -> dict[int, NDArray]: ...
-
-    # User signals
-    def set_user_signals(self, signal_type: str, ids: set[int]) -> None: ...
-    def get_user_signals(self) -> dict[str, set[int]]: ...
 
     # Feedback
     def upsert_feedback(self, story_id: int, action: str, title: str, url: str | None,
@@ -342,34 +331,6 @@ class RankedStory:
     score: float          # model probability or cosine similarity
     best_match_title: str # title of most similar positive signal
 ```
-
-### 4.2 HN Signal Scraping (`fetch_user_signals`) (~80 lines)
-
-Ported from [api/client.py](file:///home/dev/hn_rerank/api/client.py).
-
-```python
-async def fetch_user_signals(username: str, db: Database) -> dict[str, set[int]]:
-    """Scrape favorites/upvotes/hidden from HN, persist to DB.
-
-    Returns dict with keys: 'favorite', 'upvote', 'hidden'.
-    """
-```
-
-Key behaviors preserved:
-- Cookie-backed `httpx.AsyncClient` with `base_url="https://news.ycombinator.com"`
-- Load cookies from `db_dir/cookies.json` if exists
-- Scrape `_scrape_items(path, max_pages)` — parse `tr.athing` rows for IDs
-- Pagination via `?p=N`, stop when no `a.morelink`
-- Favorites: `/favorites?id={user}` (public, always available)
-- Upvotes: `/upvoted?id={user}` (requires login as same user)
-- Hidden: `/hidden?id={user}` (requires login as same user)
-- Positive = `(favorites | upvotes) - hidden`
-- Persist to `user_signals` table via `db.set_user_signals()`
-
-**Simplified from original:**
-- No URL normalization on signal items (not needed — dedup by story ID)
-- No short-lived user cache TTL — always scrape fresh, persist to DB
-- No login flow — assume cookies are pre-configured
 
 ### 4.3 Candidate Discovery (`fetch_candidates`) (~150 lines)
 
@@ -588,12 +549,6 @@ def generate_dashboard(
 async def run_pipeline(config: Config) -> None:
     db = Database(config.db_path)
     embedder = Embedder(config.onnx_model_dir)
-
-    # 1. Signals
-    signals = await fetch_user_signals(config.username, db)
-    positive_ids = (signals.get("favorite", set()) | signals.get("upvote", set())) \
-                   - signals.get("hidden", set())
-    negative_ids = signals.get("hidden", set())
 
     # 2. Fetch positive/negative story details
     pos_stories = await fetch_stories_by_id(list(positive_ids), db)
@@ -993,7 +948,6 @@ def migrate(source: Path = SOURCE_PATH, db_path: str = "hn_rewrite.db") -> None:
 | `test_upsert_embedding_roundtrip` | BLOB storage/retrieval matches original ndarray |
 | `test_get_embeddings_batch` | Batch retrieval returns correct subset |
 | `test_feedback_crud` | Insert, update, delete, list feedback records |
-| `test_user_signals_overwrite` | `set_user_signals` replaces previous signals |
 | `test_prune_stories` | Old stories deleted, recent kept |
 | `test_feedback_training_data` | `get_feedback_for_training` returns correct labels |
 
