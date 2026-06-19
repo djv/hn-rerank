@@ -20,7 +20,6 @@ from pathlib import Path
 
 import numpy as np
 from sklearn.model_selection import StratifiedKFold
-from sklearn.calibration import CalibratedClassifierCV
 from sklearn.svm import SVC
 from sklearn.preprocessing import StandardScaler
 
@@ -228,6 +227,18 @@ def main() -> None:
         fb_train_textlens = fb_text_lengths_arr[train_pos]
         fb_train_quality = fb_quality_arr[train_pos]
 
+        # Exclude training story IDs from candidate pool to prevent leakage
+        train_ids = {fb_stories[idx].id for idx in np.where(valid)[0][train_pos]}
+        cand_mask = np.array([s.id not in train_ids for s in candidates])
+        fold_candidates = [s for idx, s in enumerate(candidates) if cand_mask[idx]]
+        fold_cand_emb = cand_emb[cand_mask]
+        fold_cand_scores = cand_scores_arr[cand_mask]
+        fold_cand_ages = cand_ages_arr[cand_mask]
+        fold_cand_comments = cand_comment_counts[cand_mask]
+        fold_cand_textlens = cand_text_lengths[cand_mask]
+        fold_cand_quality = cand_quality_arr[cand_mask]
+        fold_cand_scores_array = cand_scores_array[cand_mask]
+
         # Per-fold personalization with LOOCV self-exclusion
         up_mask = y_train == 2
         down_mask = y_train == 0
@@ -242,17 +253,17 @@ def main() -> None:
         )
 
         # Candidate features (from train centroids — no self issue)
-        cand_sim_up = cand_emb @ mean_up
-        cand_sim_down = cand_emb @ mean_down
+        cand_sim_up = fold_cand_emb @ mean_up
+        cand_sim_down = fold_cand_emb @ mean_down
         cand_closest_up = (
-            np.max(cand_emb @ fb_up_train.T, axis=1)
+            np.max(fold_cand_emb @ fb_up_train.T, axis=1)
             if n_up
-            else np.zeros(len(candidates))
+            else np.zeros(len(fold_candidates))
         )
         cand_closest_down = (
-            np.max(cand_emb @ fb_down_train.T, axis=1)
+            np.max(fold_cand_emb @ fb_down_train.T, axis=1)
             if n_down
-            else np.zeros(len(candidates))
+            else np.zeros(len(fold_candidates))
         )
 
         # Train features: exclude self-contribution (LOOCV)
@@ -305,12 +316,12 @@ def main() -> None:
             closest_downvoted=fb_closest_down,
         )
         X_cand = _augment_features(
-            cand_emb,
-            cand_scores_arr,
-            cand_ages_arr,
-            comment_counts=cand_comment_counts,
-            text_lengths=cand_text_lengths,
-            hn_quality=cand_quality_arr,
+            fold_cand_emb,
+            fold_cand_scores,
+            fold_cand_ages,
+            comment_counts=fold_cand_comments,
+            text_lengths=fold_cand_textlens,
+            hn_quality=fold_cand_quality,
             sim_to_upvoted=cand_sim_up,
             sim_to_downvoted=cand_sim_down,
             closest_upvoted=cand_closest_up,
@@ -350,13 +361,13 @@ def main() -> None:
         for formula in formulas:
             results[formula].append(
                 _evaluate_fold(
-                    probs,
-                    candidates,
-                    cand_emb,
-                    test_stories,
-                    test_actions,
-                    cand_scores_array,
-                    formula,
+                     probs,
+                     fold_candidates,
+                     fold_cand_emb,
+                     test_stories,
+                     test_actions,
+                     fold_cand_scores_array,
+                     formula,
                 )
             )
 
