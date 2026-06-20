@@ -120,6 +120,9 @@ def test_get_embeddings_batch(db):
 
 
 def test_feedback_crud(db):
+    # Create a test user
+    user = db.create_user("test_token_1", "test_user")
+
     story = Story(
         id=456,
         title="Feedback Title",
@@ -130,9 +133,9 @@ def test_feedback_crud(db):
         source="rss_lobsters",
     )
     db.upsert_story(story)
-    db.upsert_feedback(story_id=456, action="up")
+    db.upsert_feedback(user.id, story_id=456, action="up")
 
-    feedbacks = db.get_all_feedback()
+    feedbacks = db.get_all_feedback(user.id)
     assert len(feedbacks) == 1
     assert feedbacks[0].story_id == 456
     assert feedbacks[0].action == "up"
@@ -142,13 +145,13 @@ def test_feedback_crud(db):
     assert feedbacks[0].source == "rss_lobsters"
 
     # Update
-    db.upsert_feedback(story_id=456, action="down")
-    feedbacks2 = db.get_all_feedback()
+    db.upsert_feedback(user.id, story_id=456, action="down")
+    feedbacks2 = db.get_all_feedback(user.id)
     assert feedbacks2[0].action == "down"
 
     # Delete
-    db.delete_feedback(456)
-    assert len(db.get_all_feedback()) == 0
+    db.delete_feedback(user.id, 456)
+    assert len(db.get_all_feedback(user.id)) == 0
 
 
 def test_prune_stories(db):
@@ -162,11 +165,12 @@ def test_prune_stories(db):
 
 
 def test_prune_stories_preserves_feedback_stories(db):
+    user = db.create_user("test_token_2", "test_user")
     story1 = Story(id=1, title="S1", url=None, score=10, time=100, text_content="T1")
     story2 = Story(id=2, title="S2", url=None, score=20, time=100, text_content="T2")
     db.upsert_story(story1)
     db.upsert_story(story2)
-    db.upsert_feedback(1, "up")
+    db.upsert_feedback(user.id, 1, "up")
 
     # Pruning with age = 0 should delete story2 but not story1
     deleted = db.prune_stories(max_age_days=0)
@@ -176,15 +180,16 @@ def test_prune_stories_preserves_feedback_stories(db):
 
 
 def test_feedback_training_data(db):
+    user = db.create_user("test_token_3", "test_user")
     db.upsert_story(Story(id=1, title="T1", url=None, score=100, time=1600000000, text_content="Text1", source="hn"))
     db.upsert_story(Story(id=2, title="T2", url=None, score=100, time=1600000000, text_content="Text2", source="hn"))
     db.upsert_story(Story(id=3, title="T3", url=None, score=100, time=1600000000, text_content="Text3", source="hn"))
 
-    db.upsert_feedback(1, "up")
-    db.upsert_feedback(2, "down")
-    db.upsert_feedback(3, "neutral")
+    db.upsert_feedback(user.id, 1, "up")
+    db.upsert_feedback(user.id, 2, "down")
+    db.upsert_feedback(user.id, 3, "neutral")
 
-    stories, labels, vote_times = db.get_feedback_for_training()
+    stories, labels, vote_times = db.get_feedback_for_training(user.id)
     assert len(stories) == 3
     assert len(labels) == 3
 
@@ -205,6 +210,7 @@ def test_feedback_training_data(db):
 def test_story_pruning_integrity_invariants(fetched_offsets, feedback_indices):
     db = Database(":memory:")
     try:
+        user = db.create_user("test_token_hypothesis", "test_user")
         now = time.time()
         max_age_days = 30
         cutoff = now - (max_age_days * 86400)
@@ -230,7 +236,7 @@ def test_story_pruning_integrity_invariants(fetched_offsets, feedback_indices):
             # Apply feedback if indexed
             has_feedback = i in feedback_indices and i < len(fetched_offsets)
             if has_feedback:
-                db.upsert_feedback(i, "up")
+                db.upsert_feedback(user.id, i, "up")
                 
             stories_meta.append((i, fetched_at, has_feedback))
             
