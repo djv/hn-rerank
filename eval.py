@@ -41,7 +41,7 @@ def _db_sha256(db_path: str) -> str:
 
 def _load_candidates(db: Database) -> tuple[list[Story], np.ndarray]:
     """Read all non-negative-cached stories + their embeddings."""
-    cursor = db.conn.execute(
+    rows = db.execute(
         "SELECT id, title, url, score, time, text_content, source, "
         "       comment_count, discussion_url, comment_count_at_fetch, "
         "       self_text, top_comments, article_body "
@@ -49,9 +49,14 @@ def _load_candidates(db: Database) -> tuple[list[Story], np.ndarray]:
     )
     stories = [
         Database._row_to_story(row)
-        for row in cursor.fetchall()
+        for row in rows
     ]
-    cached = db.get_embeddings_batch([s.id for s in stories], MODEL_VERSION)
+    import hashlib
+    story_hashes = {
+        s.id: hashlib.sha256(s.text_content.encode("utf-8")).hexdigest()
+        for s in stories
+    }
+    cached = db.get_embeddings_batch([s.id for s in stories], MODEL_VERSION, story_hashes)
     embeddings = np.array(
         [cached.get(s.id, np.zeros(384, dtype=np.float32)) for s in stories],
         dtype=np.float32,
@@ -393,10 +398,12 @@ def main() -> None:
             gamma=config.model.svm_gamma,
             random_state=0,
             decision_function_shape="ovr",
-            probability=True,
+            probability=False,
         )
         svm.fit(X_train_scaled, y_train, sample_weight=weights)
-        probs = svm.predict_proba(X_cand_scaled)
+        df_cand = svm.decision_function(X_cand_scaled)
+        e_x = np.exp(df_cand - np.max(df_cand, axis=1, keepdims=True))
+        probs = e_x / e_x.sum(axis=1, keepdims=True)
 
         # Test fold: map test positions back to stories
         test_stories = [

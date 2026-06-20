@@ -9,9 +9,9 @@ server_port = 8766
 regen_interval_seconds = 10800
 
 [hn_rewrite.model]
-svm_c = 0.20
-svm_gamma = 0.1
-svm_kernel = "rbf"
+svm_c = 0.1
+# svm_gamma = 0.1
+svm_kernel = "linear"
 neutral_weight = 0.2
 min_feedback_labels = 10
 min_signal_examples = 5

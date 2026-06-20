@@ -67,25 +67,35 @@ Rather than mixing semantic matches with engagement counts using arbitrary manua
 
 To prevent train-test covariate shift / feature leakage, when computing the similarity features for training stories, we explicitly exclude each story itself from its class centroid/reference set (e.g. subtracting its contribution from the mean vector and setting its entry in the similarity matrix to `-1.0` before maximum reduction).
 
-### 3.3 MMR & Surfacing Passes
+### 3.3 Fast SVM Personalization & Numerically Stable Softmax
+To enable fast, synchronous reranking when a user submits feedback, we avoid the slow Platt calibration path (`probability=True` in scikit-learn's `SVC`), which relies on 5-fold cross-validation and takes **~2.0s**. Instead, we train the SVM with `probability=False` (**~150ms** fit time) and approximate the class probabilities by running a numerically stable `softmax` over the raw multi-class decision values:
+
+$$p_i = \frac{e^{f_i - \max(f)}}{\sum_j e^{f_j - \max(f)}}$$
+
+This configuration drops overall fitting and scoring latency from **~3.0s** to **~800ms** (or **~280ms** if candidate pruning is applied) while preserving almost identical personalization quality:
+* **RBF SVM (Platt Calibration)**: MAP = `0.7255`, Median Rank = `88.0`
+* **Fast RBF SVM (Softmax)**: MAP = `0.6963`, Median Rank = `89.1`
+
+### 3.4 MMR & Surfacing Passes
 Standard MMR (Maximal Marginal Relevance) strictly penalizes topic duplication based on similarity. The `mmr_filter` function iterates through candidates in SVM-rank order; for each unselected candidate, it selects that candidate and discards all subsequent candidates with cosine similarity above the threshold (`config.model.diversity_threshold`, default 0.50). The highest-SVM-scored member of each similarity cluster is always the representative — cluster selection is fully driven by the personalized SVM, not HN engagement. The final set is sorted back to match original SVM relative rank order.
 
-After the default MMR path (which selects stories without badges), the remaining candidates are evaluated for discovery badges in a single decoration pass. Top stories selected through the default path never receive badges. The orchestrator then surfaces extra recommending slots from these decorated, remaining candidates:
-* **Uncertainty/Entropy Surfacing**: We compute the Shannon Entropy of the model's predicted probability distribution (Down, Neutral, Up). The orchestrator reserves up to 3 slots *within* the count limit for the remaining candidates with the highest entropy, flagging them as `is_uncertain=True` (badge `🤔 Unsure`) to prompt active feedback.
+All candidates are evaluated for discovery badges in a single decoration pass. Thus, any story on the dashboard (whether from the default MMR path or surfaced extra slots) that meets the badge criteria will display the corresponding badge. The orchestrator then surfaces extra recommending slots from the decorated candidates not selected by the default MMR path (the remaining candidates pool) to guarantee coverage of different discovery signals:
+* **Uncertainty/Entropy Surfacing**: We compute the Shannon Entropy of the model's predicted probability distribution (Down, Neutral, Up). The orchestrator reserves up to 3 slots for the remaining candidates with the highest entropy, flagging them as `is_uncertain=True` (badge `🤔 Unsure`) to prompt active feedback.
 * **Novel**: Top 15% least similar to feedback with SVM score > 0.5, flagged as `is_novel=True` (badge `✨ Novel`), up to 5 slots sorted by SVM score.
 * **Similar**: Stories with high semantic match to upvotes (`closest_upvoted > 0.55`), flagged as `is_similar=True` (badge `🎯 Similar`), up to 5 slots sorted by similarity score descending.
-* **Discussion-rich**: Top 10% by `comment_count` and comments > 0, flagged as `is_discussion_rich=True` (badge `💬 Talk-worthy`), up to 5 slots sorted by comment count descending.
-* **High-engagement**: Top 10% by `story.score`, flagged as `is_high_engagement=True` (badge `🔥 Trending`), up to 5 slots sorted by SVM score descending.
+* **Discussion-rich**: Top 7% by `comment_count` and comments > 0, flagged as `is_discussion_rich=True` (badge `💬 Talk-worthy`, 93rd percentile), up to 5 slots sorted by comment count descending.
+* **High-engagement**: Top 5% by `story.score`, flagged as `is_high_engagement=True` (badge `🏆 Top`, 95th percentile), up to 5 slots sorted by SVM score descending.
+* **Hot**: Top 2% by engagement velocity (points/hour), flagged as `is_hot=True` (badge `🔥 Hot`, 98th percentile).
 
-Each discovery pass selects from the remaining decorated candidates and deduplicates against previously selected IDs before appending.
+Each discovery pass selects from the decorated remaining candidates and deduplicates against previously selected IDs before appending. These default path badges do not count toward the budget of the extra recommends slots.
 
-### 3.4 Client-side Autohide
+### 3.5 Client-side Autohide
 When a user upvotes/downvotes a card, the UI writes the current card height inline, triggers a CSS collapse transition (`max-height: 0 !important; opacity: 0;`), and removes the card from the DOM after 400ms. The background thread updates the actual static page asynchronously.
 
-### 3.5 Algolia Candidate Fetch Window
+### 3.6 Algolia Candidate Fetch Window
 The live-window fetch (`pipeline.py:336`) queries the Algolia HN search API in 7 daily chunks. Each day's fetch collects up to **350 hits** (5 pages of 100, minus stories with `points <= 5`). This cap was raised from 150 to capture the majority of high-score stories on busy days; previously, stories on high-volume days could be dropped before the reranker evaluated them.
 
-### 3.6 Comment Text Refetch on Growth
+### 3.7 Comment Text Refetch on Growth
 By default, a story's `text_content` (the title + self-post + top-24 comments baked into a single text blob) is fetched once and frozen along with its 384-dim embedding. During regen, only the integer fields (`score`, `comment_count`) are refreshed. To capture topic drift in active discussions, an opt-in growth-based refetch is applied:
 
 - **Trigger condition** (all must hold): `comment_count` has grown by ≥ 30% since the last text fetch, story age is < 24h, the story has no user feedback, and the per-regen cap of 10 refetches has not been hit.
@@ -96,7 +106,7 @@ By default, a story's `text_content` (the title + self-post + top-24 comments ba
   - If Algolia is down or the items API returns a non-story, `refetch_story_text` returns `None` and the stale data is kept. The regen does not fail.
 - **Why not all stories on every regen?** Refetching changes the embedding, which changes cosine similarity to surrounding stories. For voted stories this would invalidate the training contract; for unvoted stories it would be wasteful churn. Growth-triggered refetch is a deliberate trade-off: it captures the most active discussions (where new top comments are most likely to change the topic) without affecting stories the user has already committed feedback to.
 
-### 3.7 Stale Comment Backfill & Data Integrity
+### 3.8 Stale Comment Backfill & Data Integrity
 
 The Algolia items API (`/api/v1/items/{sid}`) returns a story's full data including top-level comments. When `fetch_story` encounters a cached story with stale or missing `top_comments`, it now falls through to the items API instead of short-circuiting:
 
@@ -115,6 +125,20 @@ The Algolia items API (`/api/v1/items/{sid}`) returns a story's full data includ
 2. Invalid item type → return cached story if exists
 3. Valid API but empty composed text → return cached story if exists
 4. Exception → return cached story if exists
+
+### 3.8 Self-Healing Embedding Cache Invalidation (text_hash)
+To automatically invalidate and refresh cached embeddings whenever a story's text changes (e.g. following an article body fetch, growth-triggered comment refetch, or comment backfill), we track `text_hash` within the `embeddings` table:
+* **Schema Migration**: Added a `text_hash TEXT NOT NULL DEFAULT ''` column to the `embeddings` table schema (implemented as a safe, backwards-compatible, in-place migration check).
+* **Validation Check**: The caching queries (`get_embedding` and `get_embeddings_batch`) enforce that the computed SHA-256 hash of the current `text_content` matches the `text_hash` stored in the DB.
+* **Self-Healing Invalidation**: Any mismatch (or default empty string `''` for pre-existing records) forces a cache miss, triggering automatic re-computation and cache-update on demand without manual table deletions.
+
+### 3.9 Database Connection Pooling & Thread Safety
+To reduce SQLite connection establishment overhead and eliminate lock contention in concurrent web environments:
+* **Connection Pooling**: The `Database` class maintains an internal thread-safe queue of 5 SQLite connections (`queue.Queue`). In-memory databases automatically scale the pool size to 1 to preserve test schema isolation.
+* **Safe Connection Leasing**: Method executions lease connections from the pool via the private context manager `_conn(self)` and release them in a `finally` block, ensuring no leaked connections.
+* **Auto Commit/Rollback**: All database write operations wrap queries in a transaction context (`with conn:`) to ensure automatic rollback on failure and commit on success.
+* **PRAGMA Settings**: Each pooled connection is initialized with `PRAGMA journal_mode=WAL` (Write-Ahead Logging), `PRAGMA foreign_keys=ON` (constraint enforcement), and `PRAGMA busy_timeout=5000` (blocking writers retry for up to 5 seconds before failing).
+* **Server-Level Reuse**: The `ThreadingHTTPServer` request handlers reuse a single global `Database` instance across threads, resolving lock issues and significantly increasing throughput.
 
 ---
 

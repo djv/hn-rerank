@@ -379,13 +379,13 @@
           <span class="novel-badge" title="Semantically distant from all your feedback, but model scores it high">✨ Novel</span>
           {% endif %}
           {% if item.is_discussion_rich %}
-          <span class="discussion-rich-badge" title="Many comments on this story (top 10%)">💬 Talk-worthy</span>
+          <span class="discussion-rich-badge" title="Many comments on this story (top 7%)">💬 Talk-worthy</span>
           {% endif %}
           {% if item.is_high_engagement %}
           <span class="high-engagement-badge" title="Top 5% by HN points">🏆 Top</span>
           {% endif %}
           {% if item.is_hot %}
-          <span class="hot-badge" title="Top 5% by engagement velocity (points/hour)">🔥 Hot</span>
+          <span class="hot-badge" title="Top 2% by engagement velocity (points/hour)">🔥 Hot</span>
           {% endif %}
           {% if item.is_similar %}
           <span class="similar-badge" title="Highly similar to your upvoted stories">🎯 Similar</span>
@@ -550,49 +550,73 @@
     function parseSimpleMarkdown(text) {
       const lines = text.split('\n');
       let html = '';
-      let inList = false;
+      let listType = null; // null, 'ul', 'ol'
       
       for (let line of lines) {
         let trimmed = line.trim();
         if (!trimmed) {
-          if (inList) {
-            html += '</ul>';
-            inList = false;
+          if (listType) {
+            html += `</${listType}>`;
+            listType = null;
           }
-          html += '<p></p>';
+          html += '<p style="margin: 0.2rem 0;"></p>';
           continue;
         }
         
-        // Parse bold
-        trimmed = trimmed
+        let escaped = trimmed
           .replace(/&/g, '&amp;')
           .replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;')
-          .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+          .replace(/>/g, '&gt;');
+          
+        escaped = escaped
+          .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+          .replace(/\*(.*?)\*/g, '<em>$1</em>');
         
-        if (trimmed.startsWith('### ')) {
-          if (inList) {
-            html += '</ul>';
-            inList = false;
+        // Match headers up to level 4
+        const headerMatch = escaped.match(/^(#{1,4})\s+(.*)$/);
+        if (headerMatch) {
+          if (listType) {
+            html += `</${listType}>`;
+            listType = null;
           }
-          html += '<h4 style="margin-top: 0.5rem; margin-bottom: 0.25rem;">' + trimmed.slice(4) + '</h4>';
-        } else if (trimmed.startsWith('- ')) {
-          if (!inList) {
-            html += '<ul style="margin-bottom: 0.5rem; padding-left: 1.25rem;">';
-            inList = true;
-          }
-          html += '<li>' + trimmed.slice(2) + '</li>';
-        } else {
-          if (inList) {
-            html += '</ul>';
-            inList = false;
-          }
-          html += '<div>' + trimmed + '</div>';
+          html += `<h4 style="margin-top: 0.5rem; margin-bottom: 0.25rem; font-weight: 700; color: var(--text-color);">${headerMatch[2]}</h4>`;
+          continue;
         }
+        
+        // Match unordered list items
+        const ulMatch = escaped.match(/^([-\*•])\s+(.*)$/);
+        if (ulMatch) {
+          if (listType !== 'ul') {
+            if (listType) html += `</${listType}>`;
+            html += '<ul style="margin-top: 0.2rem; margin-bottom: 0.4rem; padding-left: 1.25rem; list-style-type: disc;">';
+            listType = 'ul';
+          }
+          html += `<li style="margin-bottom: 0.1rem;">${ulMatch[2]}</li>`;
+          continue;
+        }
+        
+        // Match ordered list items
+        const olMatch = escaped.match(/^(\d+)\.\s+(.*)$/);
+        if (olMatch) {
+          if (listType !== 'ol') {
+            if (listType) html += `</${listType}>`;
+            html += '<ol style="margin-top: 0.2rem; margin-bottom: 0.4rem; padding-left: 1.25rem;">';
+            listType = 'ol';
+          }
+          html += `<li style="margin-bottom: 0.1rem;">${olMatch[2]}</li>`;
+          continue;
+        }
+        
+        // Plain paragraph/div
+        if (listType) {
+          html += `</${listType}>`;
+          listType = null;
+        }
+        html += `<div style="margin-bottom: 0.2rem; line-height: 1.4;">${escaped}</div>`;
       }
       
-      if (inList) {
-        html += '</ul>';
+      if (listType) {
+        html += `</${listType}>`;
       }
       return html;
     }
