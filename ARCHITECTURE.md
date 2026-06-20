@@ -89,8 +89,8 @@ All candidates are evaluated for discovery badges in a single decoration pass. T
 
 Each discovery pass selects from the decorated remaining candidates and deduplicates against previously selected IDs before appending. These default path badges do not count toward the budget of the extra recommends slots.
 
-### 3.5 Client-side Autohide
-When a user upvotes/downvotes a card, the UI writes the current card height inline, triggers a CSS collapse transition (`max-height: 0 !important; opacity: 0;`), and removes the card from the DOM after 400ms. The background thread updates the actual static page asynchronously.
+### 3.5 Client-side Autohide & DOM Swap
+When a user upvotes/downvotes a card, the UI writes the current card height inline, triggers a CSS collapse transition (`max-height: 0 !important; opacity: 0;`), and removes the card from the DOM after 400ms. Synchronously, the web server runs a fast, in-memory re-ranking and re-rendering pass (`fast_rerank_and_render`) in under 300ms, writing the newly ordered dashboard to disk. Once the card fade-out finishes, the client performs a background fetch of the updated HTML page and swaps the `#stories` card container in-place to present the recalculated, personalized rankings instantly without a full page reload.
 
 ### 3.6 Algolia Candidate Fetch Window
 The live-window fetch (`pipeline.py:336`) queries the Algolia HN search API in 7 daily chunks. Each day's fetch collects up to **350 hits** (5 pages of 100, minus stories with `points <= 5`). This cap was raised from 150 to capture the majority of high-score stories on busy days; previously, stories on high-volume days could be dropped before the reranker evaluated them.
