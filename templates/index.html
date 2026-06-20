@@ -428,7 +428,6 @@
       {% for item in stories %}
       {% set active_fb = fb_map.get(item.story.id) %}
       <article class="story-card{% if item.story.text_content | length >= 1000 %} enriched{% endif %}" 
-               style="view-transition-name: story-{{ item.story.id | abs }};"
                data-story-id="{{ item.story.id }}" 
                data-score="{{ item.score }}"
                data-time="{{ item.story.time }}"
@@ -583,29 +582,21 @@
           const newDoc = parser.parseFromString(htmlText, 'text/html');
           const newStories = newDoc.getElementById('stories');
           if (newStories) {
-            const updateDOM = () => {
-              storiesContainer.innerHTML = newStories.innerHTML;
-              
-              // Re-apply sorting if needed
-              const mode = sortSelect.value;
-              const cards = Array.from(document.querySelectorAll('.story-card'));
-              if (mode === 'score') {
-                cards.sort((a, b) => parseFloat(b.dataset.score) - parseFloat(a.dataset.score));
-                cards.forEach(card => storiesContainer.appendChild(card));
-              } else if (mode === 'date') {
-                cards.sort((a, b) => parseInt(b.dataset.time) - parseInt(a.dataset.time));
-                cards.forEach(card => storiesContainer.appendChild(card));
-              }
-              
-              // Re-bind listeners to the newly loaded story cards
-              bindEvents();
-            };
-
-            if (document.startViewTransition) {
-              document.startViewTransition(updateDOM);
-            } else {
-              updateDOM();
+            storiesContainer.innerHTML = newStories.innerHTML;
+            
+            // Re-apply sorting if needed
+            const mode = sortSelect.value;
+            const cards = Array.from(document.querySelectorAll('.story-card'));
+            if (mode === 'score') {
+              cards.sort((a, b) => parseFloat(b.dataset.score) - parseFloat(a.dataset.score));
+              cards.forEach(card => storiesContainer.appendChild(card));
+            } else if (mode === 'date') {
+              cards.sort((a, b) => parseInt(b.dataset.time) - parseInt(a.dataset.time));
+              cards.forEach(card => storiesContainer.appendChild(card));
             }
+            
+            // Re-bind listeners to the newly loaded story cards
+            bindEvents();
           }
         }
       } catch (err) {
@@ -626,6 +617,27 @@
           const nextAction = btn.classList.contains('active') ? 'clear' : action;
           const apiPath = window.location.pathname.startsWith('/rewrite') ? '/rewrite/api/feedback' : '/api/feedback';
           
+          // 1. Update button state instantly (optimistic UI)
+          card.querySelectorAll('[data-fb]').forEach(b => {
+            if (nextAction === 'clear') {
+              b.classList.remove('active');
+            } else {
+              b.classList.toggle('active', b === btn);
+            }
+          });
+
+          // 2. Start collapse transition instantly if voting (optimistic UI)
+          let collapsePromise = null;
+          if (nextAction !== 'clear') {
+            card.style.maxHeight = card.offsetHeight + 'px';
+            card.offsetHeight; // force reflow
+            card.classList.add('fade-out');
+            localStorage.setItem('feedback_' + storyId, nextAction);
+            collapsePromise = new Promise(resolve => setTimeout(resolve, 400));
+          } else {
+            localStorage.removeItem('feedback_' + storyId);
+          }
+
           try {
             const resp = await fetch(apiPath, {
               method: 'POST',
@@ -637,37 +649,44 @@
             });
 
             if (resp.ok) {
-              if (nextAction === 'clear') {
-                localStorage.removeItem('feedback_' + storyId);
-              } else {
-                localStorage.setItem('feedback_' + storyId, nextAction);
+              if (collapsePromise) {
+                await collapsePromise;
+                card.remove();
               }
-
-              // Update active class locally instantly
-              card.querySelectorAll('[data-fb]').forEach(b => {
-                if (nextAction === 'clear') {
-                  b.classList.remove('active');
-                } else {
-                  b.classList.toggle('active', b === btn);
-                }
-              });
-
-              if (nextAction !== 'clear') {
-                card.style.maxHeight = card.offsetHeight + 'px';
-                card.offsetHeight; // force reflow
-                card.classList.add('fade-out');
-                setTimeout(async () => {
-                  card.remove();
-                  await triggerSwap();
-                }, 400);
-              } else {
-                await triggerSwap();
-              }
+              await triggerSwap();
             } else {
               console.error('Failed to submit feedback', resp.status);
+              // Rollback UI state
+              if (nextAction === 'clear') {
+                localStorage.setItem('feedback_' + storyId, action);
+                card.querySelectorAll('[data-fb]').forEach(b => {
+                  b.classList.toggle('active', b.dataset.fb === action);
+                });
+              } else {
+                localStorage.removeItem('feedback_' + storyId);
+                card.style.maxHeight = '';
+                card.classList.remove('fade-out');
+                card.querySelectorAll('[data-fb]').forEach(b => {
+                  b.classList.remove('active');
+                });
+              }
             }
           } catch (err) {
             console.error('Network error submitting feedback', err);
+            // Rollback UI state
+            if (nextAction === 'clear') {
+              localStorage.setItem('feedback_' + storyId, action);
+              card.querySelectorAll('[data-fb]').forEach(b => {
+                b.classList.toggle('active', b.dataset.fb === action);
+              });
+            } else {
+              localStorage.removeItem('feedback_' + storyId);
+              card.style.maxHeight = '';
+              card.classList.remove('fade-out');
+              card.querySelectorAll('[data-fb]').forEach(b => {
+                b.classList.remove('active');
+              });
+            }
           }
         };
       });
