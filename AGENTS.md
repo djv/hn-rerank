@@ -21,7 +21,7 @@
 - Install or refresh the environment: `uv sync`
 - Run tests: `uv run pytest tests/`
 - Run linting: `uv run ruff check .`
-- Run persistent server: `uv run python server.py`
+- Run persistent server: `systemctl --user {status|start|stop|restart} hn_rewrite.service` (or directly: `uv run python server.py`)
 - Run one-shot generation: `uv run python generate.py`
 - Migrate feedback from legacy JSON: `uv run python migrate_feedback.py`
 
@@ -50,4 +50,14 @@ HN_KEEP_N=7 ./scripts/backup_hn_db.sh             # keep 7
 LATEST=$(rclone lsf --dirs-only drive:hn-rewrite/backups/ | sort -r | head -1)
 rclone copy drive:hn-rewrite/backups/$LATEST/hn_rewrite.db ./hn_rewrite.db
 sqlite3 hn_rewrite.db "PRAGMA integrity_check;"
+
+## Comment Backfill
+
+- `fetch_story` short-circuits on cached stories with stale/missing `top_comments`. Fixed: `comments_stale` check falls through to Algolia items API. Comment re-fetch capped at 100 per pipeline run (`fetch_stories_by_id` sorts stale IDs descending, takes top 100).
+- Error paths in `fetch_story` (non-200, invalid item, exception) preserve existing cached rows — `if story is None` guard prevents `_empty_story(sid)` from overwriting real data on transient failures.
+- Corrupted stories (`title=""` but `text_content` preserved from COALESCE) are detected and given priority in the re-fetch queue, ahead of the 100-slot stale-comment cap.
+- `_empty_story` is destructive: zeros `title`, `time`, `score`, `self_text`, `top_comments`, `text_content`. Only `article_body` survives (COALESCE in `upsert_story`). A single transient 403 on the Algolia items API can permanently damage cached stories if error paths call `_empty_story`.
+- `_row_to_story` recomposes `text_content` live from raw parts on every read. This hides corruption — zeroed `title`/`time` with preserved `article_body` produces non-empty `text_content`, so the story passes filtering but shows blank title and epoch timestamp ("20624d ago").
+- `upsert_story` COALESCE only covers `article_body`. All other columns (title, score, time, self_text, top_comments, text_content) are overwritten unconditionally. This is an architectural vulnerability.
+- 1,940 stories still need comment backfill. They'll be gradually re-fetched as they appear in future Algolia search windows (100 per pipeline run).
 ```

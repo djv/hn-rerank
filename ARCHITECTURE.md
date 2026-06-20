@@ -31,7 +31,7 @@ graph TD
 
 The codebase consists of five primary modules:
 
-1. **[database.py](file:///home/dev/hn-rewrite/database.py)**: Encapsulates all SQLite interactions. Manages schemas (`stories`, `embeddings`, `feedback`, `article_cache`), cascade-deletes, pruned retention rules, and automatic schema migrations. The `article_cache` table stores fetched article bodies for LLM enrichment, keyed by `story_id` with a 7-day TTL.
+1. **[database.py](file:///home/dev/hn-rewrite/database.py)**: Encapsulates all SQLite interactions. Manages schemas (`stories`, `embeddings`, `feedback`), cascade-deletes, pruned retention rules, and automatic schema migrations. Staging raw inputs directly inside `stories` (`self_text`, `top_comments`, `article_body`) permits on-the-fly text composition and sync-detection. The legacy `article_cache` table is dropped and migrated directly.
 2. **[pipeline.py](file:///home/dev/hn-rewrite/pipeline.py)**: Orchestrates the background update sequence. Integrates RSS parsed feeds, computes text embeddings using ONNX, fits the SVM, and generates the final dashboard.
 3. **[server.py](file:///home/dev/hn-rewrite/server.py)**: A multi-threaded web server serving the static dashboard, handling feedback writes, proxying detailed TLDR summaries to LLM APIs, and housing the background regeneration event thread.
 4. **[templates/index.html](file:///home/dev/hn-rewrite/templates/index.html)**: Jinja2 dashboard template styled with a compact dark-theme Pico CSS layout. Includes client-side sorting, autohide transitions, and asynchronous detailed analysis rendering.
@@ -47,18 +47,19 @@ To prevent constraint violations or data loss during cleanup:
 * `prune_stories` leaves feedback-associated stories intact (`id NOT IN (SELECT story_id FROM feedback)`).
 * `get_all_feedback` and `get_feedback_for_training` perform a `LEFT JOIN` against `stories` to resolve attributes dynamically.
 
-### 3.2 394-Dimensional Feature Space
-Rather than mixing semantic matches with engagement counts using arbitrary manual weights, we feed them directly into the Support Vector Machine (SVM). The model trains on a **394-dimensional feature vector**:
+### 3.2 395-Dimensional Feature Space
+Rather than mixing semantic matches with engagement counts using arbitrary manual weights, we feed them directly into the Support Vector Machine (SVM). The model trains on a **395-dimensional feature vector**:
 * **`[0-383]` (384-d)**: MiniLM sentence embedding of `text_content`.
 * **`[384]` (1-d)**: Normalized log points: `min(log1p(score), 8.0) / 8.0`.
 * **`[385]` (1-d)**: Normalized log comment count: `min(log1p(comments), 7.0) / 7.0`.
 * **`[386]` (1-d)**: Normalized log text length: `min(log1p(len), 12.0) / 12.0`.
 * **`[387]` (1-d)**: Normalized engagement quality (points per hour since submission): `min(log1p(quality), 8.0) / 8.0`.
   * **Quality formula**: `score / (hours_since_submission + 1)`. Raw standalone age is not directly appended, but is utilized here.
-* **`[388]` (1-d)**: Normalized score velocity (points per hour, floored at 6 min): `min(log1p(score / max(hours, 0.1)), 8.0) / 8.0`.
-* **`[389]` (1-d)**: Normalized comment velocity (comments per hour, floored at 6 min): `min(log1p(comments / max(hours, 0.1)), 8.0) / 8.0`.
+* **`[388]` (1-d)**: Normalized comment-to-score ratio: `min(log1p(comments / max(score, 1)), 3.0) / 3.0`.
+* **`[389]` (1-d)**: Normalized score velocity (points per hour, floored at 6 min): `min(log1p(score / max(hours, 0.1)), 8.0) / 8.0`.
+* **`[390]` (1-d)**: Normalized comment velocity (comments per hour, floored at 6 min): `min(log1p(comments / max(hours, 0.1)), 8.0) / 8.0`.
   * Velocity features differ from quality in the time floor (`max(hours, 0.1)` vs `hours + 1`), giving more weight to very fresh stories, and the comment term has no counterpart in the quality feature.
-* **`[390-393]` (4-d)**: Normalized similarity metrics to historical feedback:
+* **`[391-394]` (4-d)**: Normalized similarity metrics to historical feedback:
   * Mean cosine similarity to upvoted story embeddings.
   * Mean cosine similarity to downvoted story embeddings.
   * Maximum cosine similarity to any upvoted story embedding.
@@ -95,23 +96,55 @@ By default, a story's `text_content` (the title + self-post + top-24 comments ba
   - If Algolia is down or the items API returns a non-story, `refetch_story_text` returns `None` and the stale data is kept. The regen does not fail.
 - **Why not all stories on every regen?** Refetching changes the embedding, which changes cosine similarity to surrounding stories. For voted stories this would invalidate the training contract; for unvoted stories it would be wasteful churn. Growth-triggered refetch is a deliberate trade-off: it captures the most active discussions (where new top comments are most likely to change the topic) without affecting stories the user has already committed feedback to.
 
+### 3.7 Stale Comment Backfill & Data Integrity
+
+The Algolia items API (`/api/v1/items/{sid}`) returns a story's full data including top-level comments. When `fetch_story` encounters a cached story with stale or missing `top_comments`, it now falls through to the items API instead of short-circuiting:
+
+- **Staleness detection**: `top_comments == ""` (empty from migration) OR `comment_count > comment_count_at_fetch` (comments grown). Stories with existing comments and `comment_count_at_fetch > 50` are skipped to avoid re-fetching popular threads.
+- **Per-run cap**: At most 100 stale-comment stories are re-fetched per pipeline run, sorted newest-first.
+- **Corruption priority**: Stories with `title=""` and `text_content != ""` (corrupted by `_empty_story`) skip the cap entirely — they get unlimited priority at the front of the queue.
+
+**`_empty_story` vulnerability**: The error path previously called `db.upsert_story(_empty_story(sid))` unconditionally on any non-200 API response, zeroing `title`, `time`, `score`, `self_text`, `top_comments`, and `text_content`. Only `article_body` survives because `upsert_story` uses `COALESCE` exclusively on that column.
+
+**Self-healing deadlock**: A corrupted story with `text_content == ""` (no article_body to recompose from) would never recover — `fetch_story` returned `None` for any story with empty `text_content`, so the API was never called. Fixed by checking `title == ""` as a corruption signal and falling through to the API.
+
+**`_row_to_story` recomposition**: `text_content` is recomposed live from raw parts on every DB read. This means a corrupted row with preserved `article_body` produces non-empty `text_content` — the story passes filtering and appears in the dashboard, but with a blank title and epoch timestamp ("20624d ago").
+
+**Error path hardening** (all four paths now preserve cached data on transient failure):
+1. Non-200 response → return cached story if exists
+2. Invalid item type → return cached story if exists
+3. Valid API but empty composed text → return cached story if exists
+4. Exception → return cached story if exists
+
 ---
 
 ## 4. LLM Detailed Analysis
 
-### 4.1 Article Body Enrichment
+### 4.1 Article Body Enrichment & Proactive Fetching
 
-The `/api/tldr-detail` endpoint enriches the LLM prompt with the full article body when the story's HN-provided text is thin (<500 chars) and a URL is available.
+The `/api/tldr-detail` endpoint enriches the LLM prompt with the full article body when the story's HN-provided text is thin (<500 chars) and a URL is available. 
+
+To improve semantic ranking quality and render TLDRs instantly, the background pipeline executes a **strategic proactive fetching loop** in two passes:
+1. **First-Pass Ranking**: Candidates are ranked using existing metadata, comments, and titles.
+2. **Proactive Scrapes**: Identifies top stories that do not yet have an `article_body` (specifically the top 40 recommendations, or any top 150 candidate crossing popularity/velocity triggers like score > 150, score velocity > 30/hour, or comment velocity > 20/hour).
+3. **Parallel Fetch & Re-Rank**: Fetches their article bodies in parallel using `_fetch_article_body`, updates the SQLite `stories.article_body` field, re-embeds their newly composed text, and executes a second-pass ranking with updated vectors.
 
 Fetch flow (server.py `_fetch_article_body`):
-1. **Cache lookup**: checks `article_cache` table (keyed by `story_id`, invalidated if URL changes).
+1. **Cache lookup**: Directly reads `story.article_body` (invalidated or refreshed when story URL changes).
 2. **Fetch** (if cache miss): HTTP GET with Chrome 131 browser-grade headers. Single retry on 429/503 after 1s sleep.
 3. **Extraction chain**: `trafilatura.extract()` first (robust against 100+ site templates); falls back to `BeautifulSoup` (strips non-content tags, prefers `<article>`/`<main>` containers).
-4. **Cache write**: successful extractions are stored in `article_cache` with a 7-day TTL. Empty/failed fetches are never cached; retried on next request.
+4. **Cache write**: Stores up to 15,000 characters of extracted text inside the `stories.article_body` column.
 
 ### 4.2 Prompt Construction
 
-The detailed summary endpoint `/api/tldr-detail` proxies requests to Mistral or Groq. It compiles the story title, engagement context (points, comments, age), article body (when available), and up to **30,000 characters** of HN discussion text (~45K effective prompt size with surrounding system/user scaffolding). The prompt includes hedging rules: if engagement is low (<20 points or <5 comments), the LLM uses cautious language like "the article describes...". If the article body was unavailable, it notes that explicitly.
+The detailed summary endpoint `/api/tldr-detail` proxies requests to Mistral or Groq. The prompt is built from structured sections of the raw story fields (passed separately, not pre-composed):
+
+- Title
+- Author's text (`self_text`, up to 6K chars)
+- Article body (up to 15K chars)
+- HN comments (`top_comments`, up to 10K chars)
+
+Each section is only included if non-empty, giving the LLM clearly separated content. If engagement is low (<20 points or <5 comments), the LLM uses cautious hedging language. Previously the prompt used a single 30K-char blob of pre-composed `text_content` — this caused the article body to appear twice (once raw, once truncated inside the composed blob). The structured approach avoids duplication and lets the LLM distinguish article content from discussion.
 
 ### 4.3 Client-side Rendering
 
