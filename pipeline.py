@@ -781,6 +781,7 @@ _AGE_DAYS_SCALE = 30.0  # cap at 30 days
 _LOG_COMMENTS_SCALE = 7.0  # log1p(~1000) ≈ 6.9
 _LOG_TEXTLEN_SCALE = 12.0  # log1p(~100000) ≈ 11.5
 _LOG_QUALITY_SCALE = 8.0  # log1p(score/(age_hours+1)) rarely exceeds 8
+_LOG_VELOCITY_SCALE = 8.0  # log1p(score/max(age_h, 0.1)) rarely exceeds 8
 
 
 def _augment_features(
@@ -790,6 +791,8 @@ def _augment_features(
     comment_counts: np.ndarray | None = None,
     text_lengths: np.ndarray | None = None,
     hn_quality: np.ndarray | None = None,
+    score_velocity: np.ndarray | None = None,
+    comment_velocity: np.ndarray | None = None,
     sim_to_upvoted: np.ndarray | None = None,
     sim_to_downvoted: np.ndarray | None = None,
     closest_upvoted: np.ndarray | None = None,
@@ -800,6 +803,8 @@ def _augment_features(
     for f in (comment_counts, text_lengths, hn_quality):
         if f is not None:
             n_meta += 1
+    if score_velocity is not None and comment_velocity is not None:
+        n_meta += 2
     if sim_to_upvoted is not None:
         n_meta += 4
 
@@ -831,6 +836,18 @@ def _augment_features(
         meta[:, col] = (
             np.clip(np.log1p(np.maximum(hn_quality, 0)), 0, _LOG_QUALITY_SCALE)
             / _LOG_QUALITY_SCALE
+        )
+        col += 1
+
+    if score_velocity is not None and comment_velocity is not None:
+        meta[:, col] = (
+            np.clip(np.log1p(np.maximum(score_velocity, 0)), 0, _LOG_VELOCITY_SCALE)
+            / _LOG_VELOCITY_SCALE
+        )
+        col += 1
+        meta[:, col] = (
+            np.clip(np.log1p(np.maximum(comment_velocity, 0)), 0, _LOG_VELOCITY_SCALE)
+            / _LOG_VELOCITY_SCALE
         )
         col += 1
 
@@ -954,6 +971,10 @@ def rank_stories(
             )
             fb_text_lengths = np.array([len(s.text_content) for s in feedback_stories])
             fb_quality = fb_scores / (np.maximum(fb_ages / 3600.0, 0) + 1)
+            fb_age_hours = fb_ages / 3600.0
+            fb_safe_h = np.maximum(fb_age_hours, 0.1)
+            fb_score_vel = fb_scores / fb_safe_h
+            fb_comment_vel = fb_comment_counts / fb_safe_h
 
             fb_features = _augment_features(
                 fb_embeddings,
@@ -962,6 +983,8 @@ def rank_stories(
                 comment_counts=fb_comment_counts,
                 text_lengths=fb_text_lengths,
                 hn_quality=fb_quality,
+                score_velocity=fb_score_vel,
+                comment_velocity=fb_comment_vel,
                 sim_to_upvoted=fb_sim_to_up,
                 sim_to_downvoted=fb_sim_to_down,
                 closest_upvoted=fb_closest_up,
@@ -1013,6 +1036,10 @@ def rank_stories(
             # Augment candidate features: age_now = now - story_time
             cand_text_lengths = np.array([len(s.text_content) for s in candidates])
             cand_quality = cand_scores / (np.maximum(cand_ages / 3600.0, 0) + 1)
+            cand_age_hours = cand_ages / 3600.0
+            cand_safe_h = np.maximum(cand_age_hours, 0.1)
+            cand_score_vel = cand_scores / cand_safe_h
+            cand_comment_vel = cand_comment_counts / cand_safe_h
 
             cand_features = _augment_features(
                 candidate_embeddings,
@@ -1021,6 +1048,8 @@ def rank_stories(
                 comment_counts=cand_comment_counts,
                 text_lengths=cand_text_lengths,
                 hn_quality=cand_quality,
+                score_velocity=cand_score_vel,
+                comment_velocity=cand_comment_vel,
                 sim_to_upvoted=cand_sim_to_up,
                 sim_to_downvoted=cand_sim_to_down,
                 closest_upvoted=cand_closest_up,
@@ -1034,7 +1063,6 @@ def rank_stories(
             probs = svm.predict_proba(cand_features_scaled)
             class_order = list(svm.classes_)
             idx_up = class_order.index(2)
-            idx_neutral = class_order.index(1)
             scores = probs[:, idx_up]
         except Exception as e:
             logging.error(f"Failed to fit feedback SVM: {e}")

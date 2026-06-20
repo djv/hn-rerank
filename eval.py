@@ -125,7 +125,7 @@ def _evaluate_fold(
     test_actions: np.ndarray,
     cand_scores: np.ndarray,
     formula: str,
-    mmr_threshold: float = 0.55,
+    mmr_threshold: float = 0.50,
     mmr_limit: int = 40,
 ) -> dict:
     if formula == "current":
@@ -253,6 +253,10 @@ def main() -> None:
         fb_train_comments = fb_comment_counts_arr[train_pos]
         fb_train_textlens = fb_text_lengths_arr[train_pos]
         fb_train_quality = fb_quality_arr[train_pos]
+        fb_train_age_hours = fb_train_ages / 3600.0
+        fb_train_safe_h = np.maximum(fb_train_age_hours, 0.1)
+        fb_train_score_vel = fb_train_scores / fb_train_safe_h
+        fb_train_comment_vel = fb_train_comments / fb_train_safe_h
 
         # Exclude training story IDs from candidate pool to prevent leakage
         train_ids = {fb_stories[idx].id for idx in np.where(valid)[0][train_pos]}
@@ -264,6 +268,10 @@ def main() -> None:
         fold_cand_comments = cand_comment_counts[cand_mask]
         fold_cand_textlens = cand_text_lengths[cand_mask]
         fold_cand_quality = cand_quality_arr[cand_mask]
+        fold_cand_age_hours = fold_cand_ages / 3600.0
+        fold_cand_safe_h = np.maximum(fold_cand_age_hours, 0.1)
+        fold_cand_score_vel = fold_cand_scores / fold_cand_safe_h
+        fold_cand_comment_vel = fold_cand_comments / fold_cand_safe_h
         fold_cand_scores_array = cand_scores_array[cand_mask]
 
         # Per-fold personalization with LOOCV self-exclusion
@@ -337,6 +345,8 @@ def main() -> None:
             comment_counts=fb_train_comments,
             text_lengths=fb_train_textlens,
             hn_quality=fb_train_quality,
+            score_velocity=fb_train_score_vel,
+            comment_velocity=fb_train_comment_vel,
             sim_to_upvoted=fb_sim_up,
             sim_to_downvoted=fb_sim_down,
             closest_upvoted=fb_closest_up,
@@ -349,6 +359,8 @@ def main() -> None:
             comment_counts=fold_cand_comments,
             text_lengths=fold_cand_textlens,
             hn_quality=fold_cand_quality,
+            score_velocity=fold_cand_score_vel,
+            comment_velocity=fold_cand_comment_vel,
             sim_to_upvoted=cand_sim_up,
             sim_to_downvoted=cand_sim_down,
             closest_upvoted=cand_closest_up,

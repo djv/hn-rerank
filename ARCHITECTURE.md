@@ -47,15 +47,18 @@ To prevent constraint violations or data loss during cleanup:
 * `prune_stories` leaves feedback-associated stories intact (`id NOT IN (SELECT story_id FROM feedback)`).
 * `get_all_feedback` and `get_feedback_for_training` perform a `LEFT JOIN` against `stories` to resolve attributes dynamically.
 
-### 3.2 392-Dimensional Feature Space
-Rather than mixing semantic matches with engagement counts using arbitrary manual weights, we feed them directly into the Support Vector Machine (SVM). The model trains on a **392-dimensional feature vector**:
+### 3.2 394-Dimensional Feature Space
+Rather than mixing semantic matches with engagement counts using arbitrary manual weights, we feed them directly into the Support Vector Machine (SVM). The model trains on a **394-dimensional feature vector**:
 * **`[0-383]` (384-d)**: MiniLM sentence embedding of `text_content`.
 * **`[384]` (1-d)**: Normalized log points: `min(log1p(score), 8.0) / 8.0`.
 * **`[385]` (1-d)**: Normalized log comment count: `min(log1p(comments), 7.0) / 7.0`.
 * **`[386]` (1-d)**: Normalized log text length: `min(log1p(len), 12.0) / 12.0`.
 * **`[387]` (1-d)**: Normalized engagement quality (points per hour since submission): `min(log1p(quality), 8.0) / 8.0`.
   * **Quality formula**: `score / (hours_since_submission + 1)`. Raw standalone age is not directly appended, but is utilized here.
-* **`[388-391]` (4-d)**: Normalized similarity metrics to historical feedback:
+* **`[388]` (1-d)**: Normalized score velocity (points per hour, floored at 6 min): `min(log1p(score / max(hours, 0.1)), 8.0) / 8.0`.
+* **`[389]` (1-d)**: Normalized comment velocity (comments per hour, floored at 6 min): `min(log1p(comments / max(hours, 0.1)), 8.0) / 8.0`.
+  * Velocity features differ from quality in the time floor (`max(hours, 0.1)` vs `hours + 1`), giving more weight to very fresh stories, and the comment term has no counterpart in the quality feature.
+* **`[390-393]` (4-d)**: Normalized similarity metrics to historical feedback:
   * Mean cosine similarity to upvoted story embeddings.
   * Mean cosine similarity to downvoted story embeddings.
   * Maximum cosine similarity to any upvoted story embedding.
