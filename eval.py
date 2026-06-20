@@ -43,21 +43,12 @@ def _load_candidates(db: Database) -> tuple[list[Story], np.ndarray]:
     """Read all non-negative-cached stories + their embeddings."""
     cursor = db.conn.execute(
         "SELECT id, title, url, score, time, text_content, source, "
-        "       comment_count, discussion_url "
+        "       comment_count, discussion_url, comment_count_at_fetch, "
+        "       self_text, top_comments, article_body "
         "FROM stories WHERE text_content != ''"
     )
     stories = [
-        Story(
-            id=row[0],
-            title=row[1],
-            url=row[2],
-            score=row[3],
-            time=row[4],
-            text_content=row[5],
-            source=row[6],
-            comment_count=row[7],
-            discussion_url=row[8],
-        )
+        Database._row_to_story(row)
         for row in cursor.fetchall()
     ]
     cached = db.get_embeddings_batch([s.id for s in stories], MODEL_VERSION)
@@ -107,11 +98,12 @@ def _compute_metrics(
         ap = 0.0
 
     return {
-        "ndcg_at_5": _ndcg(rel_by_pos, all_test_rels, 5),
-        "ndcg_at_10": _ndcg(rel_by_pos, all_test_rels, 10),
-        "ndcg_at_20": _ndcg(rel_by_pos, all_test_rels, 20),
-        "ndcg_at_40": _ndcg(rel_by_pos, all_test_rels, 40),
-        "hit_at_40": sum(1 for p in rel_by_pos if p < 40) / max(len(test_stories), 1),
+        "ndcg_at_100": _ndcg(rel_by_pos, all_test_rels, 100),
+        "ndcg_at_200": _ndcg(rel_by_pos, all_test_rels, 200),
+        "ndcg_at_500": _ndcg(rel_by_pos, all_test_rels, 500),
+        "hit_at_100": sum(1 for p in rel_by_pos if p < 100) / max(len(test_stories), 1),
+        "hit_at_200": sum(1 for p in rel_by_pos if p < 200) / max(len(test_stories), 1),
+        "hit_at_500": sum(1 for p in rel_by_pos if p < 500) / max(len(test_stories), 1),
         "map": ap,
         "brier_up": brier_up,
     }
@@ -125,11 +117,12 @@ def _evaluate_fold(
     test_actions: np.ndarray,
     cand_scores: np.ndarray,
     formula: str,
+    neutral_weight: float = 0.0,
     mmr_threshold: float = 0.50,
     mmr_limit: int = 40,
 ) -> dict:
     if formula == "current":
-        scores = probs[:, 2]
+        scores = probs[:, 2] + neutral_weight * probs[:, 1]
     elif formula == "up_only":
         scores = probs[:, 2]
     elif formula == "hn_baseline":
@@ -144,7 +137,7 @@ def _evaluate_fold(
     ]
     emb_map = {candidates[i].id: cand_emb[i] for i in range(len(candidates))}
 
-    rel_map = {0: 0.0, 1: 0.5, 2: 1.0}
+    rel_map = {0: 0.0, 1: 0.2, 2: 1.0}
     test_rel = np.array([rel_map[int(a)] for a in test_actions])
     all_test_rels = test_rel.tolist()
 
@@ -177,15 +170,21 @@ def _evaluate_fold(
         raw_rank_map, test_stories, test_actions, test_rel, all_test_rels, brier_up
     )
 
-    # Calculate median rank of upvoted test stories in overall ranked candidates
+    # Calculate rank statistics of upvoted test stories in overall ranked candidates
     test_upvote_ids = {s.id for i, s in enumerate(test_stories) if test_actions[i] == 2}
     upvote_ranks = [
         pos for pos, idx in enumerate(order) if candidates[idx].id in test_upvote_ids
     ]
     median_rank = float(np.median(upvote_ranks)) if upvote_ranks else 0.0
+    p25_rank = float(np.percentile(upvote_ranks, 25)) if upvote_ranks else 0.0
+    p75_rank = float(np.percentile(upvote_ranks, 75)) if upvote_ranks else 0.0
 
     mmr_metrics["median_rank"] = median_rank
+    mmr_metrics["p25_rank"] = p25_rank
+    mmr_metrics["p75_rank"] = p75_rank
     raw_metrics["median_rank"] = median_rank
+    raw_metrics["p25_rank"] = p25_rank
+    raw_metrics["p75_rank"] = p75_rank
 
     return {"mmr": mmr_metrics, "raw": raw_metrics}
 
@@ -337,6 +336,12 @@ def main() -> None:
         else:
             fb_closest_down = np.zeros(len(fb_train_emb))
 
+        fb_train_csr_ratio = fb_train_comments / np.maximum(fb_train_scores, 1)
+        fb_train_csr = np.clip(np.log1p(fb_train_csr_ratio), 0, 3.0) / 3.0
+
+        fold_cand_csr_ratio = fold_cand_comments / np.maximum(fold_cand_scores, 1)
+        fold_cand_csr = np.clip(np.log1p(fold_cand_csr_ratio), 0, 3.0) / 3.0
+
         # Build features for this fold
         X_train = _augment_features(
             fb_train_emb,
@@ -351,6 +356,7 @@ def main() -> None:
             sim_to_downvoted=fb_sim_down,
             closest_upvoted=fb_closest_up,
             closest_downvoted=fb_closest_down,
+            comment_score_ratio=fb_train_csr,
         )
         X_cand = _augment_features(
             fold_cand_emb,
@@ -365,6 +371,7 @@ def main() -> None:
             sim_to_downvoted=cand_sim_down,
             closest_upvoted=cand_closest_up,
             closest_downvoted=cand_closest_down,
+            comment_score_ratio=fold_cand_csr,
         )
 
         counts = Counter(y_train)
@@ -407,6 +414,7 @@ def main() -> None:
                     test_actions,
                     fold_cand_scores_array,
                     formula,
+                    neutral_weight=config.model.neutral_weight,
                     mmr_threshold=config.model.diversity_threshold,
                 )
             )
@@ -415,14 +423,17 @@ def main() -> None:
 
     # Aggregate
     metric_keys = (
-        "ndcg_at_5",
-        "ndcg_at_10",
-        "ndcg_at_20",
-        "ndcg_at_40",
-        "hit_at_40",
+        "ndcg_at_100",
+        "ndcg_at_200",
+        "ndcg_at_500",
+        "hit_at_100",
+        "hit_at_200",
+        "hit_at_500",
         "map",
         "brier_up",
         "median_rank",
+        "p25_rank",
+        "p75_rank",
     )
 
     report = {
@@ -434,7 +445,7 @@ def main() -> None:
             "n_folds": 5,
             "mmr_threshold": config.model.diversity_threshold,
             "mmr_limit": 40,
-            "relevance_grade": "up=1, neutral=0.5, down=0",
+            "relevance_grade": "up=1, neutral=0.2, down=0",
             "db_sha256": _db_sha256(config.db_path),
         },
         "formulas": {
@@ -466,7 +477,19 @@ def main() -> None:
     REPORT_PATH.write_text(json.dumps(report, indent=2))
     print(f"\nWritten {REPORT_PATH}")
 
-    for metric in ("ndcg_at_40", "hit_at_40", "map", "brier_up", "median_rank"):
+    for metric in (
+        "ndcg_at_100",
+        "ndcg_at_200",
+        "ndcg_at_500",
+        "hit_at_100",
+        "hit_at_200",
+        "hit_at_500",
+        "map",
+        "brier_up",
+        "median_rank",
+        "p25_rank",
+        "p75_rank",
+    ):
         print(f"\n{metric} by formula (mean ± std):")
         for f, data in report["formulas"].items():  # type: ignore[union-attr]
             for variant in ("mmr", "raw"):

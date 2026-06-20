@@ -22,9 +22,9 @@ def test_report_has_5_folds():
 
 def test_svm_better_than_random():
     r = json.loads(REPORT.read_text())
-    up_only = r["formulas"]["up_only"]["mean"]["mmr"]["ndcg_at_10"]
-    hn = r["formulas"]["hn_baseline"]["mean"]["mmr"]["ndcg_at_10"]
-    assert up_only > hn, f"SVM NDCG@10 ({up_only:.3f}) <= HN baseline ({hn:.3f})"
+    up_only = r["formulas"]["up_only"]["mean"]["mmr"]["ndcg_at_100"]
+    hn = r["formulas"]["hn_baseline"]["mean"]["mmr"]["ndcg_at_100"]
+    assert up_only > hn, f"SVM NDCG@100 ({up_only:.3f}) <= HN baseline ({hn:.3f})"
 
 
 def test_report_has_map_and_brier():
