@@ -1604,3 +1604,58 @@ async def run_pipeline(config: Config) -> None:
     logging.info(f"Pruned {pruned} old stories")
     db.close()
     logging.info("Done.")
+
+
+def fast_rerank_and_render(
+    db: Database,
+    config: Config,
+    embedder: Embedder,
+) -> None:
+    now_ts = int(time.time())
+    cutoff_ts = now_ts - (config.days * 86400)
+    rows = db.execute(
+        "SELECT id, title, url, score, time, text_content, source, comment_count, "
+        "       discussion_url, comment_count_at_fetch, self_text, top_comments, article_body "
+        "FROM stories WHERE source = 'hn' AND time >= ? AND id NOT IN (SELECT story_id FROM feedback)",
+        (cutoff_ts,)
+    )
+    candidates = [Database._row_to_story(row) for row in rows]
+
+    if not candidates:
+        generate_dashboard(
+            [],
+            Path(config.output),
+            config.username,
+            datetime.now().strftime("%Y-%m-%d %H:%M"),
+            config.server_port,
+            db,
+        )
+        return
+
+    # Candidate Pruning: Sort by standard HN gravity formula and take top 1000
+    # to keep evaluation time under 300ms.
+    candidates.sort(
+        key=lambda s: s.score / (((time.time() - s.time) / 3600.0 + 2.0) ** 1.8),
+        reverse=True,
+    )
+    candidates = candidates[:1000]
+
+    cand_embeddings = get_or_compute_embeddings(candidates, embedder, db)
+
+    final = rerank_candidates(
+        db=db,
+        config=config,
+        embedder=embedder,
+        candidates=candidates,
+        cand_embeddings=cand_embeddings,
+    )
+
+    generate_dashboard(
+        final,
+        Path(config.output),
+        config.username,
+        datetime.now().strftime("%Y-%m-%d %H:%M"),
+        config.server_port,
+        db,
+    )
+

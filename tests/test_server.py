@@ -28,8 +28,14 @@ def test_env(tmp_path):
     class TestHandler(Handler):
         pass
 
+    class MockEmbedder:
+        def encode(self, texts, batch_size=64):
+            import numpy as np
+            return np.zeros((len(texts), 384), dtype=np.float32)
+
     TestHandler.config = config
     TestHandler.db = db
+    TestHandler.embedder = MockEmbedder()
     TestHandler.regen_event = regen_event
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), TestHandler)

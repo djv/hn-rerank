@@ -203,6 +203,10 @@ class Handler(BaseHTTPRequestHandler):
                         action=action,
                     )
 
+                # Synchronously trigger fast re-ranking and re-rendering of index.html
+                from pipeline import fast_rerank_and_render
+                fast_rerank_and_render(self.db, self.config, self.embedder)
+
                 self.regen_event.set()
                 self._json_response({"ok": True})
             except Exception as e:
@@ -317,8 +321,11 @@ def main() -> None:
     db = Database(config.db_path)
 
     regen_event = threading.Event()
+    from pipeline import Embedder
+    embedder = Embedder(config.onnx_model_dir)
     Handler.config = config
     Handler.db = db
+    Handler.embedder = embedder
     Handler.regen_event = regen_event
 
     # Start regen thread

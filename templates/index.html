@@ -476,77 +476,19 @@
     // Client-side dynamic sorting
     const sortSelect = document.getElementById('sort-mode');
     const storiesContainer = document.getElementById('stories');
-    const storyCards = Array.from(document.querySelectorAll('.story-card'));
 
     sortSelect.addEventListener('change', () => {
       const mode = sortSelect.value;
+      const cards = Array.from(document.querySelectorAll('.story-card'));
       if (mode === 'score') {
-        storyCards.sort((a, b) => parseFloat(b.dataset.score) - parseFloat(a.dataset.score));
-      } else {
-        storyCards.sort((a, b) => parseInt(b.dataset.time) - parseInt(a.dataset.time));
+        cards.sort((a, b) => parseFloat(b.dataset.score) - parseFloat(a.dataset.score));
+      } else if (mode === 'time') {
+        cards.sort((a, b) => parseInt(b.dataset.time) - parseInt(a.dataset.time));
       }
-      storyCards.forEach(card => storiesContainer.appendChild(card));
+      cards.forEach(card => storiesContainer.appendChild(card));
     });
 
-    // Client-side feedback submission
-    document.querySelectorAll('[data-fb]').forEach(btn => {
-      btn.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        const card = btn.closest('.story-card');
-        const action = btn.dataset.fb;
-        const storyId = Number(card.dataset.storyId);
-
-
-        // Toggle logic: click on active button clears it
-        const nextAction = btn.classList.contains('active') ? 'clear' : action;
-
-        const apiPath = window.location.pathname.startsWith('/rewrite') ? '/rewrite/api/feedback' : '/api/feedback';
-        try {
-          const resp = await fetch(apiPath, {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-              story_id: storyId,
-              action: nextAction,
-            })
-          });
-
-          if (resp.ok) {
-            // Update localStorage state
-            if (nextAction === 'clear') {
-              localStorage.removeItem('feedback_' + storyId);
-            } else {
-              localStorage.setItem('feedback_' + storyId, nextAction);
-            }
-
-            // Update active state in UI
-            card.querySelectorAll('[data-fb]').forEach(b => {
-              if (nextAction === 'clear') {
-                b.classList.remove('active');
-              } else {
-                b.classList.toggle('active', b === btn);
-              }
-            });
-
-            // Autohide card on vote
-            if (nextAction !== 'clear') {
-              setTimeout(() => {
-                card.style.maxHeight = card.offsetHeight + 'px';
-                card.offsetHeight; // force reflow
-                card.classList.add('fade-out');
-                setTimeout(() => card.remove(), 400);
-              }, 300);
-            }
-          } else {
-            console.error('Failed to submit feedback', resp.status);
-          }
-        } catch (err) {
-          console.error('Network error submitting feedback', err);
-        }
-      });
-    });
-
-    // Client-side detailed analysis
+    // Helper to parse simple markdown to HTML
     function parseSimpleMarkdown(text) {
       const lines = text.split('\n');
       let html = '';
@@ -572,7 +514,6 @@
           .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
           .replace(/\*(.*?)\*/g, '<em>$1</em>');
         
-        // Match headers up to level 4
         const headerMatch = escaped.match(/^(#{1,4})\s+(.*)$/);
         if (headerMatch) {
           if (listType) {
@@ -583,7 +524,6 @@
           continue;
         }
         
-        // Match unordered list items
         const ulMatch = escaped.match(/^([-\*•])\s+(.*)$/);
         if (ulMatch) {
           if (listType !== 'ul') {
@@ -595,7 +535,6 @@
           continue;
         }
         
-        // Match ordered list items
         const olMatch = escaped.match(/^(\d+)\.\s+(.*)$/);
         if (olMatch) {
           if (listType !== 'ol') {
@@ -607,7 +546,6 @@
           continue;
         }
         
-        // Plain paragraph/div
         if (listType) {
           html += `</${listType}>`;
           listType = null;
@@ -621,52 +559,150 @@
       return html;
     }
 
-    document.querySelectorAll('[data-tldr-detail]').forEach(btn => {
-      btn.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        const card = btn.closest('.story-card');
-        const storyId = Number(card.dataset.storyId);
-        const storyTitle = card.querySelector('.story-title a')?.textContent || '';
-        
-        let contentDiv = card.querySelector('.tldr-detail-content');
-        if (!contentDiv) {
-          contentDiv = document.createElement('div');
-          contentDiv.className = 'tldr-detail-content';
-          contentDiv.style.marginTop = '0.5rem';
-          contentDiv.style.fontSize = '0.85rem';
-          contentDiv.style.borderTop = '1px dashed var(--pico-muted-border-color)';
-          contentDiv.style.paddingTop = '0.5rem';
-          contentDiv.style.display = 'none';
-          card.appendChild(contentDiv);
+    // Dynamic Swap-in of new ranked stories list
+    async function triggerSwap() {
+      try {
+        const resp = await fetch(window.location.href);
+        if (resp.ok) {
+          const htmlText = await resp.text();
+          const parser = new DOMParser();
+          const newDoc = parser.parseFromString(htmlText, 'text/html');
+          const newStories = newDoc.getElementById('stories');
+          if (newStories) {
+            storiesContainer.innerHTML = newStories.innerHTML;
+            
+            // Re-apply sorting if needed
+            const mode = sortSelect.value;
+            const cards = Array.from(document.querySelectorAll('.story-card'));
+            if (mode === 'score') {
+              cards.sort((a, b) => parseFloat(b.dataset.score) - parseFloat(a.dataset.score));
+              cards.forEach(card => storiesContainer.appendChild(card));
+            } else if (mode === 'time') {
+              cards.sort((a, b) => parseInt(b.dataset.time) - parseInt(a.dataset.time));
+              cards.forEach(card => storiesContainer.appendChild(card));
+            }
+            
+            // Re-bind listeners to the newly loaded story cards
+            bindEvents();
+          }
         }
+      } catch (err) {
+        console.error('Failed to swap stories', err);
+      }
+    }
 
-        btn.disabled = true;
-        btn.textContent = '⏳ Analyzing...';
-        
-        const apiPath = window.location.pathname.startsWith('/rewrite') ? '/rewrite/api/tldr-detail' : '/api/tldr-detail';
-        try {
-          const resp = await fetch(apiPath, {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ story_id: storyId, story_title: storyTitle })
-          });
-          if (resp.ok) {
-            const data = await resp.json();
-            contentDiv.innerHTML = parseSimpleMarkdown(data.tldr);
-            contentDiv.style.display = 'block';
-            btn.style.display = 'none';
-          } else {
-            const errData = await resp.json().catch(() => ({}));
-            btn.textContent = '❌ ' + (errData.error || 'Failed');
+    // Function to bind click event listeners to current cards
+    function bindEvents() {
+      // 1. Feedback buttons
+      document.querySelectorAll('[data-fb]').forEach(btn => {
+        btn.onclick = async (e) => {
+          e.stopPropagation();
+          const card = btn.closest('.story-card');
+          const action = btn.dataset.fb;
+          const storyId = Number(card.dataset.storyId);
+
+          const nextAction = btn.classList.contains('active') ? 'clear' : action;
+          const apiPath = window.location.pathname.startsWith('/rewrite') ? '/rewrite/api/feedback' : '/api/feedback';
+          
+          try {
+            const resp = await fetch(apiPath, {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({
+                story_id: storyId,
+                action: nextAction,
+              })
+            });
+
+            if (resp.ok) {
+              if (nextAction === 'clear') {
+                localStorage.removeItem('feedback_' + storyId);
+              } else {
+                localStorage.setItem('feedback_' + storyId, nextAction);
+              }
+
+              // Update active class locally instantly
+              card.querySelectorAll('[data-fb]').forEach(b => {
+                if (nextAction === 'clear') {
+                  b.classList.remove('active');
+                } else {
+                  b.classList.toggle('active', b === btn);
+                }
+              });
+
+              if (nextAction !== 'clear') {
+                setTimeout(() => {
+                  card.style.maxHeight = card.offsetHeight + 'px';
+                  card.offsetHeight; // force reflow
+                  card.classList.add('fade-out');
+                  setTimeout(async () => {
+                    card.remove();
+                    await triggerSwap();
+                  }, 400);
+                }, 300);
+              } else {
+                await triggerSwap();
+              }
+            } else {
+              console.error('Failed to submit feedback', resp.status);
+            }
+          } catch (err) {
+            console.error('Network error submitting feedback', err);
+          }
+        };
+      });
+
+      // 2. TLDR detail buttons
+      document.querySelectorAll('[data-tldr-detail]').forEach(btn => {
+        btn.onclick = async (e) => {
+          e.stopPropagation();
+          const card = btn.closest('.story-card');
+          const storyId = Number(card.dataset.storyId);
+          const storyTitle = card.querySelector('.story-title a')?.textContent || '';
+          
+          let contentDiv = card.querySelector('.tldr-detail-content');
+          if (!contentDiv) {
+            contentDiv = document.createElement('div');
+            contentDiv.className = 'tldr-detail-content';
+            contentDiv.style.marginTop = '0.5rem';
+            contentDiv.style.fontSize = '0.85rem';
+            contentDiv.style.borderTop = '1px dashed var(--pico-muted-border-color)';
+            contentDiv.style.paddingTop = '0.5rem';
+            contentDiv.style.display = 'none';
+            card.appendChild(contentDiv);
+          }
+
+          btn.disabled = true;
+          btn.textContent = '⏳ Analyzing...';
+          
+          const apiPath = window.location.pathname.startsWith('/rewrite') ? '/rewrite/api/tldr-detail' : '/api/tldr-detail';
+          try {
+            const resp = await fetch(apiPath, {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({ story_id: storyId, story_title: storyTitle })
+            });
+            if (resp.ok) {
+              const data = await resp.json();
+              contentDiv.innerHTML = parseSimpleMarkdown(data.tldr);
+              contentDiv.style.display = 'block';
+              btn.style.display = 'none';
+            } else {
+              const errData = await resp.json().catch(() => ({}));
+              btn.textContent = '❌ ' + (errData.error || 'Failed');
+              btn.disabled = false;
+            }
+          } catch (err) {
+            console.error(err);
+            btn.textContent = '❌ Error';
             btn.disabled = false;
           }
-        } catch (err) {
-          console.error(err);
-          btn.textContent = '❌ Error';
-          btn.disabled = false;
-        }
+        };
       });
-    });
+    }
+
+    // Run initial event binding
+    bindEvents();
   </script>
 </body>
 </html>
