@@ -954,7 +954,7 @@ def rank_stories(
     feedback_stories, feedback_labels, vote_times = db.get_feedback_for_training(user_id=user_id)
 
     # Multiclass SVM: 0=down, 1=neutral, 2=up
-    if len(feedback_labels) >= 1:
+    if len(feedback_labels) >= 10:
         try:
             cand_scores = np.array([s.score for s in candidates])
             cand_ages = np.array([now - s.time for s in candidates])
