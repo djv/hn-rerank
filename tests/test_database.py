@@ -14,13 +14,14 @@ def db():
 
 def test_upsert_and_get_story(db):
     from pipeline import compose_story_text
+    expected_text = compose_story_text("Test Story", "Some self text content", "Some top comments here", "Some article body here")
     story = Story(
         id=123,
         title="Test Story",
         url="https://example.com/test",
         score=100,
         time=1600000000,
-        text_content="Some body text",
+        text_content=expected_text,
         source="hn",
         comment_count=42,
         discussion_url="https://news.ycombinator.com/item?id=123",
@@ -46,7 +47,6 @@ def test_upsert_and_get_story(db):
     assert fetched.self_text == story.self_text
     assert fetched.top_comments == story.top_comments
     assert fetched.article_body == story.article_body
-    assert fetched.db_text_content == story.text_content
 
     # Check update
     updated_story = Story(

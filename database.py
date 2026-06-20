@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
 import numpy as np
@@ -25,7 +25,6 @@ class Story:
     self_text: str = ""
     top_comments: str = ""
     article_body: str = ""
-    db_text_content: str = ""
 
 
 @dataclass(frozen=True)
@@ -145,6 +144,32 @@ class Database:
 
     # Stories
     def upsert_story(self, story: Story) -> None:
+        # Check if the story already exists and has longer cached content
+        cursor = self.conn.execute(
+            "SELECT self_text, top_comments, article_body FROM stories WHERE id = ?",
+            (story.id,)
+        )
+        row = cursor.fetchone()
+        if row:
+            db_self, db_comments, db_body = row[0] or "", row[1] or "", row[2] or ""
+            
+            # Keep the longest available version of each field
+            final_self = story.self_text if len(story.self_text) >= len(db_self) else db_self
+            final_comments = story.top_comments if len(story.top_comments) >= len(db_comments) else db_comments
+            final_body = story.article_body if len(story.article_body) >= len(db_body) else db_body
+            
+            # Recompose if database fields were merged
+            if final_self != story.self_text or final_comments != story.top_comments or final_body != story.article_body:
+                from pipeline import compose_story_text
+                new_text = compose_story_text(story.title, final_self, final_comments, final_body)
+                story = replace(
+                    story,
+                    self_text=final_self,
+                    top_comments=final_comments,
+                    article_body=final_body,
+                    text_content=new_text,
+                )
+
         with self.conn:
             self.conn.execute(
                 """
@@ -167,11 +192,7 @@ class Database:
                     comment_count_at_fetch=excluded.comment_count_at_fetch,
                     self_text=excluded.self_text,
                     top_comments=excluded.top_comments,
-                    article_body=CASE 
-                        WHEN COALESCE(LENGTH(excluded.article_body), 0) > COALESCE(LENGTH(stories.article_body), 0) 
-                        THEN excluded.article_body 
-                        ELSE stories.article_body 
-                    END
+                    article_body=excluded.article_body
                 """,
                 (
                     story.id,
@@ -193,32 +214,20 @@ class Database:
 
     @staticmethod
     def _row_to_story(row: tuple) -> Story:
-        db_text = row[5] or ""
-        self_text = row[10] or ""
-        top_comments = row[11] or ""
-        article_body = row[12] or ""
-
-        if self_text or top_comments or article_body:
-            from pipeline import compose_story_text
-            text_content = compose_story_text(row[1], self_text, top_comments, article_body)
-        else:
-            text_content = db_text
-
         return Story(
             id=row[0],
             title=row[1],
             url=row[2],
             score=row[3],
             time=row[4],
-            text_content=text_content,
+            text_content=row[5] or "",
             source=row[6],
             comment_count=row[7],
             discussion_url=row[8],
             comment_count_at_fetch=row[9],
-            self_text=self_text,
-            top_comments=top_comments,
-            article_body=article_body,
-            db_text_content=db_text,
+            self_text=row[10] or "",
+            top_comments=row[11] or "",
+            article_body=row[12] or "",
         )
 
     def get_story(self, story_id: int) -> Story | None:
@@ -380,13 +389,6 @@ class Database:
             if action not in action_to_label:
                 continue
 
-            db_text = text_content or ""
-            if self_text or top_comments or article_body:
-                from pipeline import compose_story_text
-                text_content = compose_story_text(title or "", self_text, top_comments, article_body)
-            else:
-                text_content = db_text
-
             stories.append(
                 Story(
                     id=story_id,
@@ -394,13 +396,12 @@ class Database:
                     url=url,
                     score=score,
                     time=story_time,
-                    text_content=text_content,
+                    text_content=text_content or "",
                     source=source or "hn",
                     comment_count=comment_count,
                     self_text=self_text,
                     top_comments=top_comments,
                     article_body=article_body,
-                    db_text_content=db_text,
                 )
             )
             labels.append(action_to_label[action])

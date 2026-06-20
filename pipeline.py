@@ -286,7 +286,6 @@ async def fetch_story(
             self_text=story_text,
             top_comments=top_comment_texts,
             article_body="",
-            db_text_content=text_content,
         )
 
         db.upsert_story(story)
@@ -366,7 +365,6 @@ async def refetch_story_text(
             self_text=story_text,
             top_comments=top_comment_texts,
             article_body=existing.article_body,
-            db_text_content=new_text_content,
         )
         db.upsert_story(updated)
 
@@ -1270,26 +1268,6 @@ def generate_dashboard(
     output_path.write_text(html_content, encoding="utf-8")
 
 
-def _enrich_article_body(
-    candidates: list[Story],
-    db: Database,
-    embedder: Embedder,
-) -> None:
-    model_version = "all-MiniLM-L6-v2|mean|norm|256"
-    for i, story in enumerate(candidates):
-        if not story.article_body:
-            continue
-        # If the dynamically composed text differs from the stored DB column value
-        # (e.g. because a new article_body was added to the DB but not yet embedded),
-        # save the new composed text to the DB and update its embedding.
-        if story.text_content != story.db_text_content:
-            logging.info(f"Enriching story {story.id} with article body...")
-            db.upsert_story(story)
-            new_vec = embedder.encode([story.text_content])[0]
-            db.upsert_embedding(story.id, model_version, new_vec)
-            candidates[i] = replace(story, db_text_content=story.text_content)
-
-
 # Orchestrator
 async def run_pipeline(config: Config) -> None:
     db = Database(config.db_path)
@@ -1305,9 +1283,6 @@ async def run_pipeline(config: Config) -> None:
         config, exclude_ids, feedback_urls, db, embedder
     )
     logging.info(f"Fetched {n_fetched} candidates (excluded {len(exclude_ids)})")
-
-    # Sync and embed enriched article bodies
-    _enrich_article_body(candidates, db, embedder)
 
     t0 = time.perf_counter()
     cand_embeddings = get_or_compute_embeddings(candidates, embedder, db)
@@ -1372,7 +1347,6 @@ async def run_pipeline(config: Config) -> None:
                         story,
                         article_body=body[:15000],
                         text_content=new_text,
-                        db_text_content=new_text,
                     )
                     db.upsert_story(updated)
                     return story.id, updated

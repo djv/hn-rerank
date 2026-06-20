@@ -248,7 +248,6 @@ class Handler(BaseHTTPRequestHandler):
                                 story,
                                 article_body=article_body,
                                 text_content=new_text,
-                                db_text_content=new_text,
                             )
                             db2.upsert_story(updated_story)
                         finally:
