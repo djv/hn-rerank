@@ -103,8 +103,12 @@ async def generate_detailed_tldr(
 
     prompt = f"""Summarize the article and the discussion for a knowledgeable reader.
 Use ONLY information from the text below.
-Write a short summary (under 350 words). Use Markdown formatting:
-headings (###), **bold** for key terms, and - for lists where appropriate.
+Write a highly concise, scannable summary (under 180 words) optimized for an 11-inch screen to conserve vertical space.
+Use Markdown formatting:
+- Headings (###) for main sections.
+- Short bullet points (-) with **bold** key terms.
+- No nested list levels (conserve horizontal margins).
+- Keep each bullet point to a single short sentence.
 
 {content_section}
 
@@ -191,17 +195,13 @@ class Handler(BaseHTTPRequestHandler):
                 story_id = data["story_id"]
                 action = data["action"]
 
-                db = Database(self.config.db_path)
-                try:
-                    if action == "clear":
-                        db.delete_feedback(story_id)
-                    else:
-                        db.upsert_feedback(
-                            story_id=story_id,
-                            action=action,
-                        )
-                finally:
-                    db.close()
+                if action == "clear":
+                    self.db.delete_feedback(story_id)
+                else:
+                    self.db.upsert_feedback(
+                        story_id=story_id,
+                        action=action,
+                    )
 
                 self.regen_event.set()
                 self._json_response({"ok": True})
@@ -217,41 +217,33 @@ class Handler(BaseHTTPRequestHandler):
                 story_id = data["story_id"]
                 now = time.time()
 
-                db = Database(self.config.db_path)
-                try:
-                    story = db.get_story(story_id)
-                    if not story:
-                        self._json_response(
-                            {"error": "Story not found in database"}, status=404
-                        )
-                        return
+                story = self.db.get_story(story_id)
+                if not story:
+                    self._json_response(
+                        {"error": "Story not found in database"}, status=404
+                    )
+                    return
 
-                    age_hours = max(0.0, (now - story.time) / 3600.0)
-                    article_body = story.article_body or None
-                finally:
-                    db.close()
+                age_hours = max(0.0, (now - story.time) / 3600.0)
+                article_body = story.article_body or None
 
                 if article_body is None and story.url and len(story.text_content) < 500:
                     article_body = asyncio.run(_fetch_article_body(story.url))
                     if article_body:
                         article_body = article_body[:15000]
-                        db2 = Database(self.config.db_path)
-                        try:
-                            from pipeline import compose_story_text
-                            new_text = compose_story_text(
-                                story.title,
-                                story.self_text,
-                                story.top_comments,
-                                article_body,
-                            )
-                            updated_story = replace(
-                                story,
-                                article_body=article_body,
-                                text_content=new_text,
-                            )
-                            db2.upsert_story(updated_story)
-                        finally:
-                            db2.close()
+                        from pipeline import compose_story_text
+                        new_text = compose_story_text(
+                            story.title,
+                            story.self_text,
+                            story.top_comments,
+                            article_body,
+                        )
+                        updated_story = replace(
+                            story,
+                            article_body=article_body,
+                            text_content=new_text,
+                        )
+                        self.db.upsert_story(updated_story)
                 tldr = asyncio.run(
                     generate_detailed_tldr(
                         story.title,

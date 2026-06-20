@@ -83,15 +83,16 @@ def test_upsert_embedding_roundtrip(db):
     db.upsert_story(story)
 
     vec = np.random.randn(384).astype(np.float32)
-    db.upsert_embedding(1, "v1", vec)
+    db.upsert_embedding(1, "v1", "hash123", vec)
 
-    fetched = db.get_embedding(1, "v1")
+    fetched = db.get_embedding(1, "v1", "hash123")
     assert fetched is not None
     assert np.allclose(fetched, vec)
 
     # Cache miss test
-    assert db.get_embedding(2, "v1") is None
-    assert db.get_embedding(1, "v2") is None
+    assert db.get_embedding(2, "v1", "hash123") is None
+    assert db.get_embedding(1, "v2", "hash123") is None
+    assert db.get_embedding(1, "v1", "different_hash") is None
 
 
 def test_get_embeddings_batch(db):
@@ -102,13 +103,20 @@ def test_get_embeddings_batch(db):
 
     vec1 = np.ones(384, dtype=np.float32)
     vec2 = np.zeros(384, dtype=np.float32)
-    db.upsert_embedding(1, "v1", vec1)
-    db.upsert_embedding(2, "v1", vec2)
+    db.upsert_embedding(1, "v1", "h1", vec1)
+    db.upsert_embedding(2, "v1", "h2", vec2)
 
-    batch = db.get_embeddings_batch([1, 2, 3], "v1")
+    hashes = {1: "h1", 2: "h2", 3: "h3"}
+    batch = db.get_embeddings_batch([1, 2, 3], "v1", hashes)
     assert len(batch) == 2
     assert np.allclose(batch[1], vec1)
     assert np.allclose(batch[2], vec2)
+
+    # Test mismatching hash filtered out
+    bad_hashes = {1: "h1", 2: "wrong_hash"}
+    batch2 = db.get_embeddings_batch([1, 2], "v1", bad_hashes)
+    assert len(batch2) == 1
+    assert 2 not in batch2
 
 
 def test_feedback_crud(db):
@@ -217,7 +225,7 @@ def test_story_pruning_integrity_invariants(fetched_offsets, feedback_indices):
             db.upsert_story(story)
             
             # Override fetched_at directly in DB to simulate temporal aging
-            db.conn.execute("UPDATE stories SET fetched_at = ? WHERE id = ?", (fetched_at, i))
+            db.execute("UPDATE stories SET fetched_at = ? WHERE id = ?", (fetched_at, i))
             
             # Apply feedback if indexed
             has_feedback = i in feedback_indices and i < len(fetched_offsets)
