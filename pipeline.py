@@ -32,6 +32,7 @@ class ModelConfig:
     svm_c: float = 0.3
     svm_gamma: float | str = 0.1
     svm_kernel: str = "rbf"
+    neutral_weight: float = 0.0
     diversity_threshold: float = 0.50
 
 
@@ -86,6 +87,7 @@ class Config:
                 svm_c=model_cfg.get("svm_c", 0.3),
                 svm_gamma=model_cfg.get("svm_gamma", 0.1),
                 svm_kernel=model_cfg.get("svm_kernel", "rbf"),
+                neutral_weight=model_cfg.get("neutral_weight", 0.0),
                 diversity_threshold=model_cfg.get("diversity_threshold", 0.50),
             ),
             rss=RssConfig(
@@ -108,6 +110,7 @@ class RankedStory:
     is_novel: bool = False
     is_discussion_rich: bool = False
     is_high_engagement: bool = False
+    is_hot: bool = False
     is_similar: bool = False
 
 
@@ -170,17 +173,21 @@ def _extract_comments_recursive(
 def compose_story_text(
     title: str,
     self_text: str = "",
-    comments: list[str] | None = None,
+    comments: str = "",
+    article_body: str = "",
 ) -> str:
     clean_title = clean_text(title)
     clean_self = clean_text(self_text)[:6000]
-    clean_comments = " ".join(clean_text(c) for c in (comments or []) if c)[:6000]
+    clean_comments = clean_text(comments)[:6000]
+    clean_article = clean_text(article_body)[:4000]
 
     parts = []
     if clean_title:
         parts.append(f"{clean_title}.")
     if clean_self:
         parts.append(clean_self)
+    if clean_article:
+        parts.append(clean_article)
     if clean_comments:
         parts.append(clean_comments)
 
@@ -200,20 +207,31 @@ async def fetch_story(
     story = db.get_story(sid)
     if story is not None:
         if story.text_content == "":
-            return None
-        return story
+            if story.title == "":
+                pass  # corrupted _empty_story, fall through to API re-fetch
+            else:
+                return None
+        comments_stale = story.top_comments == "" or (story.comment_count or 0) > (
+            story.comment_count_at_fetch or 0
+        )
+        if not comments_stale:
+            return story
+        if story.top_comments != "" and (story.comment_count_at_fetch or 0) > 50:
+            return story
 
     url = f"https://hn.algolia.com/api/v1/items/{sid}"
     try:
         resp = await client.get(url)
         if resp.status_code != 200:
-            db.upsert_story(_empty_story(sid))
-            return None
+            if story is None:
+                db.upsert_story(_empty_story(sid))
+            return story if story else None
 
         item = resp.json()
         if not item or item.get("type") != "story":
-            db.upsert_story(_empty_story(sid))
-            return None
+            if story is None:
+                db.upsert_story(_empty_story(sid))
+            return story if story else None
 
         title = html.unescape(item.get("title", ""))
         story_url = item.get("url")
@@ -226,26 +244,29 @@ async def fetch_story(
         all_comments = _extract_comments_recursive(children)
         all_comments.sort(key=lambda x: x["score"])
         selected = all_comments[:24]
+        top_comment_texts = " ".join(c["text"] for c in selected)[:6000]
 
         text_content = compose_story_text(
             title=title,
             self_text=story_text,
-            comments=[c["text"] for c in selected],
+            comments=top_comment_texts,
+            article_body="",
         )
 
         if not text_content:
-            db.upsert_story(
-                Story(
-                    id=sid,
-                    title="",
-                    url=None,
-                    score=0,
-                    time=0,
-                    text_content="",
-                    source="hn",
+            if story is None:
+                db.upsert_story(
+                    Story(
+                        id=sid,
+                        title="",
+                        url=None,
+                        score=0,
+                        time=0,
+                        text_content="",
+                        source="hn",
+                    )
                 )
-            )
-            return None
+            return story if story else None
 
         story = Story(
             id=sid,
@@ -262,13 +283,17 @@ async def fetch_story(
             comment_count_at_fetch=comment_count
             if comment_count is not None
             else len(all_comments),
+            self_text=story_text,
+            top_comments=top_comment_texts,
+            article_body="",
+            db_text_content=text_content,
         )
 
         db.upsert_story(story)
         return story
     except Exception as e:
         logging.error(f"Error fetching story {sid}: {e}")
-        return None
+        return story if story else None
 
 
 async def refetch_story_text(
@@ -307,7 +332,7 @@ async def refetch_story_text(
         all_comments = _extract_comments_recursive(children)
         all_comments.sort(key=lambda x: x["score"])
         selected = all_comments[:24]
-        new_comments_text = [c["text"] for c in selected]
+        top_comment_texts = " ".join(c["text"] for c in selected)[:6000]
 
         existing = db.get_story(story_id)
         if existing is None:
@@ -317,7 +342,8 @@ async def refetch_story_text(
         new_text_content = compose_story_text(
             title=item.get("title", "") or existing.title,
             self_text=story_text,
-            comments=new_comments_text,
+            comments=top_comment_texts,
+            article_body=existing.article_body,
         )
         if not new_text_content:
             logging.warning(
@@ -337,6 +363,10 @@ async def refetch_story_text(
             comment_count=item.get("num_comments") or current_count,
             discussion_url=existing.discussion_url,
             comment_count_at_fetch=item.get("num_comments") or current_count,
+            self_text=story_text,
+            top_comments=top_comment_texts,
+            article_body=existing.article_body,
+            db_text_content=new_text_content,
         )
         db.upsert_story(updated)
 
@@ -360,9 +390,40 @@ async def fetch_stories_by_id(
         return []
 
     stories = db.get_stories(ids)
-    valid_stories = [s for s in stories if s.text_content != ""]
-    found_ids = {s.id for s in stories}
+    valid_stories: list[Story] = []
+    found_ids: set[int] = set()
+    for s in stories:
+        if s.text_content == "":
+            continue
+        valid_stories.append(s)
+        comments_fresh = s.top_comments != "" and (s.comment_count or 0) <= (
+            s.comment_count_at_fetch or 0
+        )
+        if comments_fresh:
+            found_ids.add(s.id)
     missing_ids = [sid for sid in ids if sid not in found_ids]
+
+    # Corrupted stories first, then cap stale-comment refetches at 100
+    if missing_ids:
+        db_ids = {s.id for s in stories}
+        story_map = {s.id: s for s in stories}
+        corrupted_refetch = [
+            sid
+            for sid in missing_ids
+            if sid in db_ids
+            and story_map[sid].title == ""
+            and story_map[sid].text_content != ""
+        ]
+        stale_refetch = sorted(
+            [
+                sid
+                for sid in missing_ids
+                if sid in db_ids and sid not in corrupted_refetch
+            ],
+            reverse=True,
+        )[:100]
+        new_ids = [sid for sid in missing_ids if sid not in db_ids]
+        missing_ids = corrupted_refetch + stale_refetch + new_ids
 
     if not missing_ids:
         return valid_stories
@@ -797,10 +858,11 @@ def _augment_features(
     sim_to_downvoted: np.ndarray | None = None,
     closest_upvoted: np.ndarray | None = None,
     closest_downvoted: np.ndarray | None = None,
+    comment_score_ratio: np.ndarray | None = None,
 ) -> NDArray[np.float32]:
     n = len(scores)
     n_meta = 1
-    for f in (comment_counts, text_lengths, hn_quality):
+    for f in (comment_counts, text_lengths, hn_quality, comment_score_ratio):
         if f is not None:
             n_meta += 1
     if score_velocity is not None and comment_velocity is not None:
@@ -837,6 +899,10 @@ def _augment_features(
             np.clip(np.log1p(np.maximum(hn_quality, 0)), 0, _LOG_QUALITY_SCALE)
             / _LOG_QUALITY_SCALE
         )
+        col += 1
+
+    if comment_score_ratio is not None:
+        meta[:, col] = comment_score_ratio
         col += 1
 
     if score_velocity is not None and comment_velocity is not None:
@@ -976,6 +1042,9 @@ def rank_stories(
             fb_score_vel = fb_scores / fb_safe_h
             fb_comment_vel = fb_comment_counts / fb_safe_h
 
+            fb_csr_ratio = fb_comment_counts / np.maximum(fb_scores, 1)
+            fb_csr = np.clip(np.log1p(fb_csr_ratio), 0, 3.0) / 3.0
+
             fb_features = _augment_features(
                 fb_embeddings,
                 fb_scores,
@@ -989,6 +1058,7 @@ def rank_stories(
                 sim_to_downvoted=fb_sim_to_down,
                 closest_upvoted=fb_closest_up,
                 closest_downvoted=fb_closest_down,
+                comment_score_ratio=fb_csr,
             )
 
             # Ensure all three classes (0, 1, 2) are present
@@ -1041,6 +1111,9 @@ def rank_stories(
             cand_score_vel = cand_scores / cand_safe_h
             cand_comment_vel = cand_comment_counts / cand_safe_h
 
+            cand_csr_ratio = cand_comment_counts / np.maximum(cand_scores, 1)
+            cand_csr = np.clip(np.log1p(cand_csr_ratio), 0, 3.0) / 3.0
+
             cand_features = _augment_features(
                 candidate_embeddings,
                 cand_scores,
@@ -1054,6 +1127,7 @@ def rank_stories(
                 sim_to_downvoted=cand_sim_to_down,
                 closest_upvoted=cand_closest_up,
                 closest_downvoted=cand_closest_down,
+                comment_score_ratio=cand_csr,
             )
             cand_features_meta_scaled = scaler.transform(cand_features[:, emb_dim:])
             cand_features_scaled = np.hstack(
@@ -1063,7 +1137,10 @@ def rank_stories(
             probs = svm.predict_proba(cand_features_scaled)
             class_order = list(svm.classes_)
             idx_up = class_order.index(2)
-            scores = probs[:, idx_up]
+            idx_neutral = class_order.index(1)
+            scores = (
+                probs[:, idx_up] + config.model.neutral_weight * probs[:, idx_neutral]
+            )
         except Exception as e:
             logging.error(f"Failed to fit feedback SVM: {e}")
 
@@ -1193,6 +1270,26 @@ def generate_dashboard(
     output_path.write_text(html_content, encoding="utf-8")
 
 
+def _enrich_article_body(
+    candidates: list[Story],
+    db: Database,
+    embedder: Embedder,
+) -> None:
+    model_version = "all-MiniLM-L6-v2|mean|norm|256"
+    for i, story in enumerate(candidates):
+        if not story.article_body:
+            continue
+        # If the dynamically composed text differs from the stored DB column value
+        # (e.g. because a new article_body was added to the DB but not yet embedded),
+        # save the new composed text to the DB and update its embedding.
+        if story.text_content != story.db_text_content:
+            logging.info(f"Enriching story {story.id} with article body...")
+            db.upsert_story(story)
+            new_vec = embedder.encode([story.text_content])[0]
+            db.upsert_embedding(story.id, model_version, new_vec)
+            candidates[i] = replace(story, db_text_content=story.text_content)
+
+
 # Orchestrator
 async def run_pipeline(config: Config) -> None:
     db = Database(config.db_path)
@@ -1209,6 +1306,9 @@ async def run_pipeline(config: Config) -> None:
     )
     logging.info(f"Fetched {n_fetched} candidates (excluded {len(exclude_ids)})")
 
+    # Sync and embed enriched article bodies
+    _enrich_article_body(candidates, db, embedder)
+
     t0 = time.perf_counter()
     cand_embeddings = get_or_compute_embeddings(candidates, embedder, db)
     elapsed_ms = int((time.perf_counter() - t0) * 1000)
@@ -1224,6 +1324,85 @@ async def run_pipeline(config: Config) -> None:
     )
     top_score = max((r.score for r in ranked), default=0.0)
     logging.info(f"Ranked {len(ranked)} stories, top_score={top_score:.3f}")
+
+    # -- Proactive Fetching (Top Recommendations & Popularity/Velocity Triggers) --
+    now_ts = time.time()
+    top_candidates = []
+    for pos, r in enumerate(ranked):
+        s = r.story
+        if not s.url or s.article_body:
+            continue
+
+        # Calculate velocity metrics
+        age_hours = (now_ts - s.time) / 3600.0
+        safe_hours = max(age_hours, 0.1)
+        score_vel = s.score / safe_hours
+        comment_vel = (s.comment_count or 0) / safe_hours
+
+        # Trigger 1: Highly ranked recommendation (Top 40)
+        is_top_rank = pos < 40
+
+        # Trigger 2: High virality recommendation (Top 150 with high score or velocity)
+        is_viral = (pos < 150) and (
+            s.score > 150 or score_vel > 30.0 or comment_vel > 20.0
+        )
+
+        if is_top_rank or is_viral:
+            top_candidates.append(s)
+            if len(top_candidates) >= 50:  # Cap at 50 parallel fetches per run
+                break
+
+    if top_candidates:
+        logging.info(
+            f"Proactively fetching article bodies for top {len(top_candidates)} candidates..."
+        )
+        from server import _fetch_article_body
+
+        async def fetch_and_update(story: Story):
+            try:
+                body = await _fetch_article_body(story.url)
+                if body:
+                    updated = replace(story, article_body=body[:15000])
+                    db.upsert_story(updated)
+                    return story.id, updated
+            except Exception as e:
+                logging.warning(f"Proactive fetch failed for story {story.id}: {e!r}")
+            return story.id, None
+
+        tasks = [fetch_and_update(s) for s in top_candidates]
+        results = await asyncio.gather(*tasks)
+        updated_map = {sid: updated for sid, updated in results if updated}
+
+        if updated_map:
+            for idx, s in enumerate(candidates):
+                if s.id in updated_map:
+                    candidates[idx] = updated_map[s.id]
+
+            # Update cache embeddings in the SQLite DB
+            model_version = "all-MiniLM-L6-v2|mean|norm|256"
+            for sid, updated in updated_map.items():
+                new_vec = embedder.encode([updated.text_content])[0]
+                db.upsert_embedding(sid, model_version, new_vec)
+
+            # Reload candidates' embeddings (loads updated vectors + cached vectors)
+            cand_embeddings = get_or_compute_embeddings(candidates, embedder, db)
+
+            # Rebuild the embeddings map for MMR
+            embeddings_map = {s.id: vec for s, vec in zip(candidates, cand_embeddings)}
+
+            # Re-run SVM classification
+            ranked = rank_stories(
+                candidates,
+                cand_embeddings,
+                db,
+                config,
+                embedder,
+            )
+            top_score = max((r.score for r in ranked), default=0.0)
+            logging.info(
+                f"Re-ranked {len(ranked)} stories after proactive fetches, "
+                f"top_score={top_score:.3f}"
+            )
 
     num_uncertain = 3 if config.count >= 10 else 0
     limit = max(1, config.count - num_uncertain)
@@ -1261,6 +1440,10 @@ async def run_pipeline(config: Config) -> None:
 
     cand_comment_counts = np.array([s.comment_count or 0 for s in candidates])
     cand_scores = np.array([s.score for s in candidates])
+    cand_velocities = np.array(
+        [s.score / max((now_ts - s.time) / 3600.0, 0.1) for s in candidates]
+    )
+    hot_threshold = np.percentile(cand_velocities, 90) if len(cand_velocities) else 0
 
     story_id_to_idx = {s.id: idx for idx, s in enumerate(candidates)}
 
@@ -1296,6 +1479,9 @@ async def run_pipeline(config: Config) -> None:
             and cand_comment_counts[idx] > 0
         )
         is_high_engagement = bool(cand_scores[idx] >= engagement_threshold)
+        is_hot = bool(
+            cand_velocities[idx] >= hot_threshold and cand_velocities[idx] > 0
+        )
         remaining_decorated.append(
             replace(
                 r,
@@ -1304,6 +1490,7 @@ async def run_pipeline(config: Config) -> None:
                 is_similar=is_similar,
                 is_discussion_rich=is_discussion_rich,
                 is_high_engagement=is_high_engagement,
+                is_hot=is_hot,
             )
         )
 

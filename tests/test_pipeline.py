@@ -66,7 +66,7 @@ def test_embedder_cache_hit(db, embedder):
 def test_compose_text():
     title = "<strong>Some title</strong>"
     self_text = "Some self text content."
-    comments = ["First comment text here.", "Second comment is long."]
+    comments = " ".join(["First comment text here.", "Second comment is long."])
     composed = compose_story_text(title, self_text, comments)
     assert "Some title" in composed
     assert "Some self text" in composed
