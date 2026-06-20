@@ -291,8 +291,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def log_message(self, format, *args) -> None:
-        # Silence access logs to keep console output concise
-        pass
+        logging.info("%s - - %s" % (self.address_string(), format % args))
 
 
 def regen_loop(config: Config, event: threading.Event) -> None:

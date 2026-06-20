@@ -1472,7 +1472,6 @@ async def run_pipeline(config: Config) -> None:
     t0 = time.perf_counter()
     cand_embeddings = get_or_compute_embeddings(candidates, embedder, db)
     elapsed_ms = int((time.perf_counter() - t0) * 1000)
-    embeddings_map = {s.id: vec for s, vec in zip(candidates, cand_embeddings)}
     logging.info(f"Embedded {cand_embeddings.shape[0]} candidates in {elapsed_ms}ms")
 
     ranked = rank_stories(
@@ -1558,9 +1557,6 @@ async def run_pipeline(config: Config) -> None:
 
             # Reload candidates' embeddings (loads updated vectors + cached vectors)
             cand_embeddings = get_or_compute_embeddings(candidates, embedder, db)
-
-            # Rebuild the embeddings map for MMR
-            embeddings_map = {s.id: vec for s, vec in zip(candidates, cand_embeddings)}
 
             # Re-run SVM classification
             ranked = rank_stories(
