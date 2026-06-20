@@ -259,3 +259,74 @@ def test_story_pruning_integrity_invariants(fetched_offsets, feedback_indices):
                 assert story is not None, f"Young story {sid} was incorrectly pruned."
     finally:
         db.close()
+
+
+def test_user_management(db):
+    # Test create_user
+    user = db.create_user("tok123", "user123")
+    assert user.id is not None
+    assert user.token == "tok123"
+    assert user.username == "user123"
+
+    # Test get_user_by_token
+    fetched = db.get_user_by_token("tok123")
+    assert fetched is not None
+    assert fetched.id == user.id
+    assert fetched.username == "user123"
+
+    # Test get_or_create_user
+    existing = db.get_or_create_user("tok123")
+    assert existing.id == user.id
+
+    new_user = db.get_or_create_user("new_tok")
+    assert new_user.token == "new_tok"
+    assert new_user.username == "anon"
+
+    # Test update_username
+    db.update_username(user.id, "new_username")
+    updated = db.get_user_by_token("tok123")
+    assert updated.username == "new_username"
+
+
+def test_per_user_feedback_isolation(db):
+    user1 = db.create_user("token_u1", "user1")
+    user2 = db.create_user("token_u2", "user2")
+
+    story = Story(
+        id=99,
+        title="Shared Story",
+        url="http://shared.com",
+        score=50,
+        time=1000,
+        text_content="content",
+    )
+    db.upsert_story(story)
+
+    # Isolated votes
+    db.upsert_feedback(user1.id, 99, "up")
+    db.upsert_feedback(user2.id, 99, "down")
+
+    fb1 = db.get_all_feedback(user1.id)
+    fb2 = db.get_all_feedback(user2.id)
+
+    assert len(fb1) == 1
+    assert fb1[0].action == "up"
+
+    assert len(fb2) == 1
+    assert fb2[0].action == "down"
+
+    # Training data isolation
+    stories1, labels1, _ = db.get_feedback_for_training(user1.id)
+    stories2, labels2, _ = db.get_feedback_for_training(user2.id)
+
+    assert len(stories1) == 1
+    assert labels1[0] == 2  # up is 2
+
+    assert len(stories2) == 1
+    assert labels2[0] == 0  # down is 0
+
+    # Delete isolation
+    db.delete_feedback(user1.id, 99)
+    assert len(db.get_all_feedback(user1.id)) == 0
+    assert len(db.get_all_feedback(user2.id)) == 1
+
