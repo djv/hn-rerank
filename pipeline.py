@@ -1330,6 +1330,7 @@ def rerank_candidates(
     )
     cand_max_sim = np.maximum(cand_closest_up, cand_closest_down)
     sim_threshold = np.percentile(cand_max_sim, 15) if len(cand_max_sim) else 0.0
+    similar_threshold = np.percentile(cand_closest_up, 90) if len(cand_closest_up) else 0.0
 
     cand_comment_counts = np.array([s.comment_count or 0 for s in candidates])
     cand_scores = np.array([s.score for s in candidates])
@@ -1375,7 +1376,7 @@ def rerank_candidates(
             and (r.story.id in uncertain_ids or entropy >= uncertainty_threshold)
         )
         is_novel = bool(cand_max_sim[idx] <= sim_threshold and r.score > 0.1)
-        is_similar = bool(cand_closest_up[idx] > 0.55)
+        is_similar = bool(cand_closest_up[idx] >= similar_threshold)
         is_discussion_rich = bool(
             cand_comment_counts[idx] >= discussion_threshold
             and cand_comment_counts[idx] > 0
