@@ -1612,7 +1612,7 @@ def fast_rerank_and_render(
     rows = db.execute(
         "SELECT id, title, url, score, time, text_content, source, comment_count, "
         "       discussion_url, comment_count_at_fetch, self_text, top_comments, article_body "
-        "FROM stories WHERE source = 'hn' AND time >= ? AND id NOT IN (SELECT story_id FROM feedback)",
+        "FROM stories WHERE time >= ? AND id NOT IN (SELECT story_id FROM feedback)",
         (cutoff_ts,)
     )
     candidates = [Database._row_to_story(row) for row in rows]
@@ -1631,7 +1631,7 @@ def fast_rerank_and_render(
     # Candidate Pruning: Sort by standard HN gravity formula and take top 1000
     # to keep evaluation time under 300ms.
     candidates.sort(
-        key=lambda s: s.score / (((time.time() - s.time) / 3600.0 + 2.0) ** 1.8),
+        key=lambda s: (s.score if s.source == "hn" else 100) / (((time.time() - s.time) / 3600.0 + 2.0) ** 1.8),
         reverse=True,
     )
     candidates = candidates[:1000]
