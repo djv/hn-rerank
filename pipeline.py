@@ -1297,7 +1297,7 @@ def rerank_candidates(
 
     embeddings_map = {s.id: vec for s, vec in zip(candidates, cand_embeddings)}
 
-    num_uncertain = 3 if config.count >= 10 else 0
+    num_uncertain = 5 if config.count >= 10 else 0
     limit = max(1, config.count - num_uncertain)
     final = mmr_filter(
         ranked,
