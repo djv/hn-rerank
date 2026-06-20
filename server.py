@@ -103,7 +103,7 @@ async def generate_detailed_tldr(
 
     prompt = f"""Summarize the article and the discussion for a knowledgeable reader.
 Use ONLY information from the text below.
-Write a short 3-4 paragraph summary (under 350 words). Use Markdown formatting:
+Write a short summary (under 350 words). Use Markdown formatting:
 headings (###), **bold** for key terms, and - for lists where appropriate.
 
 {content_section}
