@@ -1443,7 +1443,7 @@ async def run_pipeline(config: Config) -> None:
     cand_velocities = np.array(
         [s.score / max((now_ts - s.time) / 3600.0, 0.1) for s in candidates]
     )
-    hot_threshold = np.percentile(cand_velocities, 90) if len(cand_velocities) else 0
+    hot_threshold = np.percentile(cand_velocities, 95) if len(cand_velocities) else 0
 
     story_id_to_idx = {s.id: idx for idx, s in enumerate(candidates)}
 
@@ -1466,7 +1466,7 @@ async def run_pipeline(config: Config) -> None:
     discussion_threshold = (
         np.percentile(cand_comment_counts, 90) if len(cand_comment_counts) else 0
     )
-    engagement_threshold = np.percentile(cand_scores, 90) if len(cand_scores) else 0
+    engagement_threshold = np.percentile(cand_scores, 95) if len(cand_scores) else 0
 
     remaining_decorated = []
     for r in remaining:
