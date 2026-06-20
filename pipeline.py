@@ -1371,7 +1371,7 @@ def rerank_candidates(
         entropy = get_entropy(r)
         is_uncertain = bool(
             r.prob_down is not None
-            and entropy >= 0.8
+            and entropy >= 1.2
             and (r.story.id in uncertain_ids or entropy >= uncertainty_threshold)
         )
         is_novel = bool(cand_max_sim[idx] <= sim_threshold and r.score > 0.5)
