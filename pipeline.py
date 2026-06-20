@@ -1362,7 +1362,18 @@ async def run_pipeline(config: Config) -> None:
             try:
                 body = await _fetch_article_body(story.url)
                 if body:
-                    updated = replace(story, article_body=body[:15000])
+                    new_text = compose_story_text(
+                        story.title,
+                        story.self_text,
+                        story.top_comments,
+                        body[:15000],
+                    )
+                    updated = replace(
+                        story,
+                        article_body=body[:15000],
+                        text_content=new_text,
+                        db_text_content=new_text,
+                    )
                     db.upsert_story(updated)
                     return story.id, updated
             except Exception as e:

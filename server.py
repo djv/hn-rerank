@@ -237,7 +237,19 @@ class Handler(BaseHTTPRequestHandler):
                         article_body = article_body[:15000]
                         db2 = Database(self.config.db_path)
                         try:
-                            updated_story = replace(story, article_body=article_body)
+                            from pipeline import compose_story_text
+                            new_text = compose_story_text(
+                                story.title,
+                                story.self_text,
+                                story.top_comments,
+                                article_body,
+                            )
+                            updated_story = replace(
+                                story,
+                                article_body=article_body,
+                                text_content=new_text,
+                                db_text_content=new_text,
+                            )
                             db2.upsert_story(updated_story)
                         finally:
                             db2.close()
