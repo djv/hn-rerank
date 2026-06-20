@@ -103,7 +103,7 @@ async def generate_detailed_tldr(
 
     prompt = f"""Summarize the article and the discussion for a knowledgeable reader.
 Use ONLY information from the text below.
-Write a short 3-4 paragraph summary (under 400 words). Use Markdown formatting:
+Write a short 3-4 paragraph summary (under 350 words). Use Markdown formatting:
 headings (###), **bold** for key terms, and - for lists where appropriate.
 
 {content_section}
@@ -111,7 +111,6 @@ headings (###), **bold** for key terms, and - for lists where appropriate.
 IMPORTANT:
 - Use ONLY information from the article text. Do not expand on the topic with outside knowledge.
 - If the article has very few or no comments do not invent discussion.
-- If engagement is low (under 20 points or under 5 comments), use hedging language like "the article describes...", "the author claims...", and note that the discussion is sparse.
 - If the text below is just a title and no substantive content, say so explicitly.
 """
 
