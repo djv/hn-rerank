@@ -401,9 +401,25 @@ def main() -> None:
             probability=False,
         )
         svm.fit(X_train_scaled, y_train, sample_weight=weights)
+        df_train = svm.decision_function(X_train_scaled)
         df_cand = svm.decision_function(X_cand_scaled)
-        e_x = np.exp(df_cand - np.max(df_cand, axis=1, keepdims=True))
-        probs = e_x / e_x.sum(axis=1, keepdims=True)
+
+        # Ensure 3-class for train to avoid logistic reg value error
+        train_classes = set(y_train)
+        missing = {0, 1, 2} - train_classes
+        if missing:
+            df_train_ext = np.concatenate([df_train, np.zeros((len(missing), df_train.shape[1]))], axis=0)
+            y_train_ext = list(y_train) + list(missing)
+            weights_ext = np.concatenate([weights, np.ones(len(missing)) * 1e-6])
+        else:
+            df_train_ext = df_train
+            y_train_ext = y_train
+            weights_ext = weights
+
+        from sklearn.linear_model import LogisticRegression
+        clf = LogisticRegression(random_state=0)
+        clf.fit(df_train_ext, y_train_ext, sample_weight=weights_ext)
+        probs = clf.predict_proba(df_cand)
 
         # Test fold: map test positions back to stories
         test_stories = [

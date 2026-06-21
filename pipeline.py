@@ -1138,10 +1138,14 @@ def rank_stories(
                 [cand_features[:, :emb_dim], cand_features_meta_scaled]
             )
 
+            from sklearn.linear_model import LogisticRegression
+            df_train = svm.decision_function(fb_features_scaled)
+            clf = LogisticRegression(random_state=0)
+            clf.fit(df_train, labels, sample_weight=sample_weights)
+
             df_cand = svm.decision_function(cand_features_scaled)
-            e_x = np.exp(df_cand - np.max(df_cand, axis=1, keepdims=True))
-            probs = e_x / e_x.sum(axis=1, keepdims=True)
-            class_order = list(svm.classes_)
+            probs = clf.predict_proba(df_cand)
+            class_order = list(clf.classes_)
             idx_up = class_order.index(2)
             idx_neutral = class_order.index(1)
             scores = (
