@@ -373,7 +373,7 @@ async def refetch_story_text(
         new_vec = embedder.encode([new_text_content])[0]
         import hashlib
         new_hash = hashlib.sha256(new_text_content.encode("utf-8")).hexdigest()
-        db.upsert_embedding(story_id, "all-MiniLM-L6-v2|mean|norm|256", new_hash, new_vec)
+        db.upsert_embedding(story_id, "all-MiniLM-L6-v2|mean|norm|512", new_hash, new_vec)
 
         return updated
     except Exception as e:
@@ -761,7 +761,7 @@ class Embedder:
             str(Path(model_dir) / "model.onnx"),
             providers=["CPUExecutionProvider"],
         )
-        self.max_tokens = 256
+        self.max_tokens = 512
 
     def encode(self, texts: list[str], batch_size: int = 64) -> NDArray[np.float32]:
         if not texts:
@@ -821,7 +821,7 @@ def get_or_compute_embeddings(
     }
 
     ids = [s.id for s in stories]
-    model_version = "all-MiniLM-L6-v2|mean|norm|256"
+    model_version = "all-MiniLM-L6-v2|mean|norm|512"
 
     cached = db.get_embeddings_batch(ids, model_version, story_hashes)
     missing_stories = [s for s in stories if s.id not in cached]
@@ -1138,14 +1138,10 @@ def rank_stories(
                 [cand_features[:, :emb_dim], cand_features_meta_scaled]
             )
 
-            from sklearn.linear_model import LogisticRegression
-            df_train = svm.decision_function(fb_features_scaled)
-            clf = LogisticRegression(random_state=0)
-            clf.fit(df_train, labels, sample_weight=sample_weights)
-
             df_cand = svm.decision_function(cand_features_scaled)
-            probs = clf.predict_proba(df_cand)
-            class_order = list(clf.classes_)
+            e_x = np.exp(df_cand - np.max(df_cand, axis=1, keepdims=True))
+            probs = e_x / e_x.sum(axis=1, keepdims=True)
+            class_order = list(svm.classes_)
             idx_up = class_order.index(2)
             idx_neutral = class_order.index(1)
             scores = (
@@ -1600,7 +1596,7 @@ async def run_pipeline(config: Config) -> None:
                     candidates[idx] = updated_map[s.id]
 
             # Update cache embeddings in the SQLite DB
-            model_version = "all-MiniLM-L6-v2|mean|norm|256"
+            model_version = "all-MiniLM-L6-v2|mean|norm|512"
             for sid, updated in updated_map.items():
                 new_vec = embedder.encode([updated.text_content])[0]
                 import hashlib

@@ -53,7 +53,7 @@ def test_embedder_cache_hit(db, embedder):
     assert embs1.shape == (1, 384)
 
     # Second call: check if cached
-    model_version = "all-MiniLM-L6-v2|mean|norm|256"
+    model_version = "all-MiniLM-L6-v2|mean|norm|512"
     import hashlib
     shash = hashlib.sha256(story.text_content.encode("utf-8")).hexdigest()
     cached = db.get_embedding(999, model_version, shash)
@@ -354,7 +354,7 @@ def test_svm_fitting_robustness(embedder, feedback_actions, cand_count):
     db = Database(":memory:")
     try:
         user = db.create_user("test_token_robustness", "test_user")
-        model_version = "all-MiniLM-L6-v2|mean|norm|256"
+        model_version = "all-MiniLM-L6-v2|mean|norm|512"
         for i, action in enumerate(feedback_actions):
             story = Story(
                 id=1000 + i,
