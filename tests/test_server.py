@@ -154,3 +154,62 @@ def test_cors_headers(test_env):
     assert resp.status_code == 204
     assert resp.headers.get("access-control-allow-origin") == "*"
     assert "POST" in resp.headers.get("access-control-allow-methods", "")
+
+
+def test_tldr_detail_dynamic_fetch(test_env, monkeypatch):
+    port, db, _, _, user = test_env
+    db.upsert_story(
+        Story(
+            id=777,
+            title="Dynamic test",
+            url="https://example.com/dynamic-test",
+            score=100,
+            time=1600000000,
+            text_content="Dynamic test.",
+            source="hn",
+            comment_count=5,
+            discussion_url="https://news.ycombinator.com/item?id=777",
+            comment_count_at_fetch=0,
+            self_text="",
+            top_comments="",
+            article_body="",
+        )
+    )
+
+    # Mock fetch_story and _fetch_article_body
+    async def mock_fetch_story(client, sid, database):
+        story = database.get_story(sid)
+        from dataclasses import replace
+        updated = replace(story, top_comments="Fetched comments", text_content="Dynamic test. Fetched comments")
+        database.upsert_story(updated)
+        return updated
+
+    async def mock_fetch_article_body(url):
+        return "Fetched article body text"
+
+    async def mock_generate_detailed_tldr(title, self_text, top_comments, article_body, points, comment_count, age_hours):
+        return f"TLDR: {title} | {top_comments} | {article_body}"
+
+    import server
+    import pipeline
+    monkeypatch.setattr(pipeline, "fetch_story", mock_fetch_story)
+    monkeypatch.setattr(server, "_fetch_article_body", mock_fetch_article_body)
+    monkeypatch.setattr(server, "generate_detailed_tldr", mock_generate_detailed_tldr)
+
+    # Request TLDR
+    resp = httpx.post(
+        f"http://127.0.0.1:{port}/api/tldr-detail",
+        json={"story_id": 777},
+        cookies={"hn_token": user.token},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ok"] is True
+    assert "Fetched comments" in data["tldr"]
+    assert "Fetched article body text" in data["tldr"]
+
+    # Verify database was updated
+    updated_story = db.get_story(777)
+    assert updated_story.top_comments == "Fetched comments"
+    assert updated_story.article_body == "Fetched article body text"
+

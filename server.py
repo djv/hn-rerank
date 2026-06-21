@@ -287,10 +287,28 @@ class Handler(BaseHTTPRequestHandler):
                     )
                     return
 
+                # 1. If HN story has comments but top_comments is empty, dynamically fetch them
+                if story.source == "hn" and not story.top_comments and (story.comment_count or 0) > 0:
+                    try:
+                        from pipeline import fetch_story
+                        async def do_fetch():
+                            async with httpx.AsyncClient(timeout=15.0) as client:
+                                return await fetch_story(client, story_id, self.db)
+                        updated = asyncio.run(do_fetch())
+                        if updated:
+                            story = updated
+                    except Exception as e:
+                        logging.error(f"Failed to dynamically fetch comments for TLDR: {e}")
+
                 age_hours = max(0.0, (now - story.time) / 3600.0)
                 article_body = story.article_body or None
 
-                if article_body is None and story.url and len(story.text_content) < 500:
+                if (
+                    article_body is None
+                    and story.url
+                    and not story.url.startswith("https://news.ycombinator.com")
+                    and len(story.self_text) < 500
+                ):
                     article_body = asyncio.run(_fetch_article_body(story.url))
                     if article_body:
                         article_body = article_body[:15000]
